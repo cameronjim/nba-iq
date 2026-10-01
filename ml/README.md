@@ -614,6 +614,18 @@ protocol says so up front rather than discovering it in April.
 
 ---
 
+## Experiments
+
+One folder each under `experiments/`, with its own script, tests and `REPORT.md`.
+Nothing in them is served.
+
+| Folder | Question | Run |
+|---|---|---|
+| `experiments/pbp_validation/` | do play-by-play lineups reconstruct box-score minutes? | `python experiments/pbp_validation/validate.py` (extra deps in its `requirements.txt`) |
+| `experiments/season_start/` | do offseason-shaped inputs (`days_since_last_app` ~170, no season appearances, NaN rest) push the minutes model down at season start and in preseason? | ML Evaluate with `season_start: true`, or `python experiments/season_start/analyze.py --dataset data/dataset_v4.parquet --out experiments/season_start/REPORT.md`; tests: `python -m pytest experiments/season_start/tests -q` |
+
+---
+
 ## Tests
 
 ```powershell
