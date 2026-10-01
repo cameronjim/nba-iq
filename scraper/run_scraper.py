@@ -20,6 +20,7 @@ from parsing import parse_team_types, season_range, season_start_year
 from fetching import stats_nba_reachable
 from injury_report import scrape_official_injuries
 from odds import scrape_odds_snapshots
+from props import scrape_prop_odds
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
@@ -162,7 +163,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--odds-only",
         dest="odds_only",
         action="store_true",
-        help="run ONLY the espn odds snapshot, skipping every other phase",
+        help=(
+            "run ONLY the odds lane: the espn odds snapshot, then the player "
+            "prop snapshot when ODDS_API_KEY is set (at most once per 20 hours)"
+        ),
+    )
+    parser.add_argument(
+        "--props-only",
+        dest="props_only",
+        action="store_true",
+        help=(
+            "run ONLY the player prop snapshot, now, ignoring the 20-hour gap; "
+            "spends quota even with --dry-run, since the api calls are reads"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -216,6 +229,12 @@ def _truth_layer_phases(
     )
     _injury_phases(conn, dry_run)
     return schedule_ok
+
+
+def _odds_lane(conn: psycopg2.extensions.connection, dry_run: bool) -> None:
+    # props last and isolated: a provider outage must never cost the espn snapshot.
+    scrape_odds_snapshots(conn, dry_run=dry_run)
+    _run_phase("prop odds snapshot", lambda: scrape_prop_odds(conn, dry_run=dry_run))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -290,7 +309,9 @@ def main(argv: list[str] | None = None) -> None:
         elif args.official_injuries_only:
             scrape_official_injuries(conn, dry_run=args.dry_run)
         elif args.odds_only:
-            scrape_odds_snapshots(conn, dry_run=args.dry_run)
+            _odds_lane(conn, args.dry_run)
+        elif args.props_only:
+            scrape_prop_odds(conn, dry_run=args.dry_run, min_hours_between_runs=0)
         else:
             stats_reachable = stats_nba_reachable()
             if not stats_reachable:
