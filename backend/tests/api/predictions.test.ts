@@ -124,6 +124,13 @@ describe('GET /api/predictions/slate', () => {
             prob_active: 0.99,
             pts: 28.4,
             proj_min_p50: 33.1,
+            c_pts: 28.7,
+            c_reb: 7.5,
+            c_ast: 8.2,
+            c_stl: 1.1,
+            c_blk: 0.6,
+            c_tov: 3.2,
+            c_fg3m: 2.0,
           }),
         ])
       )
@@ -147,6 +154,7 @@ describe('GET /api/predictions/slate', () => {
       home_team_abbr: 'LAL',
       away_team_id: '1610612744',
       away_team_abbr: 'GSW',
+      preseason: false,
     });
     expect(res.body.games[0].players[0]).toEqual({
       nba_player_id: '201939',
@@ -155,8 +163,9 @@ describe('GET /api/predictions/slate', () => {
       team_abbr: 'GSW',
       prob_active: 0.99,
       proj_pts: 28.4,
+      proj_pts_cond: 28.7,
       proj_min_p50: 33.1,
-      projected: { reb: 7.4, ast: 8.1, stl: 1.1, blk: 0.6, tov: 3.2, fg3m: 2 },
+      projected: { reb: 7.5, ast: 8.2, stl: 1.1, blk: 0.6, tov: 3.2, fg3m: 2 },
       usual_min: 30,
       usual_pts: 30,
       min_vs_usual: 3.1,
@@ -166,8 +175,8 @@ describe('GET /api/predictions/slate', () => {
       edge: expect.any(Number),
       vs_usual: {
         minutes: { usual: 30, projected: 33.1, delta: 3.1 },
-        points: { usual: 30, projected: null, delta: null },
-        categories: [],
+        points: { usual: 30, projected: 28.7, delta: -1.3 },
+        categories: expect.any(Array),
       },
       reasons: [],
       evidence: {},
@@ -259,6 +268,56 @@ describe('GET /api/predictions/slate', () => {
       new RegExp(`\\$${uncondParam} AND pgp\\.quantile IS NULL\\s+THEN pgp\\.value END\\)::float AS pts\\b`)
     );
     expect(sql).not.toMatch(/conditional\s*=\s*false/);
+  });
+
+  it('headlines the if-he-plays points beside the schedule-level points', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult(scheduleRows))
+      .mockResolvedValueOnce(pgResult([runRow]))
+      .mockResolvedValueOnce(pgResult(teamRows))
+      .mockResolvedValueOnce(
+        pgResult([predictionRow({ prob_active: 0.88, pts: 18.9, c_pts: 21.4, c_reb: 5.1 })])
+      )
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const res = await request(app).get('/api/predictions/slate').query({ date: '2026-02-04' });
+
+    // assert
+    const [row] = res.body.games[0].players;
+    expect(row.proj_pts).toBe(18.9);
+    expect(row.proj_pts_cond).toBe(21.4);
+    expect(row.projected.reb).toBe(5.1);
+    expect(row.projected.ast).toBeNull();
+  });
+
+  it('marks a preseason game so its minutes are not read as regular-season ones', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(
+        pgResult([
+          { ...scheduleRows[0], nba_game_id: '0012600001', season_type: 'Pre Season' },
+          { ...scheduleRows[0], nba_game_id: '0022600001', season_type: 'Regular Season' },
+        ])
+      )
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult(teamRows));
+
+    // act
+    const res = await request(app).get('/api/predictions/slate').query({ date: '2026-10-02' });
+
+    // assert
+    const byId = new Map(
+      (res.body.games as Array<{ nba_game_id: string; preseason: boolean }>).map((g) => [
+        g.nba_game_id,
+        g.preseason,
+      ])
+    );
+    expect(byId.get('0012600001')).toBe(true);
+    expect(byId.get('0022600001')).toBe(false);
+    expect(queryMock.mock.calls[0][0]).toMatch(/season_type/);
   });
 
   it('caps each game at eight players', async () => {
@@ -667,6 +726,7 @@ describe('GET /api/watchlist', () => {
     expect(candidate.team_abbr).toBe('OKC');
     expect(candidate.opponent_team_abbr).toBe('LAL');
     expect(candidate.game_date).toBe('2026-02-04');
+    expect(candidate.preseason).toBe(false);
     expect(candidate.prob_active).toBe(0.88);
     expect(candidate.minutes).toEqual({ usual: 22, projected: 31, delta: 9 });
     expect(candidate.points).toEqual({ usual: 11, projected: 20, delta: 9 });
@@ -676,6 +736,26 @@ describe('GET /api/watchlist', () => {
     expect(candidate.relevance).toBeGreaterThan(0);
     expect(candidate.impact_percentile).toBeGreaterThan(IMPACT_PERCENTILE_FLOOR);
     expect(candidate.drivers.length).toBeGreaterThan(0);
+  });
+
+  it('marks a candidate whose game is a preseason game', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult([runRow]))
+      .mockResolvedValueOnce(pgResult([watchRow({ u_pts: 20, c_pts: 20 }), ...benchPool(60)]))
+      .mockResolvedValueOnce(
+        pgResult([baselineRow('1630559', { minutes: 22, pts: 11 }), ...benchBaselines(60)])
+      )
+      .mockResolvedValueOnce(pgResult([{ ...gameTeamRows[0], season_type: 'Pre Season' }]));
+
+    // act
+    const res = await request(app).get('/api/watchlist').query({ date: '2026-02-04' });
+
+    // assert
+    const candidate = res.body.players[0];
+    expect(candidate.nba_player_id).toBe('1630559');
+    expect(candidate.preseason).toBe(true);
+    expect(candidate.games[0].preseason).toBe(true);
   });
 
   it('keeps a bench jump off the list however large the jump is', async () => {

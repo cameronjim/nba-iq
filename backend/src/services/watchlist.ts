@@ -8,6 +8,7 @@ import {
   PROJECTED_STATS,
   getLatestCompleteRun,
   impactScores,
+  isPreseason,
   num,
   poolDescriptor,
   resolvePlayerName,
@@ -205,6 +206,7 @@ export interface WatchlistCandidate extends ReasonInput {
   opponent_team_abbr: string | null;
   nba_game_id: string;
   game_date: string;
+  preseason: boolean;
   impact: number | null;
   proj_pts_uncond: number | null;
   uncond: ImpactInput;
@@ -216,6 +218,7 @@ export interface WatchlistGame {
   game_date: string;
   nba_game_id: string;
   opponent_team_abbr: string | null;
+  preseason: boolean;
   minutes_p50: number | null;
   proj_pts: number | null;
   impact: number | null;
@@ -231,6 +234,7 @@ export interface WatchlistPlayer {
   game_date: string;
   nba_game_id: string;
   opponent_team_abbr: string | null;
+  preseason: boolean;
   games_count: number;
   games: WatchlistGame[];
   score: number;
@@ -420,6 +424,7 @@ export function rankCandidates(
         game_date: candidate.game_date,
         nba_game_id: candidate.nba_game_id,
         opponent_team_abbr: candidate.opponent_team_abbr,
+        preseason: candidate.preseason,
         minutes_p50: round(candidate.minutes.projected, 1),
         proj_pts: round(candidate.uncond.pts, 1),
         impact: candidate.impact,
@@ -456,6 +461,7 @@ export function rankCandidates(
       opponent_team_abbr: candidate.opponent_team_abbr,
       nba_game_id: candidate.nba_game_id,
       game_date: candidate.game_date,
+      preseason: candidate.preseason,
       games_count: gamesCount,
       games: [...accumulator.games].sort((a, b) => a.game_date.localeCompare(b.game_date)),
       score: round(accumulator.scoreTotal, 3) as number,
@@ -565,17 +571,20 @@ export async function fetchWindowPredictionRows(
 
 interface GameRow {
   nba_game_id: unknown;
+  season_type: unknown;
   home_team_abbr: unknown;
   away_team_abbr: unknown;
 }
 
-export async function fetchGameTeams(
-  from: string,
-  to: string
-): Promise<Map<string, [string | null, string | null]>> {
+export interface ScheduledGames {
+  teams: Map<string, [string | null, string | null]>;
+  preseason: Set<string>;
+}
+
+export async function fetchScheduledGames(from: string, to: string): Promise<ScheduledGames> {
   const rows = await rowsOrEmpty<GameRow>(() =>
     query(
-      `SELECT nba_game_id, home_team_abbr, away_team_abbr
+      `SELECT nba_game_id, season_type, home_team_abbr, away_team_abbr
        FROM nba_schedule
        WHERE game_date >= $1
          AND game_date <= $2`,
@@ -583,9 +592,11 @@ export async function fetchGameTeams(
     )
   );
 
-  const map = new Map<string, [string | null, string | null]>();
+  const teams = new Map<string, [string | null, string | null]>();
+  const preseason = new Set<string>();
   for (const row of rows) {
-    map.set(String(row.nba_game_id), [
+    const gameId = String(row.nba_game_id);
+    teams.set(gameId, [
       row.home_team_abbr === null || row.home_team_abbr === undefined
         ? null
         : String(row.home_team_abbr),
@@ -593,8 +604,16 @@ export async function fetchGameTeams(
         ? null
         : String(row.away_team_abbr),
     ]);
+    if (isPreseason(row.season_type)) preseason.add(gameId);
   }
-  return map;
+  return { teams, preseason };
+}
+
+export async function fetchGameTeams(
+  from: string,
+  to: string
+): Promise<Map<string, [string | null, string | null]>> {
+  return (await fetchScheduledGames(from, to)).teams;
 }
 
 export function opponentOf(
@@ -612,7 +631,8 @@ export function buildCandidates(
   rows: WindowPredictionRow[],
   baselines: Map<string, PlayerBaseline>,
   gameTeams: Map<string, [string | null, string | null]>,
-  date: string
+  date: string,
+  preseasonGames: ReadonlySet<string> = new Set()
 ): WatchlistCandidate[] {
   const dates = rows.map((row) => toIsoDay(row.game_date) ?? date);
 
@@ -680,6 +700,7 @@ export function buildCandidates(
       opponent_team_abbr: opponentOf(team, gameTeams.get(gameId)),
       nba_game_id: gameId,
       game_date: dates[i],
+      preseason: preseasonGames.has(gameId),
       impact: impacts[i],
       proj_pts_uncond: inputs[i].pts,
       uncond: inputs[i],
@@ -724,8 +745,8 @@ export async function fetchWatchlistWindow(
   if (rows.length === 0) return empty;
 
   const baselines = await fetchBaselines(window.from);
-  const gameTeams = await fetchGameTeams(window.from, window.to);
-  const candidates = buildCandidates(rows, baselines, gameTeams, window.from);
+  const schedule = await fetchScheduledGames(window.from, window.to);
+  const candidates = buildCandidates(rows, baselines, schedule.teams, window.from, schedule.preseason);
 
   const known = new Set<string>();
   const unknown = new Set<string>();

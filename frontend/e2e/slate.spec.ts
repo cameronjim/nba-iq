@@ -41,6 +41,16 @@ test.describe('Projections sort and reasons', () => {
     expect(requested).toEqual(['none', 'edge']);
   });
 
+  test('a preseason game carries the badge and the footer says why', async ({ page }) => {
+    await mockApi(page);
+    const projections = new ProjectionsPage(page);
+    await projections.goto();
+
+    await expect(projections.gameCard(/PHX.*@.*GSW/)).toContainText('Preseason');
+    await expect(projections.gameCard(/LAL.*@.*OKC/)).not.toContainText('Preseason');
+    await expect(projections.preseasonNote).toContainText('trained on regular-season games');
+  });
+
   test('a vs-usual line opens to the evidence behind it', async ({ page }) => {
     await mockApi(page);
     const projections = new ProjectionsPage(page);

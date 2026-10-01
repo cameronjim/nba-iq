@@ -1,3 +1,4 @@
+import { PreseasonBadge } from './SlateBadges';
 import { SlatePlayerRow } from './SlatePlayerRow';
 import type { SlateGame } from '../../types';
 
@@ -9,9 +10,12 @@ export const SlateGameCard = ({ game }: { game: SlateGame }): JSX.Element => (
           {game.away_team_abbr ?? 'TBD'} <span className="opacity-40 font-normal">@</span>{' '}
           {game.home_team_abbr ?? 'TBD'}
         </h2>
-        {game.game_status && (
-          <span className="badge badge-ghost badge-sm shrink-0">{game.game_status}</span>
-        )}
+        <span className="flex items-center gap-1.5 shrink-0">
+          {game.preseason && <PreseasonBadge />}
+          {game.game_status && (
+            <span className="badge badge-ghost badge-sm shrink-0">{game.game_status}</span>
+          )}
+        </span>
       </div>
 
       {game.players.length === 0 ? (
