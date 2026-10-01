@@ -1,10 +1,13 @@
 import logging
+import re
 import time
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import psycopg2
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from config import SEASON, TEAM_META
 from database import _batch_upsert, maybe_write_cursor
@@ -23,6 +26,8 @@ from parsing import (
     _pct,
     _resolve_team_abbr,
     _safe_float,
+    canonical_player_name,
+    cbs_team_abbr,
     cleared_player_ids,
     normalize_injury_status,
     resolve_positions,
@@ -314,25 +319,143 @@ def scrape_scoreboard(
     logger.info("total games upserted: %d", total)
 
 
-def _parse_cbs_injury_rows(html: str) -> list[tuple[str, str, str]]:
+@dataclass(frozen=True)
+class CbsInjuryRow:
+    player_name: str
+    status: str
+    injury: str
+    updated: str
+    team_abbr: str | None
+
+
+@dataclass
+class CbsInjuryMatch:
+    matched: list[tuple[str, CbsInjuryRow]] = field(default_factory=list)
+    unmatched: list[CbsInjuryRow] = field(default_factory=list)
+    ambiguous: list[CbsInjuryRow] = field(default_factory=list)
+
+
+# order matters: "injury status" has to claim its column before "injury" does.
+_CBS_HEADER_KEYS: tuple[tuple[str, str], ...] = (
+    ("player", "player"),
+    ("updated", "updated"),
+    ("injury status", "status"),
+    ("injury", "injury"),
+    ("position", "position"),
+)
+_CBS_REQUIRED_COLUMNS = ("player", "status")
+# the four-column layout cbs served before the updated column appeared.
+_CBS_LEGACY_COLUMNS = {"player": 0, "position": 1, "injury": 2, "status": 3}
+_CBS_TEAM_HREF = re.compile(r"/nba/teams/([A-Za-z]+)/")
+
+
+def map_cbs_injury_columns(headers: Sequence[str]) -> dict[str, int]:
+    columns: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        text = header.strip().lower()
+        for phrase, key in _CBS_HEADER_KEYS:
+            if phrase in text and key not in columns:
+                columns[key] = index
+                break
+    return columns
+
+
+def _cbs_table_team(table: Tag) -> str | None:
+    title = table.select_one(".TableBase-title")
+    link = title.select_one('a[href*="/nba/teams/"]') if title else None
+    match = _CBS_TEAM_HREF.search(link.get("href", "")) if link else None
+    return cbs_team_abbr(match.group(1)) if match else None
+
+
+def _cell_text(cells: Sequence[Tag], columns: Mapping[str, int], key: str) -> str:
+    index = columns.get(key)
+    if index is None or index >= len(cells):
+        return ""
+    return cells[index].get_text(" ", strip=True)
+
+
+def _parse_cbs_injury_rows(html: str) -> list[CbsInjuryRow]:
     soup = BeautifulSoup(html, "html.parser")
-    parsed: list[tuple[str, str, str]] = []
+    parsed: list[CbsInjuryRow] = []
     for table in soup.select("div.TableBase"):
+        headers = [th.get_text(" ", strip=True) for th in table.select("th")]
+        if headers:
+            columns = map_cbs_injury_columns(headers)
+            missing = [key for key in _CBS_REQUIRED_COLUMNS if key not in columns]
+            if missing:
+                # a layout change has to be loud: silently reading the wrong
+                # column is how every status became an injury name.
+                logger.warning(
+                    "cbs injury table is missing %s column(s), skipping it; headers: %s",
+                    ", ".join(missing),
+                    headers,
+                )
+                continue
+            min_cells = max(columns.values()) + 1
+        else:
+            columns = _CBS_LEGACY_COLUMNS
+            min_cells = len(_CBS_LEGACY_COLUMNS)
+
+        team_abbr = _cbs_table_team(table)
         for row in table.select("tr.TableBase-bodyTr"):
             cells = row.select("td")
-            if len(cells) < 4:
+            # without headers only the exact legacy width is safe to read by position.
+            if len(cells) < min_cells or (not headers and len(cells) != min_cells):
                 continue
 
-            name_el = cells[0].select_one("span.CellPlayerName--long a") or cells[0].select_one("a")
+            player_cell = cells[columns["player"]]
+            name_el = player_cell.select_one("span.CellPlayerName--long a") or player_cell.select_one("a")
             player_name = name_el.get_text(strip=True) if name_el else ""
             if not player_name:
                 continue
-            injury_detail = cells[2].get_text(strip=True)
-            injury_status = cells[3].get_text(strip=True)
             parsed.append(
-                (player_name, injury_status or "Day-To-Day", injury_detail or "Unknown")
+                CbsInjuryRow(
+                    player_name=player_name,
+                    status=_cell_text(cells, columns, "status") or "Day-To-Day",
+                    injury=_cell_text(cells, columns, "injury") or "Unknown",
+                    updated=_cell_text(cells, columns, "updated"),
+                    team_abbr=team_abbr,
+                )
             )
     return parsed
+
+
+def index_players_by_canonical_name(
+    players: Iterable[tuple[object, object, object]],
+) -> dict[str, list[tuple[str, str]]]:
+    index: dict[str, list[tuple[str, str]]] = {}
+    for nba_id, name, team in players:
+        if not nba_id or not name:
+            continue
+        key = canonical_player_name(str(name))
+        index.setdefault(key, []).append((str(nba_id), str(team or "").strip().upper()))
+    return index
+
+
+def match_cbs_injury_rows(
+    rows: Iterable[CbsInjuryRow],
+    players_by_name: Mapping[str, Sequence[tuple[str, str]]],
+) -> CbsInjuryMatch:
+    result = CbsInjuryMatch()
+    seen: set[str] = set()
+    for row in rows:
+        candidates = list(players_by_name.get(canonical_player_name(row.player_name), ()))
+        if len(candidates) > 1 and row.team_abbr:
+            on_team = [c for c in candidates if c[1] == row.team_abbr]
+            candidates = on_team if len(on_team) == 1 else candidates
+        if not candidates:
+            result.unmatched.append(row)
+            continue
+        if len(candidates) > 1:
+            result.ambiguous.append(row)
+            continue
+        nba_id = candidates[0][0]
+        # one report row per player even if cbs lists him twice.
+        if nba_id in seen:
+            continue
+        seen.add(nba_id)
+        result.matched.append((nba_id, row))
+    return result
 
 
 def scrape_injuries(
@@ -355,48 +478,55 @@ def scrape_injuries(
     cur = maybe_write_cursor(conn.cursor(), dry_run)
     cur.execute("SELECT nba_id FROM players WHERE injury_status IS NOT NULL")
     previously_listed = [str(nba_id) for (nba_id,) in cur.fetchall() if nba_id]
-    # resolved with a read so a dry run reports the same clearances production writes.
-    cur.execute(
-        "SELECT nba_id FROM players WHERE LOWER(name) = ANY(%s)",
-        ([name.lower() for name, _, _ in parsed],),
-    )
-    currently_listed = [str(nba_id) for (nba_id,) in cur.fetchall() if nba_id]
+    # cbs publishes names only, so they are resolved to ids here with a read,
+    # which also lets a dry run report the same clearances production writes.
+    cur.execute("SELECT nba_id, name, team FROM players WHERE nba_id IS NOT NULL")
+    match = match_cbs_injury_rows(parsed, index_players_by_canonical_name(cur.fetchall()))
+    if match.ambiguous:
+        logger.warning(
+            "cbs injuries: %d row(s) matched several players and were skipped: %s",
+            len(match.ambiguous),
+            ", ".join(f"{r.player_name} ({r.team_abbr or '?'})" for r in match.ambiguous),
+        )
+    if match.unmatched:
+        logger.info(
+            "cbs injuries: %d row(s) matched no player: %s",
+            len(match.unmatched),
+            ", ".join(r.player_name for r in match.unmatched),
+        )
+    if not match.matched:
+        logger.warning("injury page matched zero players, leaving statuses untouched")
+        cur.close()
+        return
+    currently_listed = [nba_id for nba_id, _ in match.matched]
 
     cur.execute("UPDATE players SET injury_status = NULL, injury_detail = NULL")
 
-    count = 0
-    logged = 0
-    for player_name, status, detail in parsed:
-        # RETURNING nba_id because CBS publishes names only, and the players
-        # table is the only place the name -> NBA id mapping exists.
+    for nba_id, row in match.matched:
+        logger.debug(
+            "cbs injury %s (%s): %s, updated %s",
+            row.player_name, nba_id, row.status, row.updated,
+        )
         cur.execute(
             """
             UPDATE players SET injury_status = %s, injury_detail = %s,
                 updated_at = NOW()
-            WHERE LOWER(name) = LOWER(%s)
-            RETURNING nba_id
+            WHERE nba_id = %s
             """,
-            (status, detail, player_name),
+            (row.status, row.injury, nba_id),
         )
-        matched = cur.fetchall()
-        if matched:
-            count += len(matched)
-
         # append-only history, never an upsert: "what did we know at 6am" is
         # the question the model asks, and overwriting destroys the answer.
-        for (nba_id,) in matched:
-            if not nba_id:
-                continue
-            logged += 1
-            cur.execute(
-                """
-                INSERT INTO player_injury_reports (nba_player_id, captured_at,
-                                                   status_raw, status_normalized,
-                                                   reason, source)
-                VALUES (%s, NOW(), %s, %s, %s, 'cbssports')
-                """,
-                (str(nba_id), status, normalize_injury_status(status), detail),
-            )
+        cur.execute(
+            """
+            INSERT INTO player_injury_reports (nba_player_id, captured_at,
+                                               status_raw, status_normalized,
+                                               reason, source)
+            VALUES (%s, NOW(), %s, %s, %s, 'cbssports')
+            """,
+            (nba_id, row.status, normalize_injury_status(row.status), row.injury),
+        )
+    count = logged = len(match.matched)
 
     # a recovered player just disappears from the page, so his clearance has to be
     # written explicitly or his last 'out' row stands forever.

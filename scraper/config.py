@@ -56,6 +56,12 @@ NAME_TO_ABBR = {
 }
 NAME_TO_ABBR["la clippers"] = "LAC"
 
+# cbs team urls use its own short codes where they differ from nba.com's.
+CBS_TEAM_ABBR_ALIASES = {
+    "GS": "GSW", "NO": "NOP", "NY": "NYK", "PHO": "PHX", "SA": "SAS",
+    "WSH": "WAS", "UTAH": "UTA", "BRK": "BKN", "CHO": "CHA",
+}
+
 
 
 def current_season(today: date) -> str:

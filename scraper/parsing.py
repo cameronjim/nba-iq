@@ -5,11 +5,13 @@ from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 
 from config import (
+    CBS_TEAM_ABBR_ALIASES,
     GAME_ID_PREFIX_TO_SEASON_TYPE,
     NAME_TO_ABBR,
     NBA_2K_TEAM_TYPES,
     SEASON_TYPE_UNKNOWN,
     TEAM_ID_TO_ABBR,
+    TEAM_META,
     V2_INACTIVE_UNRELIABLE_FROM,
 )
 
@@ -41,7 +43,9 @@ _BROAD_TO_SPECIFIC: dict[str, list[str]] = {
 _INJURY_STATUS_BUCKETS: tuple[tuple[str, str], ...] = (
     ("out for season", "out"),
     ("season-ending", "out"),
-    ("game time decision", "day_to_day"),
+    # questionable, not day_to_day: the ml override layer blends a gtd.
+    ("game time decision", "questionable"),
+    ("gtd", "questionable"),
     ("day-to-day", "day_to_day"),
     ("day to day", "day_to_day"),
     ("questionable", "questionable"),
@@ -51,7 +55,6 @@ _INJURY_STATUS_BUCKETS: tuple[tuple[str, str], ...] = (
     ("available", "available"),
     ("active", "available"),
     ("out", "out"),
-    ("gtd", "day_to_day"),
 )
 
 # (rule name, the stat that must not exceed, the stat it must not exceed).
@@ -115,6 +118,24 @@ def _normalize_name(name: str) -> str:
     ascii_name = ascii_name.replace(".", "").replace("'", "").replace("-", " ")
     ascii_name = re.sub(r"\s+", " ", ascii_name).strip()
     return ascii_name
+
+
+_GENERATIONAL_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v"})
+
+
+def canonical_player_name(name: str) -> str:
+    # curly apostrophes survive NFKD, and cbs prints them where nba.com does not.
+    text = _normalize_name(str(name or "").replace("’", "'").replace("`", "'"))
+    tokens = text.split(" ")
+    # the first token is never a suffix, so a one-word name cannot vanish.
+    kept = tokens[:1] + [t for t in tokens[1:] if t not in _GENERATIONAL_SUFFIXES]
+    return " ".join(t for t in kept if t)
+
+
+def cbs_team_abbr(raw: str) -> str | None:
+    code = str(raw or "").strip().upper()
+    code = CBS_TEAM_ABBR_ALIASES.get(code, code)
+    return code if code in TEAM_META else None
 
 
 def _resolve_team_abbr(team_id: str, team_name: str) -> str:
