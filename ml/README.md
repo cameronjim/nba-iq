@@ -173,6 +173,34 @@ from played rows or passed as `--history-through`), and `forecast_cutoff_at`, th
 later of `information_as_of` and the start of the `--run-at` day. `--run-at` only
 selects which games are scored; `predicted_at` is when the run was generated.
 
+### P3 challengers (candidates, nothing served)
+
+Two challengers to the frozen `prospective_2026_27_v1` serving path, scored once
+each by a bar written into `config`'s P3 block before any result existed:
+
+- **`v5-stakes`** (`config.FEATURE_SETS["v5-stakes"]`, `CANDIDATE_FEATURE_VERSION_V5 = "v5"`):
+  the 51 served columns plus the seven stakes columns MODEL.md 15.11 says a v5
+  should keep. No `late_season`, no `stakes_lockedness` column, no blowout or pace
+  family. Gated on availability Brier or minutes MAE.
+- **Residual production rate** (`fnba_ml/rate_model.py`): a small LightGBM per stat
+  (`RATE_MODEL_TARGETS` = PTS, AST, REB, FGA; `RATE_MODEL_PARAMS`) fitted on
+  appearances to `stat / max(MIN, 4) - served rate`, so the challenger rate is the
+  champion's EWMA plus a context correction, floored at 0, composed through the
+  same `minutes_propagated_estimate`. Fitted on the incumbent's availability and
+  minutes models. Gated on conditional or unconditional PTS MAE.
+
+```powershell
+# needs data/dataset_v4.parquet (build_v4_dataset.py); one look per --version
+python run_p3_bracket.py --version p3
+```
+
+Writes `reports/<version>_p3_decision.csv`, `_per_origin.csv`, `_cohorts.csv`,
+`_cohorts_all_endpoints.csv`, `_clip_rates.csv` and `<version>_p3.md`. The bar:
+paired 7-day moving-block bootstrap over `DEV_ORIGINS`, 95% CI excluding zero, at
+least 1% relative improvement on a gated endpoint, and no gated-endpoint cohort
+regressing by more than 1%. A pass is a recommendation to re-freeze, not a
+promotion: `FEATURE_COLS`, `FEATURE_VERSION` and the served rate are unchanged.
+
 ### Artifacts
 
 | Path | Committed? | Notes |
@@ -213,6 +241,8 @@ fnba_ml/
   intervals.py           empirical residual quantiles -> non-crossing P10/P50/P90
   store.py               the migration-014 row builder (pure) and its transaction
   registry.py            models/registry.json
+  rate_model.py          P3 candidate: the contextual residual rate (not served)
+  promotion.py           the pre-registered paired-bootstrap promotion rule
 ```
 
 Scripts at the top level (`build_dataset.py`, `train.py`, `evaluate.py`,
@@ -486,6 +516,8 @@ python -m pytest tests -q      # 680 tests
 | `tests/test_rate_targets.py` | the 9-category extension, in five blocks. **The vocabulary**: every served stat has a store name and every store name is inside migration 014's reserved list — which is parsed out of the `.sql` file rather than restated, because the schema has no `CHECK` on `stat`, so that comment *is* the contract and a typo'd name would insert cleanly and be invisible to every consumer. **The per-stat halflife**: each rate column reconstructed from the raw ratio at that stat's own configured halflife, plus a negative control showing two halflives on the same history disagree — without it the entire selection mechanism could be inert and every assertion would still pass. PTS/AST pinned frozen at the tournament's verdict. **Coherence**: the clip moves the bounded stat down and never raises the bound, the FG3M→FGM→FGA chain settles in one pass, a missing bound is skipped rather than clipping makes to nothing, and — the test that justifies the clip existing at all — equal halflives *cannot* produce an incoherent expectation while different ones demonstrably can, on a history whose truth is coherent in every row. **The emitted rows**: all eleven stats reach the store conditional, unconditional and at every quantile level. **The selection rule**: material-but-inconsistent and consistent-but-immaterial winners both fall back to the default, a frozen target cannot be moved by *any* evidence, and the synthetic fixture carries its own negative control proving its pooled and per-origin axes are independent |
 | `tests/test_features.py` | all 12 leakage tests ported from `ml-spike/leakage_tests.py`, plus the `groupby().first()` trap regression, missingness-flag checks, the per-minute rate definition (hand-recomputed) and the rate backfill reproducing the built-in columns exactly, and a pin that `build_features(schedule=None)` is the pre-existing schedule computation |
 | `tests/test_prospective.py` | the future-game universe and its one-date-at-a-time feature build. Outcome-derived columns (`avail_rate_*`, rolls, EWMAs) of a future row are identical whether or not other future dates exist, with the naive whole-week build kept as a negative control that does leak. Schedule-derived columns read the whole known schedule: a future back-to-back has `TEAM_REST_DAYS == 1` and `IS_B2B == 1`, the first future game's rest is measured from the last played game, `OPP_REST_DAYS` follows the opponent's own future games, a new season's second game reads rest from its opener, and a future row's `OPP_DEF_FORM` is the mean of the opponent's last played games, not diluted by unplayed ones |
+| `tests/test_rate_model.py` | the residual rate: its target by hand, the cutoff refusal, a permutation control (shuffled context buys nothing) next to a planted +0.1 home effect that is recovered, box-score flip invariance on a rebuilt feature frame with a counter-assertion on later rows, the shared-cutoff guard, and the v5-stakes column list |
+| `tests/test_p3_bracket.py` | the P3 bar as written, identical rows across both comparisons, appearance-only conditional rows, the decision logic on a synthetic win, loss, sub-floor win and cohort regression, and `main` end to end on the fixture including the one-look refusal |
 | `tests/test_universe.py` | status-based preferred; fallback labeled and warns; approximation over-states availability and truncates long absences; schedule symmetry |
 | `tests/test_models.py` | composition math; out-of-fold discipline for **both** multiplied quantities including deliberately constructed in-fold failures and a mismatched-cutoff pair; the minutes-propagation regression test (double the predicted minutes → double both estimates, checked through the fitted serving path); per-minute rate behaviour and the cameo floor; metric helpers |
 | `tests/test_overrides.py` | every status rule and its exact arithmetic; the questionable blend; probable as a floor that can never lower a projection (now by arithmetic rather than by a `max`); unlisted and passthrough statuses; unconditional recomputation with conditional estimates and quantiles left alone; the newest-admissible-report rule; a report captured at or after the boundary refused (the leakage case); missing/empty statuses as an identity; the TEXT-vs-int64 id trap |
