@@ -638,7 +638,7 @@ export function buildCandidates(
     });
   }
 
-  const teamOf = (row: PredictionRow): string | null =>
+  const teamOf = (row: WindowPredictionRow): string | null =>
     row.team_abbr === null || row.team_abbr === undefined ? null : String(row.team_abbr);
 
   const groups = groupTeammates(
