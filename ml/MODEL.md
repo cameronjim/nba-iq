@@ -3986,3 +3986,167 @@ this look; promotion would first need a bar pre-registered here.
   modelled; the audit will show how often a team-game has two.
 - **E5 is still not in `score_runs.py`** (17.5, 17.6), nor the shifted-rate skill or
   the frozen-baseline rows. The `dec1` look needs them for F1 and F6.
+
+## 19. Phase 3 decision layers (2026-10-01): numbers own the ranking, Claude explains
+
+**Verdict first: every ordering the app shows a manager is now computed, and Claude
+explains and sanity-checks it rather than producing it.** Candidates are ranked by a
+deterministic score, the roster week is a seeded joint simulation, Projections sorts
+by a computed edge, and `score_runs.py --look` produces the 13.5 table. **No served
+prediction number moved**: all four packages only read the production run, and
+`prospective_2026_27_v2` is untouched. Sections 13, 17 and 18 are not edited.
+
+### 19.1 The principle, and why
+
+Three places let a language model or a coin decide what a number should have decided.
+(1) `buildWaiverContext` **shuffled** the rank band (`shuffleInPlace`) before slicing
+it, so the best waiver candidate could fail to reach the prompt by chance. (2) The one
+model number Claude saw per roster player was `P(active next game)`. (3) The betting
+edge was Claude's own guess against the market (17.2 item 7 now prices it no-vig).
+
+**Now numeric:** the candidate order and drivers (19.2), weekly category ranges and
+win probabilities (19.3), projection deltas and the edge sort (19.4). **Claude is
+asked to** weigh injury news, role changes, schedule and preferences against a list it
+did not order, and say why when it passes over a higher-ranked player. Its roster
+context gains a seven-day line per player (games, `P(play)`, totals, minutes vs usual).
+
+### 19.2 Candidate ranking (`candidateRanking.ts`, `windowProjections.ts`)
+
+**The score is the expected number of 9-category matchup wins the candidate adds to
+the manager's roster over the next seven days.** Each player's window line is turned
+into category z-scores against the whole population (roster, trade pool, waiver band),
+percentages as volume-weighted impact through the slate's `poolRates`. Per category,
+the roster's margin is its z-sum minus a **typical opponent**: the mean z of the
+rostered tier (the top `teams x 13` by fantasy rank, excluding the manager's own
+players) times the roster size. The margin's noise is taken as `sqrt(2 x roster size)`,
+a sum of unit z-scores on each side. A candidate's gain in a category is
+`Phi((margin + z) / spread) - Phi(margin / spread)`, the normal-curve change in its
+win probability; the score sums nine, so a narrowly lost category is worth more than
+one already won, which a summed z-score cannot say. The top three gains are drivers.
+
+**Inputs.** The production run's **unconditional** seven-day totals
+(`fetchWindowProjections`), so sitting risk is priced in. A player the run does not
+project falls back to season per-game averages times his team's scheduled games
+(`basis = season_average`), or per game when no schedule is loaded. **The fallback has
+no attempts**, so FG% and FT% are neutral for it: it can never gain or lose a
+percentage category, which understates a volume shooter; the prompt says so.
+
+**Deterministic:** no randomness, ties break on player id. Up to 25 waiver candidates
+and 20 trade targets are listed with score, basis and drivers, under this instruction
+(verbatim apart from the window length):
+
+> RANKING METHOD: both candidate lists below are pre-ranked numerically, best first.
+> score = expected 9-category matchup wins the player adds to MY ROSTER over the next
+> 7 days, computed from z-scores of his projected category totals against a typical
+> opponent built from the rostered tier, so it already rewards filling my weak
+> categories and discounts categories I already win. basis projection = the production
+> model's unconditional projections (sitting risk priced in); basis season_average =
+> season per-game averages times scheduled games, with FG% and FT% treated as neutral.
+> drivers = the three categories contributing most to the score. Your job is to explain
+> and sanity-check this ranking (injury news, role changes, schedule, fit with my
+> preferences), not to re-rank from scratch: favor the top of each list, and if you
+> pass over a higher-ranked player, say why.
+
+Tested in `candidateRanking.test.ts`, `aiContext.test.ts` and `api/ai.test.ts`.
+
+### 19.3 Weekly outlook by joint simulation (`weeklySimulation.ts`, `weeklyOutlook.ts`)
+
+`GET /api/fantasy/weekly-outlook?start=&days=` (default 7, at most 14), bound to the
+authenticated roster, shown as `WeeklyOutlookCard` on My Team. A seeded Monte Carlo
+(2,000 draws, mulberry32, seed `20260930`) over the roster's games in the window.
+
+- **The draw.** Each stat in each game is drawn by inverse transform through the
+  stored **conditional** p10 / p50 / p90 (piecewise linear, linear tails, floored at
+  0). A stat with no stored quantiles takes a hand-set relative spread
+  (`FALLBACK_RELATIVE_SPREAD`), and the response names every player and stat that did.
+- **Makes are coherent with attempts.** FGA and FTA are drawn, makes are attempts
+  times a jittered rate, and FG3M is FGM times its own, so `fgm <= fga`, `ftm <= fta`
+  and `fg3m <= fgm` hold in every draw. FG% and FT% are ratios of simulated sums.
+- **Availability is dependent within a player-week.** With probability
+  `DEPENDENCE_RHO = 0.5` one shared uniform decides every game (comonotone: a
+  lingering injury), otherwise each game is an independent draw against its
+  `prob_active`. The miss-at-least-one risk is then
+  `rho x max(1 - p) + (1 - rho) x (1 - prod p)`, between the comonotone lower bound
+  and the independence upper bound that `weekly.availability_risk` documents (17.2
+  item 6), which closes that docstring's caveat without measuring it: **0.5 is
+  hand-set**, not fitted; `player_injury_reports` is the history a fit would need.
+- **The typical opponent**: the window's top `12 x roster size` players by summed
+  slate impact, mean unconditional weekly totals scaled to the roster size.
+- **Reported:** per category mean, p10, p50, p90, the opponent's value and the win
+  probability (ties half); per player expected games and analytic and simulated miss
+  risk.
+
+**Two limitations, stated rather than fixed.** (1) Outside the make/attempt chains,
+stats within a game are drawn **independently**: PTS is not tied to FGM and FTM, and
+a big night does not raise rebounds, so category ranges differ from a joint model's by
+an unmeasured amount. (2) The simulated mean is the piecewise-linear distribution's,
+**not** the stored expectation (asymmetric anchors, the floor at 0), so it can differ
+from the totals Projections and the ranking show. Tested in `weeklySimulation.test.ts`,
+`api/weeklyOutlook.test.ts` and `WeeklyOutlookCard.test.tsx`.
+
+### 19.4 Projections explanations (`projectionReasons.ts`, `slate.ts`)
+
+- **One definition.** The five reason rules, their evidence and the deviation
+  weights moved from `watchlist.ts` into `projectionReasons.ts`, which the slate and
+  the Watchlist both call; the Watchlist's output is unchanged.
+- **`vs_usual` on every slate row:** minutes, points and the two largest moves among
+  REB, AST, STL, BLK and 3PM (ranked by delta over the slate's spread), each with his
+  usual (last 15 games played, at least 5). Every delta is **conditional on playing**,
+  so a game-time decision never reads as lost production.
+- **The edge sort.** `GET /api/predictions/slate?sort=impact|edge` (unknown is a 400).
+  Edge is the absolute weighted upside (minutes 2, points 1.5, the rest 1, each delta
+  over the slate's spread), so a minutes cut ranks like a bump; games sort by top edge.
+- **The player card** shows `vs usual: MIN +x, PTS +y` for the next game (optional
+  `prediction.vs_usual` on `/analytics`). **ReasonBadge**: "Teammate out" said "a
+  teammate who usually starts"; the rule is minutes, so it now says "usually plays 28+
+  minutes", which is what `TEAMMATE_ABSENCE_MIN_MINUTES` tests.
+
+Tested in `projectionReasons.test.ts`, `slate.test.ts`, `api/predictions.test.ts`,
+`api/analytics.test.ts`, `SlatePage.test.tsx`, `vsUsual.test.ts` and `e2e/slate.spec.ts`.
+
+### 19.5 The scoring tool completed (`fnba_ml/scoring.py`, `score_runs.py`)
+
+17.6's and 18.5's open item is closed. `score_runs.py --look dec1|all_star|season_end`
+scores games before the look date from runs predicted since the freeze, every baseline
+rebuilt as of the game date from the truth layer, and appends the 13.5 table:
+
+- **E1 skill** (F1) on `prob_active_model` against `avail_rate_10`; **F5**, conditional
+  minutes against `ewma_MIN` on appearances; the **tiers** (`roll10_MIN`) and the
+  **event and control cohorts** (`vacated_minutes >= 30`, `< 5`, oracle by design).
+- **E5** (F6), the mean over the eleven rate stats of relative MAE improvement, both
+  sides composed on `prob_active_model`: `p x E[stat | plays]` against
+  `p x ewma_total`. Not the served unconditional column, which carries the override
+  layer: 13.3 scores composition comparisons on the model probability, and F10
+  measures the layer on its own.
+- **F7 and F8**: the artifact's expanding and h20 rates replayed forward from its
+  `ewma_state` snapshot (seed weight = appearances since training start, so the
+  replay is exact), both composed through the same `p x E[MIN | plays]`.
+- **F2 to F4** from served and v1 shadow runs paired on the same slate and an
+  information boundary within 10 minutes, scored on identical rows with the paired
+  7-day moving-block bootstrap; a shadow at another boundary stays unpaired (13.4).
+- **The table**, bars from `config.PROSPECTIVE_FALSIFICATION`, each row `pass`, `fail`,
+  `non-binding` (short of the 13.6 row minimum, reading still shown), `report-only`
+  or `not computable` with the reason.
+
+**Judgement calls.** (1) E5 on `prob_active_model x conditional`, above. (2) **F10's
+sign**: the stored `override_increment` is served minus model Brier (positive = the
+layer hurt); the table reports its negation, model minus served, so positive means
+the layer helped and the 13.5 bar `< 0.00` fails as written. (3) **`vacated_minutes`
+is not `teammates.py`'s**: absent teammates' 20-appearance rolling minutes, not
+season-to-date `std_MIN`. It only selects cohorts, so it can move a cohort's rows,
+never a forecast.
+(4) **400 days of history** (`--history-days`), so October baselines see last season.
+
+**Still not computable:** the `star_out = 1` cohort, which needs `usg_ewma` from team
+box totals that no baseline rebuilds; and F2 to F4 until the v1 artifact is trained
+and committed (17.7), since no shadow run exists to pair. Tested in `test_scoring.py`
+and `test_scoring_baselines.py`.
+
+### 19.6 What Phase 3 did not do
+
+- **No team-market betting model.** For sides and totals the market line is the
+  forecast. Player props are where a player-level model could add something, and no
+  props odds source exists to price them against.
+- **The betting picks remain Claude estimates**, labelled as such (17.2 item 7).
+- **Nothing here changes a served prediction number.** The ranking, outlook and
+  explanations read the production run; the scoring tool only reads the store.

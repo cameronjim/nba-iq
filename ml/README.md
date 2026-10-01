@@ -96,7 +96,8 @@ python predict.py --version 2026-08-16 --write-db --channel shadow   # recorded,
 # 5. score: stored runs vs completed games -> reports/scoring/scoring_<today>.md + _results.csv
 python score_runs.py                                  # runs predicted in the last 30 days
 python score_runs.py --since 2026-10-20 --channel production
-python score_runs.py --run-id 412 --run-id 413 --md reports\scoring\look_dec1.md
+python score_runs.py --run-id 412 --run-id 413 --md reports\scoring\runs_412_413.md
+python score_runs.py --look dec1                      # + the 13.5 falsification table (MODEL.md 19.5)
 
 # 6. the daily publisher, as predictions.yml runs it (run A, the v1 shadow, run B)
 python daily_run.py --shadow-feature-set v1 --dry-run
@@ -204,8 +205,10 @@ identical rows for F2 to F4 with the 7-day moving-block bootstrap.
 `--look dec1|all_star|season_end` scores only games before the look date and adds
 a "Look report" with the 13.5 falsification table, thresholds read from
 `config.PROSPECTIVE_FALSIFICATION`, each row pass / fail / non-binding (short of
-the 13.6 row minimum) / report-only / not computable. `star_out` is not split: it
-needs `usg_ewma` from team box totals. The logic is pure (`fnba_ml/scoring.py`,
+the 13.6 row minimum) / report-only / not computable. F10 in the table is model minus
+served Brier (positive = the override layer helped), the negation of the
+`override_increment` endpoint in the results csv. `star_out` is not split: it
+needs `usg_ewma` from team box totals. The judgement calls are in MODEL.md 19.5. The logic is pure (`fnba_ml/scoring.py`,
 tested in `tests/test_scoring.py` and `tests/test_scoring_baselines.py`).
 
 ```powershell
@@ -614,7 +617,7 @@ protocol says so up front rather than discovering it in April.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 790 tests
+python -m pytest tests -q      # 814 tests
 ```
 
 | File | Covers |
@@ -637,6 +640,8 @@ python -m pytest tests -q      # 790 tests
 | `tests/test_train.py` | `--feature-set`: the served set by default, v1 accepted and suffixed `-v1`, other sets refused; the shadow inherits the pinned cutoff unless one is passed; the v1 artifact's metadata, its 36 columns with no teammate column, no base model, a verifying registry entry, and `predict.py` skipping `rebuild_context` for it |
 | `tests/test_count_model.py` | the count challenger: fits and predicts non-negative counts on the fixture, refuses training rows past its cutoff and a minutes forecast that is in-fold or from another cutoff, doubling the minutes forecast doubles the conditional count (and recovers a hand-built constant rate), inner-fold selection returns a grid member deterministically, and the count endpoints computed by hand |
 | `tests/test_intervals_tiered.py` | tiered intervals: a wide tier gets wider offsets than a narrow one, the pooled fallback below `MIN_TIER_ROWS`, non-crossing per tier even from unsorted hand offsets, the metadata round trip, `train.py --tiered-quantiles` off by default, coverage and width endpoints by hand, and `report_counts.run` end to end on the fixture |
+| `tests/test_scoring.py` | the look tool's core: pivoting long store rows, truth alignment (a completed game with no status row is a coverage miss, not a drop), every 13.3 endpoint on a run and on a pool keeping each player-game's latest pre-tip forecast, calibration by hand, and the CLI's nothing-to-score exit |
+| `tests/test_scoring_baselines.py` | the as-of baselines (`avail_rate_10`, `ewma_total`, `roll10_MIN` tiers) with planted-row leakage controls, oracle `vacated_minutes` and its cohorts, the seeded rate replay equal to the full-history computation, E5 and Brier skill by hand, served and v1 shadow pairing on slate and boundary with the comparison's sign, the falsification table read from the frozen bars (non-binding below the row minimum, F10's sign flipped), and `--look` end to end |
 | `tests/test_serving_context.py` | the serving wiring: an injury report must raise a teammate's `exp_vacated_minutes` by exactly the probability shift times the absent player's magnitude, the as-of filter applies at the context stage too, an absent report is an identity, the rebuilt features carry the base model's cutoff, and the corrected measured-offset horizon definition with its stored per-run facts |
 
 Every leakage test runs **twice**, once per universe construction, so a dropped

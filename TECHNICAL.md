@@ -77,6 +77,8 @@ Base path `/api`. All responses are JSON.
 | `/fantasy/roster` | GET | user | Current user's roster |
 | `/fantasy/roster` | POST | user | Add a player |
 | `/fantasy/roster/:playerId` | DELETE | user | Drop a player |
+| `/fantasy/weekly-outlook` | GET | user | Simulated category ranges and win probabilities for the roster's week (`start`, `days` up to 14) |
+| `/predictions/slate` | GET | none | Projections slate for a date; `sort=impact` (default) or `sort=edge` (largest move vs each player's usual) |
 | `/preferences` | GET / PATCH | user | Team Preferences questionnaire |
 | `/ai/chat` | POST | user | AI chat with roster, waiver, or betting context |
 | `/ai/team-analysis` | GET | user | 9-category team analysis |
@@ -295,6 +297,14 @@ the full scrape and on its own every 30 minutes from 15:00 to 03:30 UTC
 Projections and Watchlist tabs. It is a separate package with its own README
 and living spec: see [`ml/README.md`](ml/README.md) and
 [`ml/MODEL.md`](ml/MODEL.md).
+
+The backend reads the production run in three more places (MODEL.md 19): the
+Improve Team waiver and trade candidates are ranked by expected category wins
+added before Claude sees them (`services/candidateRanking.ts`), My Team's weekly
+outlook is a seeded joint simulation of the roster week
+(`services/weeklySimulation.ts`), and every Projections row carries its deltas
+against the player's usual and can be sorted by them (`services/projectionReasons.ts`,
+shared with the Watchlist).
 
 ## MCP server
 
