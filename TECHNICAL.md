@@ -180,8 +180,8 @@ ones a player missed and the reason he missed them.
 | Table | Holds |
 |---|---|
 | `nba_schedule` | Every scheduled game, played or not, keyed on NBA's game id. Separate from `games`, which keys on ESPN event ids — the two id spaces do not join. |
-| `player_game_logs` | One row per player per game they recorded a line for. `minutes` is decimal (34.20 for `34:12`); `dnp_reason` is the verbatim box-score `COMMENT`. |
-| `team_game_logs` | Two rows per game. Doubles as the completed-game schedule. |
+| `player_game_logs` | One row per player per game they recorded a line for. `minutes` is decimal (34.20 for `34:12`); `dnp_reason` is the verbatim box-score `COMMENT`. Migration `018` adds `oreb` / `dreb` / `pf`, the starter's box-score `position`, and `details_source` / `details_fetched_at`; those, plus `started` and `dnp_reason`, come from one `boxscoretraditionalv3` call per game. |
+| `team_game_logs` | Two rows per game. Doubles as the completed-game schedule. Migration `018` adds team `oreb` / `dreb` / `pf`. |
 | `player_game_status` | **The training universe.** One row per scheduled player-game, appeared or not, with `rostered` / `listed_inactive` / `played` kept distinct. |
 | `player_team_stints` | Which team a player belonged to over which span, so a feature cannot leak a trade backwards into pre-trade rows. |
 | `player_injury_reports` | Append-only history of scraped injury designations — "what was known at the time", which the overwrite-in-place `players.injury_status` cannot answer. |
@@ -230,6 +230,19 @@ since it costs one request per game.
    delay between requests to stay under Akamai's radar. It is resumable — a
    game is only fetched if it has no `player_game_status` rows at all — so a
    killed run picks back up where it left off.
+
+   Box-score details (migration `018`) backfill separately, one season and one
+   `boxscoretraditionalv3` request per game, oldest first. A game is selected
+   while any of its player rows has `details_fetched_at` NULL, so it resumes
+   the same way; `--limit` bounds a slice (about 300 games per 30 minutes at
+   the 5s delay). The manual `Box Details Backfill` workflow runs that slice,
+   but exits immediately if `stats.nba.com` is unreachable from the runner.
+   The normal cron fills the same columns for newly completed games beside the
+   inactive-list fetch.
+
+   ```bash
+   python run_scraper.py --backfill-box-details --season 2024-25 --limit 300
+   ```
 
 3. **Validate.** Read-only, takes no locks, safe against prod mid-scrape:
 

@@ -484,3 +484,67 @@ def build_team_game_log_row(
         "leaguegamelog",
         run_id,
     )
+
+
+BOX_DETAILS_SOURCE = "boxscoretraditionalv3"
+
+
+def box_detail_rows_from_traditional(
+    payload: Mapping, game_id: str
+) -> tuple[list[dict], list[dict]]:
+    # v3 sets position for the five starters only, so a non-empty position is
+    # the starter flag. A DNP row reports zeros for every stat; those are
+    # stored as NULL, because a player who did not play did not foul zero times.
+    player_rows: list[dict] = []
+    for raw in payload.get("player_stats") or []:
+        player_id = str(raw.get("personId") or "").strip()
+        if not player_id:
+            continue
+        position = _text_or_none(raw.get("position"))
+        minutes = parse_minutes(raw.get("minutes"))
+        appeared = minutes is not None
+        player_rows.append(
+            {
+                "nba_player_id": player_id,
+                "nba_game_id": game_id,
+                "team_id": str(raw.get("teamId") or "").strip() or None,
+                "started": position is not None,
+                "position": position,
+                "minutes": minutes,
+                "oreb": _opt_int(raw.get("reboundsOffensive")) if appeared else None,
+                "dreb": _opt_int(raw.get("reboundsDefensive")) if appeared else None,
+                "pf": _opt_int(raw.get("foulsPersonal")) if appeared else None,
+                "dnp_reason": _text_or_none(raw.get("comment")),
+            }
+        )
+
+    team_rows: list[dict] = []
+    for raw in payload.get("team_stats") or []:
+        team_id = str(raw.get("teamId") or "").strip()
+        if not team_id:
+            continue
+        team_rows.append(
+            {
+                "team_id": team_id,
+                "nba_game_id": game_id,
+                "oreb": _opt_int(raw.get("reboundsOffensive")),
+                "dreb": _opt_int(raw.get("reboundsDefensive")),
+                "pf": _opt_int(raw.get("foulsPersonal")),
+            }
+        )
+    return player_rows, team_rows
+
+
+def merge_dnp_reason(existing: str | None, incoming: str | None) -> str | None:
+    # mirrors the COALESCE in the box-detail update: a reason already stored
+    # wins, so a later pass can fill a gap but never rewrite one.
+    return existing if existing is not None else incoming
+
+
+def player_ids_absent_from_box(
+    logged_player_ids: Sequence[str], box_player_rows: Sequence[Mapping]
+) -> list[str]:
+    # logged players v3 does not list keep their stats; they are only stamped
+    # as visited so the resumable backfill does not select the game forever.
+    in_box = {row["nba_player_id"] for row in box_player_rows}
+    return sorted({pid for pid in logged_player_ids if pid not in in_box})

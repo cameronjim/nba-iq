@@ -21,7 +21,12 @@ from fetching import stats_nba_reachable
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
-from truth_layer import scrape_game_logs, scrape_game_status, scrape_schedule
+from truth_layer import (
+    backfill_box_details,
+    scrape_game_logs,
+    scrape_game_status,
+    scrape_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--backfill-box-details",
+        dest="backfill_box_details",
+        action="store_true",
+        help=(
+            "fill started, position, oreb/dreb/pf and dnp_reason from one "
+            "boxscoretraditionalv3 call per game for --season, oldest first; "
+            "resumable, honours --limit and --dry-run"
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        dest="limit",
+        type=int,
+        default=None,
+        help=(
+            "with --backfill-box-details, stop after this many games "
+            "(default: all remaining). At the 5s request delay about 300 games "
+            "fit in a 30-minute GitHub Actions job"
+        ),
+    )
+    parser.add_argument(
         "--injuries-only",
         dest="injuries_only",
         action="store_true",
@@ -195,6 +221,10 @@ def main(argv: list[str] | None = None) -> None:
             logger.error("%s", e)
             sys.exit(2)
 
+    if args.limit is not None and args.limit < 1:
+        logger.error("--limit must be at least 1")
+        sys.exit(2)
+
     team_types: list[str] = []
     if args.sync_2k:
         try:
@@ -215,6 +245,15 @@ def main(argv: list[str] | None = None) -> None:
             backfill_game_logs(conn, truth_from, truth_to, dry_run=args.dry_run)
         elif args.validate_game_logs:
             validate_game_logs(conn, truth_from, truth_to)
+        elif args.backfill_box_details:
+            # datacenter ips are often tarpitted; failing fast beats burning the
+            # whole job on per-game retries.
+            if not stats_nba_reachable():
+                logger.error("stats.nba.com is unreachable: box-detail backfill skipped")
+                sys.exit(1)
+            backfill_box_details(
+                conn, args.season, dry_run=args.dry_run, limit=args.limit
+            )
         elif args.sync_2k:
             sync_2k_ratings(conn, team_types)
         elif args.roster_snapshot:

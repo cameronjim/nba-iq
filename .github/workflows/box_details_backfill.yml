@@ -1,0 +1,40 @@
+name: Box Details Backfill
+
+# manual only: one bounded, resumable slice per run. re-dispatch until the
+# log reports nothing to do for the season.
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "season to backfill, e.g. 2024-25"
+        required: true
+        type: string
+      limit:
+        description: "max games this run (about 300 fit in 30 minutes at a 5s delay)"
+        required: false
+        default: "300"
+        type: string
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scraper/requirements.txt
+
+      - name: Backfill box score details
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SEASON: ${{ inputs.season }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          python scraper/run_scraper.py --backfill-box-details --season "$SEASON" --limit "$LIMIT"

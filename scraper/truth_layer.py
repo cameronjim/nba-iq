@@ -16,6 +16,7 @@ from config import (
     SEASON,
 )
 from database import (
+    _batch_update,
     _batch_upsert,
     _finish_ingestion_run,
     _start_ingestion_run,
@@ -28,16 +29,20 @@ from fetching import (
     _fetch_nba_web_games,
     _fetch_player_game_logs,
     _fetch_team_game_logs,
+    fetch_box_score_traditional,
 )
 from parsing import season_end_date, season_start_date
 from rows import (
+    BOX_DETAILS_SOURCE,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
+    box_detail_rows_from_traditional,
     build_player_game_log_row,
     build_team_game_log_row,
     derive_game_status_rows,
     game_log_fetch_from,
     plan_stint_change,
+    player_ids_absent_from_box,
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
@@ -152,6 +157,54 @@ ON CONFLICT (nba_player_id, nba_game_id) DO UPDATE SET
 """
 
 
+# the casts matter: a VALUES column that is NULL on every row is typed text,
+# which postgres will not assign to a smallint or boolean column.
+BOX_DETAIL_PLAYER_UPDATE_SQL = """
+UPDATE player_game_logs AS p
+   SET started = v.started::boolean,
+       position = v.position::text,
+       oreb = v.oreb::smallint,
+       dreb = v.dreb::smallint,
+       pf = v.pf::smallint,
+       -- an inactive-list reason already stored wins over the box score's
+       dnp_reason = COALESCE(p.dnp_reason, v.dnp_reason::text),
+       details_source = v.details_source,
+       details_fetched_at = NOW()
+  FROM (VALUES %s) AS v (nba_player_id, nba_game_id, started, position, oreb,
+                         dreb, pf, dnp_reason, details_source)
+ WHERE p.nba_player_id = v.nba_player_id
+   AND p.nba_game_id = v.nba_game_id
+"""
+
+BOX_DETAIL_TEAM_UPDATE_SQL = """
+UPDATE team_game_logs AS t
+   SET oreb = v.oreb::smallint,
+       dreb = v.dreb::smallint,
+       pf = v.pf::smallint
+  FROM (VALUES %s) AS v (team_id, nba_game_id, oreb, dreb, pf)
+ WHERE t.team_id = v.team_id
+   AND t.nba_game_id = v.nba_game_id
+"""
+
+BOX_DETAIL_STATUS_UPDATE_SQL = """
+UPDATE player_game_status AS s
+   SET started = v.started::boolean
+  FROM (VALUES %s) AS v (nba_player_id, nba_game_id, started)
+ WHERE s.nba_player_id = v.nba_player_id
+   AND s.nba_game_id = v.nba_game_id
+"""
+
+# stamps logged players v3 did not list without touching their stats
+BOX_DETAIL_ABSENT_STAMP_SQL = """
+UPDATE player_game_logs
+   SET details_source = %s,
+       details_fetched_at = NOW()
+ WHERE nba_game_id = %s
+   AND nba_player_id = ANY(%s)
+   AND details_fetched_at IS NULL
+"""
+
+
 def _upsert_schedule_rows(cur: object, rows: Sequence[Mapping]) -> int:
     tuples = [
         (
@@ -260,6 +313,164 @@ def _played_rows_for_games(
         return grouped
     finally:
         cur.close()
+
+
+def _games_needing_box_details(
+    conn: psycopg2.extensions.connection, season: str, limit: int | None
+) -> list[tuple[str, list[str]]]:
+    # two team rows means the game finished and both logs landed; a game drops
+    # out once every one of its player rows has been stamped.
+    sql = [
+        """
+        SELECT s.nba_game_id
+          FROM nba_schedule s
+         WHERE s.season = %s
+           AND (SELECT COUNT(*)
+                  FROM team_game_logs t
+                 WHERE t.nba_game_id = s.nba_game_id) = 2
+           AND EXISTS (SELECT 1
+                         FROM player_game_logs p
+                        WHERE p.nba_game_id = s.nba_game_id
+                          AND p.details_fetched_at IS NULL)
+         ORDER BY s.game_date, s.nba_game_id
+        """
+    ]
+    params: list[object] = [season]
+    if limit is not None:
+        sql.append("LIMIT %s")
+        params.append(limit)
+
+    cur = conn.cursor()
+    try:
+        cur.execute(" ".join(sql), tuple(params))
+        game_ids = [str(row[0]) for row in cur.fetchall()]
+        if not game_ids:
+            return []
+        cur.execute(
+            """
+            SELECT nba_game_id, nba_player_id
+              FROM player_game_logs
+             WHERE nba_game_id = ANY(%s)
+               AND details_fetched_at IS NULL
+            """,
+            (game_ids,),
+        )
+        pending: dict[str, list[str]] = {gid: [] for gid in game_ids}
+        for game_id, player_id in cur.fetchall():
+            pending[str(game_id)].append(str(player_id))
+        return [(gid, pending[gid]) for gid in game_ids]
+    finally:
+        cur.close()
+
+
+def _apply_box_details(
+    cur: object, game_id: str, logged_player_ids: Sequence[str]
+) -> dict[str, int]:
+    # raises on a fetch failure or an empty box score, so the caller can count
+    # the game as failed and leave it unstamped for the next run.
+    payload = fetch_box_score_traditional(game_id)
+    player_rows, team_rows = box_detail_rows_from_traditional(payload, game_id)
+    if not player_rows:
+        raise ValueError(f"{game_id}: box score has no player rows")
+
+    player_tuples = [
+        (
+            r["nba_player_id"], r["nba_game_id"], r["started"], r["position"],
+            r["oreb"], r["dreb"], r["pf"], r["dnp_reason"], BOX_DETAILS_SOURCE,
+        )
+        for r in player_rows
+    ]
+    team_tuples = [
+        (r["team_id"], r["nba_game_id"], r["oreb"], r["dreb"], r["pf"])
+        for r in team_rows
+    ]
+    status_tuples = [
+        (r["nba_player_id"], r["nba_game_id"], r["started"]) for r in player_rows
+    ]
+    absent = player_ids_absent_from_box(logged_player_ids, player_rows)
+
+    counts = {
+        "players": _batch_update(cur, BOX_DETAIL_PLAYER_UPDATE_SQL, player_tuples),
+        "teams": _batch_update(cur, BOX_DETAIL_TEAM_UPDATE_SQL, team_tuples),
+        "status": _batch_update(cur, BOX_DETAIL_STATUS_UPDATE_SQL, status_tuples),
+        "absent": len(absent),
+    }
+    if absent:
+        logger.warning(
+            "box details: %s lists no row for %d logged player(s); stats left as-is",
+            game_id, len(absent),
+        )
+        cur.execute(
+            BOX_DETAIL_ABSENT_STAMP_SQL,
+            (f"{BOX_DETAILS_SOURCE}:absent", game_id, absent),
+        )
+    return counts
+
+
+def backfill_box_details(
+    conn: psycopg2.extensions.connection,
+    season: str,
+    dry_run: bool = False,
+    limit: int | None = None,
+    delay_seconds: float = BACKFILL_REQUEST_DELAY_SECONDS,
+) -> int:
+    # one request per game, oldest first. resumable: a game is selected only
+    # while some player row still has details_fetched_at NULL, so a killed or
+    # bounded run picks up where the last one stopped.
+    games = _games_needing_box_details(conn, season, limit)
+    if not games:
+        logger.info("box details: nothing to do for %s", season)
+        return 0
+
+    logger.info("box details: %d game(s) to fetch for %s", len(games), season)
+    run_id = _start_ingestion_run(
+        conn,
+        "box_details_backfill",
+        watermark_from=games[0][0],
+        watermark_to=games[-1][0],
+        dry_run=dry_run,
+    )
+
+    totals = {"players": 0, "teams": 0, "status": 0, "absent": 0}
+    failed = 0
+    cur = maybe_write_cursor(conn.cursor(), dry_run)
+    try:
+        for index, (game_id, logged_ids) in enumerate(games):
+            try:
+                counts = _apply_box_details(cur, game_id, logged_ids)
+            except Exception as e:  # noqa: BLE001 - one game must not end the run
+                failed += 1
+                logger.warning("box details: %s failed (%s)", game_id, e)
+                time.sleep(delay_seconds * 2)
+                continue
+            for key, value in counts.items():
+                totals[key] += value
+
+            done = index + 1
+            if done % 25 == 0 or done == len(games):
+                logger.info(
+                    "box details: %d/%d games (%d failed, ~%.0f min left)",
+                    done, len(games), failed,
+                    (len(games) - done) * delay_seconds / 60,
+                )
+            if done < len(games):
+                time.sleep(delay_seconds)
+    finally:
+        cur.close()
+
+    written = totals["players"] + totals["teams"] + totals["status"]
+    notes = (
+        f"{len(games) - failed} game(s), {failed} failed; {totals['players']} player, "
+        f"{totals['teams']} team, {totals['status']} status row(s); "
+        f"{totals['absent']} logged player(s) absent from v3"
+    )
+    _finish_ingestion_run(
+        conn, run_id, "succeeded" if failed == 0 else "partial", written, notes=notes
+    )
+    logger.info(
+        "box details: %s%s", notes, " (dry run: nothing written)" if dry_run else ""
+    )
+    return written
 
 
 NBA_WEB_MAX_CONSECUTIVE_FAILURES = 3
@@ -494,6 +705,7 @@ def scrape_game_status(
     written = 0
     failed = 0
     suspect = 0
+    box_failed = 0
 
     cur = maybe_write_cursor(conn.cursor(), dry_run)
     try:
@@ -523,10 +735,24 @@ def scrape_game_status(
             )
             written += _upsert_game_status_rows(cur, rows, run_id)
 
+            # after the status upsert, so started lands on the rows just written.
+            # a failure leaves the game unstamped for --backfill-box-details.
+            time.sleep(delay_seconds)
+            try:
+                _apply_box_details(
+                    cur,
+                    game_id,
+                    [r["nba_player_id"] for r in played_by_game.get(game_id, [])],
+                )
+            except Exception as e:  # noqa: BLE001 - the status rows still stand
+                box_failed += 1
+                logger.warning("game status: %s box details failed (%s)", game_id, e)
+
             done = index + 1
             if done % 25 == 0 or done == len(games):
                 remaining = len(games) - done
-                eta_min = remaining * delay_seconds / 60
+                # two requests per game: the inactive list and the box score
+                eta_min = remaining * delay_seconds * 2 / 60
                 logger.info(
                     "game status: %d/%d games (%d rows, %d failed, %d suspect, ~%.0f min left)",
                     done, len(games), written, failed, suspect, eta_min,
@@ -542,6 +768,8 @@ def scrape_game_status(
         run_notes.append(f"{failed} game(s) failed")
     if suspect:
         run_notes.append(f"{suspect} game(s) tagged v2-suspect")
+    if box_failed:
+        run_notes.append(f"{box_failed} game(s) missing box details")
     _finish_ingestion_run(
         conn,
         run_id,

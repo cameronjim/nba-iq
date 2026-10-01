@@ -372,6 +372,15 @@ CREATE TABLE IF NOT EXISTS player_game_logs (
     source TEXT NOT NULL,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ingestion_run_id INTEGER REFERENCES ingestion_runs (id) ON DELETE SET NULL,
+    -- migration 018: from boxscoretraditionalv3, which also fills started and
+    -- dnp_reason above. position is the box-score string, starters only.
+    oreb SMALLINT,
+    dreb SMALLINT,
+    pf SMALLINT,
+    position TEXT,
+    details_source TEXT,
+    -- NULL marks a row the box-score pass has not reached yet
+    details_fetched_at TIMESTAMPTZ,
     UNIQUE (nba_player_id, nba_game_id)
 );
 
@@ -405,6 +414,10 @@ CREATE TABLE IF NOT EXISTS team_game_logs (
     source TEXT NOT NULL,
     fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ingestion_run_id INTEGER REFERENCES ingestion_runs (id) ON DELETE SET NULL,
+    -- migration 018: team totals from boxscoretraditionalv3
+    oreb SMALLINT,
+    dreb SMALLINT,
+    pf SMALLINT,
     UNIQUE (team_id, nba_game_id)
 );
 

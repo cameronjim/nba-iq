@@ -17,7 +17,7 @@ from config import (
     STATS_PROBE_TIMEOUT_SECONDS,
     V2_INACTIVE_UNRELIABLE_FROM,
 )
-from database import is_write_statement
+from database import DryRunCursor, is_write_statement
 from parsing import (
     box_score_violations,
     cleared_player_ids,
@@ -33,15 +33,19 @@ from parsing import (
     v2_inactive_is_unreliable,
 )
 from rows import (
+    BOX_DETAILS_SOURCE,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
+    box_detail_rows_from_traditional,
     build_player_game_log_row,
     build_team_game_log_row,
     derive_game_status_rows,
     game_log_fetch_from,
+    merge_dnp_reason,
     normalize_inactive_rows,
     plan_roster_snapshot,
     plan_stint_change,
+    player_ids_absent_from_box,
     player_rows_from_nba_players_index,
     roster_rows_from_nba_players_index,
     schedule_rows_from_league_schedule,
@@ -1392,3 +1396,166 @@ class TestScrapeInjuries:
 
         executed = [sql for sql, _ in conn.cursor_.statements]
         assert executed and all(not is_write_statement(sql) for sql in executed)
+
+
+def _box_player(person_id, position="", comment="", minutes="", oreb=0, dreb=0, pf=0):
+    # shaped like a real boxscoretraditionalv3 PlayerStats record (0022500001):
+    # starters carry a position, a DNP reports "" minutes and zeros everywhere.
+    return {
+        "gameId": "0022500001", "teamId": 1610612745, "teamTricode": "HOU",
+        "personId": person_id, "firstName": "A", "familyName": "Player",
+        "position": position, "comment": comment, "jerseyNum": "1",
+        "minutes": minutes, "fieldGoalsMade": 0, "fieldGoalsAttempted": 0,
+        "reboundsOffensive": oreb, "reboundsDefensive": dreb,
+        "reboundsTotal": oreb + dreb, "assists": 0, "steals": 0, "blocks": 0,
+        "turnovers": 0, "foulsPersonal": pf, "points": 0, "plusMinusPoints": 0,
+    }
+
+
+BOX_SCORE_V3 = {
+    "player_stats": [
+        _box_player(1631095, position="F", minutes="41:45", oreb=3, dreb=2, pf=4),
+        _box_player(201142, position="G", minutes="47:03", oreb=0, dreb=9, pf=6),
+        _box_player(1631106, minutes="21:36", oreb=0, dreb=6, pf=1),
+        _box_player(1631120, comment="  DNP - Coach's Decision "),
+    ],
+    "team_stats": [
+        {"gameId": "0022500001", "teamId": 1610612760, "minutes": "290:00",
+         "reboundsOffensive": 11, "reboundsDefensive": 27, "foulsPersonal": 27},
+        {"gameId": "0022500001", "teamId": 1610612745, "minutes": "290:00",
+         "reboundsOffensive": 16, "reboundsDefensive": 36, "foulsPersonal": 26},
+    ],
+}
+
+
+class TestBoxDetailRows:
+    def _players(self):
+        players, _ = box_detail_rows_from_traditional(BOX_SCORE_V3, "0022500001")
+        return {row["nba_player_id"]: row for row in players}
+
+    def test_starters_are_the_players_with_a_position(self):
+        players = self._players()
+
+        assert players["1631095"]["started"] is True
+        assert players["1631095"]["position"] == "F"
+        assert players["201142"]["position"] == "G"
+        assert players["1631106"]["started"] is False
+        assert players["1631106"]["position"] is None
+
+    def test_starter_maps_the_rebound_split_fouls_and_minutes(self):
+        starter = self._players()["1631095"]
+
+        assert starter["nba_game_id"] == "0022500001"
+        assert starter["team_id"] == "1610612745"
+        assert (starter["oreb"], starter["dreb"], starter["pf"]) == (3, 2, 4)
+        assert starter["minutes"] == pytest.approx(41.75)
+        assert starter["dnp_reason"] is None
+
+    def test_bench_player_who_played_keeps_his_line(self):
+        bench = self._players()["1631106"]
+
+        assert bench["minutes"] == pytest.approx(21.6)
+        assert (bench["oreb"], bench["dreb"], bench["pf"]) == (0, 6, 1)
+
+    def test_dnp_has_no_minutes_no_stats_and_a_trimmed_verbatim_reason(self):
+        dnp = self._players()["1631120"]
+
+        assert dnp["minutes"] is None
+        assert (dnp["oreb"], dnp["dreb"], dnp["pf"]) == (None, None, None)
+        assert dnp["started"] is False
+        assert dnp["dnp_reason"] == "DNP - Coach's Decision"
+
+    @pytest.mark.parametrize(
+        "comment", ["DND - Injury/Illness", "NWT - Personal", "DNP - Coach's Decision"]
+    )
+    def test_reason_prefixes_are_kept_verbatim(self, comment):
+        payload = {"player_stats": [_box_player(1, comment=comment)]}
+
+        players, _ = box_detail_rows_from_traditional(payload, "0022500001")
+
+        assert players[0]["dnp_reason"] == comment
+
+    def test_team_totals_carry_the_rebound_split_and_fouls(self):
+        _, teams = box_detail_rows_from_traditional(BOX_SCORE_V3, "0022500001")
+
+        by_team = {row["team_id"]: row for row in teams}
+        assert by_team["1610612745"] == {
+            "team_id": "1610612745", "nba_game_id": "0022500001",
+            "oreb": 16, "dreb": 36, "pf": 26,
+        }
+        assert by_team["1610612760"]["oreb"] == 11
+
+    def test_a_row_without_a_person_id_is_dropped(self):
+        payload = {"player_stats": [_box_player(None, minutes="10:00")]}
+
+        players, teams = box_detail_rows_from_traditional(payload, "0022500001")
+
+        assert players == []
+        assert teams == []
+
+
+class TestMergeDnpReason:
+    def test_an_existing_reason_wins(self):
+        assert merge_dnp_reason("Inactive - Injury", "DNP - Coach's Decision") == (
+            "Inactive - Injury"
+        )
+
+    def test_a_null_existing_reason_is_filled(self):
+        assert merge_dnp_reason(None, "DNP - Coach's Decision") == "DNP - Coach's Decision"
+
+    def test_null_never_overwrites_a_reason(self):
+        assert merge_dnp_reason("DND - Injury/Illness", None) == "DND - Injury/Illness"
+
+
+class TestPlayersAbsentFromBox:
+    def test_logged_players_missing_from_v3_are_reported(self):
+        players, _ = box_detail_rows_from_traditional(BOX_SCORE_V3, "0022500001")
+
+        absent = player_ids_absent_from_box(["1631095", "999", "999"], players)
+
+        assert absent == ["999"]
+
+
+class TestApplyBoxDetails:
+    def test_dry_run_sends_every_update_and_writes_nothing(self, monkeypatch):
+        monkeypatch.setattr(
+            truth_layer, "fetch_box_score_traditional", lambda game_id: BOX_SCORE_V3
+        )
+        inner = FakeCursor()
+        cur = DryRunCursor(inner)
+
+        counts = truth_layer._apply_box_details(cur, "0022500001", ["1631095", "999"])
+
+        assert counts == {"players": 4, "teams": 2, "status": 4, "absent": 1}
+        assert inner.statements == []
+        assert cur.skipped_statements == 4
+
+    def test_an_empty_box_score_raises_so_the_game_stays_unstamped(self, monkeypatch):
+        monkeypatch.setattr(
+            truth_layer,
+            "fetch_box_score_traditional",
+            lambda game_id: {"player_stats": [], "team_stats": []},
+        )
+
+        with pytest.raises(ValueError):
+            truth_layer._apply_box_details(DryRunCursor(FakeCursor()), "0022500001", ["1"])
+
+    def test_the_player_update_keeps_an_existing_dnp_reason(self):
+        sql = " ".join(truth_layer.BOX_DETAIL_PLAYER_UPDATE_SQL.split())
+
+        assert "dnp_reason = COALESCE(p.dnp_reason, v.dnp_reason::text)" in sql
+        assert BOX_DETAILS_SOURCE == "boxscoretraditionalv3"
+
+
+class TestBoxDetailsCli:
+    def test_backfill_box_details_parses_with_season_and_limit(self):
+        args = _parse_args(
+            ["--backfill-box-details", "--season", "2024-25", "--limit", "300"]
+        )
+
+        assert args.backfill_box_details is True
+        assert args.season == "2024-25"
+        assert args.limit == 300
+
+    def test_limit_defaults_to_unbounded(self):
+        assert _parse_args(["--backfill-box-details"]).limit is None
