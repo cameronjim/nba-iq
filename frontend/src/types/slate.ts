@@ -84,10 +84,20 @@ export interface SlateGame {
   players: SlatePlayer[];
 }
 
+export interface SlateRun extends PredictionRun {
+  // the injury-report instant the run could see, falling back to its forecast cutoff.
+  information_as_of: string | null;
+  // first and last game dates the run projected; each daily run looks a week ahead.
+  covers_from: string | null;
+  covers_to: string | null;
+}
+
 export interface SlateResponse {
   date: string;
   sort: SlateSort;
-  run: PredictionRun | null;
+  run: SlateRun | null;
+  // false when the date falls outside the run's projected days, or there is no run.
+  covered: boolean;
   pool: SlatePool;
   baseline: BaselineDescriptor;
   games: SlateGame[];

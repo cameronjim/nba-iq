@@ -4,7 +4,7 @@ import {
   num,
   round,
   type ProjectedStat,
-  type SlateRun,
+  type RunSummary,
 } from './slate.js';
 import { deltaOf, fetchBaselines, hasUsableBaseline, type PlayerBaseline } from './baselines.js';
 import {
@@ -27,7 +27,7 @@ export interface WindowProjection {
 }
 
 export interface WindowProjectionSet {
-  run: SlateRun | null;
+  run: RunSummary | null;
   window: WatchlistWindow;
   players: Map<string, WindowProjection>;
   scheduled_games: Map<string, number>;

@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { SlatePage } from '../../src/pages/SlatePage';
-import type { SlatePlayer, SlateResponse } from '../../src/types';
+import type { SlatePlayer, SlateResponse, SlateRun } from '../../src/types';
+
+const RUN: SlateRun = {
+  model_version: 'v1-decomposed',
+  predicted_at: '2026-02-04T11:00:00Z',
+  information_as_of: '2026-02-04T10:45:00Z',
+  covers_from: '2026-02-04',
+  covers_to: '2026-02-10',
+};
 
 vi.mock('../../src/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/api/client')>();
@@ -47,7 +55,8 @@ function payload(overrides: Partial<SlateResponse> = {}): SlateResponse {
   return {
     date: '2026-02-04',
     sort: 'impact',
-    run: { model_version: 'v1-decomposed', predicted_at: '2026-02-04T11:00:00Z' },
+    run: RUN,
+    covered: true,
     pool: {
       key: 'slate',
       label: "Tonight's slate",
@@ -203,10 +212,68 @@ describe('SlatePage', () => {
     expect(screen.queryByTestId('slate-preseason-note')).not.toBeInTheDocument();
   });
 
-  it('names the model run behind the projections', async () => {
+  it('dates the run by when it was published and its injury cutoff, never by artifact id', async () => {
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    const subtitle = screen.getByTestId('slate-subtitle');
+    expect(subtitle).toHaveTextContent(/published Feb \d{1,2}, \d{1,2}:\d{2}\s[AP]M \S+/);
+    expect(subtitle).toHaveTextContent(/injuries as of \d{1,2}:\d{2}\s[AP]M \S+/);
+    expect(screen.queryByText(/v1-decomposed/)).not.toBeInTheDocument();
+  });
+
+  it('drops the injuries clause when the run recorded no information cutoff', async () => {
+    slateMock.mockResolvedValue(
+      payload({ run: { ...RUN, information_as_of: null } })
+    );
+
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    expect(screen.getByTestId('slate-subtitle')).not.toHaveTextContent(/injuries as of/);
+  });
+
+  it('titles the page as today only while the picker is on today', async () => {
+    renderPage();
+    await screen.findByText('Stephen Curry');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent("Today's Projections");
+
+    fireEvent.change(screen.getByLabelText('Game date'), { target: { value: '2099-10-20' } });
+
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Projections$/);
+  });
+
+  it('says when the date is past the latest run and shows the games as schedule only', async () => {
+    slateMock.mockResolvedValue(
+      payload({
+        date: '2026-10-20',
+        covered: false,
+        run: {
+          ...RUN,
+          covers_from: '2026-10-01',
+          covers_to: '2026-10-07',
+        },
+        games: [{ ...payload().games[0], players: [] }],
+      })
+    );
+
     renderPage();
 
-    expect(await screen.findByText(/model v1-decomposed/)).toBeInTheDocument();
+    expect(await screen.findByTestId('slate-coverage-notice')).toHaveTextContent(
+      "No projections for Tue, Oct 20 yet. The latest run covers Oct 1 to Oct 7; each day's run looks seven days ahead and publishes around 9 AM PT."
+    );
+    expect(screen.getByRole('heading', { name: /GSW.*@.*LAL/ })).toBeInTheDocument();
+    expect(screen.getByText('projections not published yet')).toBeInTheDocument();
+    expect(screen.queryByText(/No projected players for this game yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No prediction run yet/i)).not.toBeInTheDocument();
+  });
+
+  it('shows no coverage notice when the run covers the date', async () => {
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    expect(screen.queryByTestId('slate-coverage-notice')).not.toBeInTheDocument();
+    expect(screen.queryByText('projections not published yet')).not.toBeInTheDocument();
   });
 
   it('shows the per-category projections so the line is more than points', async () => {
@@ -317,6 +384,7 @@ describe('SlatePage', () => {
     slateMock.mockResolvedValue(
       payload({
         run: null,
+        covered: false,
         games: [{ ...payload().games[0], players: [] }],
       })
     );

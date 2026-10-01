@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { mockApi } from './fixtures/apiMock';
-import { slateFixture } from './fixtures/slate';
+import { slateFixture, uncoveredSlateFixture } from './fixtures/slate';
 import { ProjectionsPage } from './pages';
 
 const RISER_ID = '1631096';
@@ -62,5 +62,29 @@ test.describe('Projections sort and reasons', () => {
     await expect(projections.vsUsual(RISER_ID)).toContainText(
       'Usage freed: Hurt Starter usually plays 33.4 minutes, 5% to play'
     );
+  });
+
+  test('the header dates the run by publish time, never by artifact id', async ({ page }) => {
+    await mockApi(page);
+    const projections = new ProjectionsPage(page);
+    await projections.goto();
+
+    await expect(projections.subtitle).toContainText('published Feb 4');
+    await expect(projections.subtitle).toContainText('injuries as of');
+    await expect(projections.subtitle).not.toContainText('v1-decomposed');
+    await expect(projections.coverageNotice).toHaveCount(0);
+  });
+
+  test('a date past the latest run says so and shows the games as schedule only', async ({ page }) => {
+    await mockApi(page, { slate: uncoveredSlateFixture });
+    const projections = new ProjectionsPage(page);
+    await projections.goto();
+
+    await expect(projections.coverageNotice).toContainText(
+      'No projections for Tue, Oct 20 yet. The latest run covers Oct 1 to Oct 7'
+    );
+    await expect(projections.coverageNotice).toContainText('publishes around 9 AM PT');
+    await expect(projections.scheduleOnly(/LAL.*@.*OKC/)).toHaveText('projections not published yet');
+    await expect(projections.scheduleOnly(/PHX.*@.*GSW/)).toHaveText('projections not published yet');
   });
 });

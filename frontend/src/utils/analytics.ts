@@ -80,6 +80,52 @@ export function formatTimestamp(iso: string | null): string | null {
   });
 }
 
+function parseInstant(iso: string | null): Date | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+// a bare clock time is ambiguous across viewers, so these always carry the zone.
+export function formatTimestampWithZone(iso: string | null, timeZone?: string): string | null {
+  const date = parseInstant(iso);
+  if (!date) return null;
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+    timeZone,
+  });
+}
+
+export function formatTimeWithZone(iso: string | null, timeZone?: string): string | null {
+  const date = parseInstant(iso);
+  if (!date) return null;
+  return date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+    timeZone,
+  });
+}
+
+// drops the date from `iso` when it falls on the same local day as `reference`.
+export function formatTimestampBeside(
+  iso: string | null,
+  reference: string | null,
+  timeZone?: string
+): string | null {
+  const date = parseInstant(iso);
+  const ref = parseInstant(reference);
+  if (!date) return null;
+  const day = (d: Date): string => d.toLocaleDateString('en-CA', { timeZone });
+  return ref && day(ref) === day(date)
+    ? formatTimeWithZone(iso, timeZone)
+    : formatTimestampWithZone(iso, timeZone);
+}
+
 export function bucketLabel(lo: NumericLike, hi: NumericLike): string {
   const loNum = chartNumber(lo);
   const hiNum = chartNumber(hi);

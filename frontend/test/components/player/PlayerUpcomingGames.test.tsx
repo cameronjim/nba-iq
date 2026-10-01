@@ -198,9 +198,10 @@ describe('PlayerUpcomingGames', () => {
   it('shows the run provenance under the table', () => {
     render(<PlayerUpcomingGames data={payload()} />);
 
-    const footer = screen.getByText(/model bt20260115/i);
-    expect(footer).toHaveTextContent(/projected /i);
+    const footer = screen.getByText(/^published /i);
+    expect(footer).toHaveTextContent(/published \w{3} \d{1,2}, \d{1,2}:\d{2}\s[AP]M \S+/);
     expect(footer).toHaveTextContent(/data through /i);
+    expect(screen.queryByText(/bt20260115/)).not.toBeInTheDocument();
   });
 
   it('says no run has been published when there is none', () => {

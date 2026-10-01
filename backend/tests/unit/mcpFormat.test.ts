@@ -77,7 +77,14 @@ function slateResponse(overrides: Partial<SlateResponse> = {}): SlateResponse {
   return {
     date: '2026-08-26',
     sort: 'impact',
-    run: { model_version: 'v3.2.1', predicted_at: '2026-08-26T11:02:00Z' },
+    run: {
+      model_version: 'v3.2.1',
+      predicted_at: '2026-08-26T11:02:00Z',
+      information_as_of: '2026-08-26T11:00:00Z',
+      covers_from: '2026-08-26',
+      covers_to: '2026-09-01',
+    },
+    covered: true,
     pool: { key: 'slate', label: "Tonight's slate", definition: 'every player projected', sample_size: 212 },
     baseline: {
       window_games: 15,

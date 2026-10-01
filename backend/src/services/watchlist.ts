@@ -20,7 +20,7 @@ import {
   type ImpactInput,
   type ProjectedStat,
   type SlatePool,
-  type SlateRun,
+  type RunSummary,
 } from './slate.js';
 import {
   MIN_BASELINE_GAMES,
@@ -267,7 +267,7 @@ export interface PositionCoverage {
 export interface WatchlistResponse {
   date: string;
   window: WatchlistWindow;
-  run: SlateRun | null;
+  run: RunSummary | null;
   pool: SlatePool;
   baseline: BaselineDescriptor;
   position: PositionFilter | null;
@@ -719,7 +719,7 @@ export function buildCandidates(
 }
 
 export interface WatchlistOptions {
-  run?: (SlateRun & { id: number }) | null;
+  run?: (RunSummary & { id: number }) | null;
   limit?: number;
   days?: number;
   position?: PositionFilter | null;

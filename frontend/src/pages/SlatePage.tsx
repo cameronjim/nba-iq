@@ -1,14 +1,22 @@
 import { Link } from 'react-router-dom';
 import { CalendarDays } from 'lucide-react';
 import { useSlate } from '../hooks/useSlate';
-import { formatTimestamp } from '../utils/analytics';
-import { formatSlateDate } from '../utils/dates';
+import { formatTimestampBeside, formatTimestampWithZone } from '../utils/analytics';
+import { formatRange, formatSlateDate } from '../utils/dates';
 import { SlateGameCard } from '../components/slate/SlateGameCard';
 import { SlateLegend } from '../components/slate/SlateLegend';
 import { SlateSortPicker } from '../components/slate/SlateSortPicker';
-import type { SlateSort } from '../types';
+import type { SlateRun, SlateSort } from '../types';
 
 const NO_RUN_NOTICE = 'No prediction run yet. Check back after the next model run.';
+
+function coverageNotice(date: string, run: SlateRun): string {
+  const covers =
+    run.covers_from && run.covers_to
+      ? `The latest run covers ${formatRange(run.covers_from, run.covers_to)}`
+      : 'The latest run projected no games';
+  return `No projections for ${formatSlateDate(date)} yet. ${covers}; each day's run looks seven days ahead and publishes around 9 AM PT.`;
+}
 
 const PRESEASON_NOTE =
   "Preseason minutes are not modelled: the model is trained on regular-season games, so starters' minutes and totals here run high.";
@@ -21,10 +29,16 @@ const ORDER_NOTE: Record<SlateSort, string> = {
 };
 
 export const SlatePage = (): JSX.Element => {
-  const { date, setDate, sort, setSort, data, loading, error, reload } = useSlate();
+  const { date, isToday, setDate, sort, setSort, data, loading, error, reload } = useSlate();
 
-  const predictedAt = formatTimestamp(data?.run?.predicted_at ?? null);
+  const run = data?.run ?? null;
+  const publishedAt = formatTimestampWithZone(run?.predicted_at ?? null);
+  const injuriesAsOf = formatTimestampBeside(
+    run?.information_as_of ?? null,
+    run?.predicted_at ?? null
+  );
   const hasPreseason = data?.games.some((game) => game.preseason) ?? false;
+  const scheduleOnly = run !== null && data?.covered === false;
 
   return (
     <div className="max-w-[900px] mx-auto px-4 py-6 pb-20">
@@ -32,17 +46,12 @@ export const SlatePage = (): JSX.Element => {
         <div>
           <h1 className="font-bold text-xl sm:text-2xl leading-tight flex items-center gap-2">
             <CalendarDays size={20} className="opacity-60" />
-            Today&apos;s Projections
+            {isToday ? <>Today&apos;s Projections</> : 'Projections'}
           </h1>
-          <p className="text-sm opacity-60 mt-0.5">
+          <p className="text-sm opacity-60 mt-0.5" data-testid="slate-subtitle">
             {formatSlateDate(data?.date ?? date)}
-            {data?.run && (
-              <>
-                <span className="opacity-40"> · </span>
-                model {data.run.model_version}
-                {predictedAt && ` · run ${predictedAt}`}
-              </>
-            )}
+            {publishedAt && ` · published ${publishedAt}`}
+            {injuriesAsOf && ` · injuries as of ${injuriesAsOf}`}
           </p>
         </div>
 
@@ -82,6 +91,12 @@ export const SlatePage = (): JSX.Element => {
             </div>
           )}
 
+          {data.run && scheduleOnly && data.games.length > 0 && (
+            <div className="alert alert-info py-2.5 px-3" data-testid="slate-coverage-notice">
+              <span className="text-sm">{coverageNotice(data.date, data.run)}</span>
+            </div>
+          )}
+
           {data.games.length === 0 ? (
             <div className="card bg-base-200 border border-base-300">
               <div className="card-body items-center text-center py-12 gap-1">
@@ -98,10 +113,14 @@ export const SlatePage = (): JSX.Element => {
             </div>
           ) : (
             <>
-              {data.run && <SlateLegend />}
+              {data.run && !scheduleOnly && <SlateLegend />}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {data.games.map((game) => (
-                  <SlateGameCard key={game.nba_game_id} game={game} />
+                  <SlateGameCard
+                    key={game.nba_game_id}
+                    game={game}
+                    scheduleOnly={scheduleOnly}
+                  />
                 ))}
               </div>
             </>

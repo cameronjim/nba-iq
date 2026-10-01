@@ -116,9 +116,17 @@ export const IMPACT_POOL_DEFINITION =
 
 export const PLACEHOLDER_NAME_SUFFIX = '(new roster)';
 
-export interface SlateRun {
+export interface RunSummary {
   model_version: string;
   predicted_at: string | null;
+}
+
+export interface SlateRun extends RunSummary {
+  // the injury-report instant the run could see, falling back to its forecast cutoff.
+  information_as_of: string | null;
+  // first and last game dates the run projected; each daily run looks a week ahead.
+  covers_from: string | null;
+  covers_to: string | null;
 }
 
 export interface SlatePool {
@@ -192,6 +200,8 @@ export interface SlateResponse {
   date: string;
   sort: SlateSort;
   run: SlateRun | null;
+  // false when the date falls outside the run's projected days, or there is no run.
+  covered: boolean;
   pool: SlatePool;
   baseline: BaselineDescriptor;
   games: SlateGame[];
@@ -272,7 +282,7 @@ function toIsoTimestamp(value: unknown): string | null {
   return String(value);
 }
 
-export async function getLatestCompleteRun(): Promise<(SlateRun & { id: number }) | null> {
+export async function getLatestCompleteRun(): Promise<(RunSummary & { id: number }) | null> {
   const rows = await rowsOrEmpty<RunRow>(() =>
     query(
       `SELECT id, model_version, predicted_at
@@ -293,6 +303,60 @@ export async function getLatestCompleteRun(): Promise<(SlateRun & { id: number }
     model_version: String(row.model_version ?? ''),
     predicted_at: toIsoTimestamp(row.predicted_at),
   };
+}
+
+interface SlateRunRow extends RunRow {
+  information_as_of: unknown;
+  covers_from: unknown;
+  covers_to: unknown;
+}
+
+// the coverage scan runs once, on the single latest run, not on every candidate run.
+export async function getLatestSlateRun(): Promise<(SlateRun & { id: number }) | null> {
+  const rows = await rowsOrEmpty<SlateRunRow>(() =>
+    query(
+      `WITH latest AS (
+         SELECT id, model_version, predicted_at,
+                COALESCE(information_as_of, forecast_cutoff_at) AS information_as_of
+         FROM prediction_runs
+         WHERE status = $1
+           AND channel = $2
+         ORDER BY predicted_at DESC, id DESC
+         LIMIT 1
+       )
+       SELECT latest.id,
+              latest.model_version,
+              latest.predicted_at,
+              latest.information_as_of,
+              coverage.covers_from,
+              coverage.covers_to
+       FROM latest
+       LEFT JOIN LATERAL (
+         SELECT MIN(pgp.game_date) AS covers_from,
+                MAX(pgp.game_date) AS covers_to
+         FROM player_game_predictions pgp
+         WHERE pgp.prediction_run_id = latest.id
+       ) coverage ON TRUE`,
+      [COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]
+    )
+  );
+
+  const row = rows[0];
+  if (!row) return null;
+
+  return {
+    id: Number(row.id),
+    model_version: String(row.model_version ?? ''),
+    predicted_at: toIsoTimestamp(row.predicted_at),
+    information_as_of: toIsoTimestamp(row.information_as_of),
+    covers_from: toIsoDay(row.covers_from),
+    covers_to: toIsoDay(row.covers_to),
+  };
+}
+
+export function isDateCovered(date: string, run: SlateRun | null): boolean {
+  if (!run || !run.covers_from || !run.covers_to) return false;
+  return date >= run.covers_from && date <= run.covers_to;
 }
 
 interface ScheduleRow {
@@ -701,12 +765,21 @@ export async function getSlate(
   sort: SlateSort = DEFAULT_SLATE_SORT
 ): Promise<SlateResponse> {
   const schedule = await fetchSchedule(date);
-  const run = await getLatestCompleteRun();
-  const runSummary = run ? { model_version: run.model_version, predicted_at: run.predicted_at } : null;
+  const run = await getLatestSlateRun();
+  const runSummary: SlateRun | null = run
+    ? {
+        model_version: run.model_version,
+        predicted_at: run.predicted_at,
+        information_as_of: run.information_as_of,
+        covers_from: run.covers_from,
+        covers_to: run.covers_to,
+      }
+    : null;
+  const covered = isDateCovered(date, runSummary);
   const baseline = baselineDescriptor();
 
   if (schedule.length === 0) {
-    return { date, sort, run: runSummary, pool: poolDescriptor(0), baseline, games: [] };
+    return { date, sort, run: runSummary, covered, pool: poolDescriptor(0), baseline, games: [] };
   }
 
   const teamAbbrs = await fetchTeamAbbrs();
@@ -850,6 +923,7 @@ export async function getSlate(
     date,
     sort,
     run: runSummary,
+    covered,
     pool: poolDescriptor(players.length),
     baseline,
     games: sortSlateGames(games, sort),

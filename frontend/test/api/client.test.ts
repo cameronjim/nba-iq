@@ -7,7 +7,7 @@ import {
   slateParams,
   watchlistParams,
 } from '../../src/api/client';
-import type { SlateGame, SlatePlayer, WatchlistPlayer, WatchlistResponse } from '../../src/types';
+import type { SlateGame, SlatePlayer, SlateRun, WatchlistPlayer, WatchlistResponse } from '../../src/types';
 
 describe('watchlistParams', () => {
   it('omits the default window and every position from the URL', () => {
@@ -104,6 +104,22 @@ describe('normalizeSlate', () => {
       vs_usual: null,
       reasons: [],
       evidence: {},
+    });
+  });
+
+  it('treats a server that predates coverage as covered, with null run provenance', () => {
+    const res = normalizeSlate(
+      { date: '2026-02-04', run: { model_version: 'v1', predicted_at: null } as SlateRun },
+      'impact'
+    );
+
+    expect(res.covered).toBe(true);
+    expect(res.run).toEqual({
+      model_version: 'v1',
+      predicted_at: null,
+      information_as_of: null,
+      covers_from: null,
+      covers_to: null,
     });
   });
 });

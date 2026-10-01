@@ -6,6 +6,8 @@ import type { SlateResponse, SlateSort } from '../types';
 
 export interface UseSlate {
   date: string;
+  // the date is today on the eastern calendar, which is what the picker opens on.
+  isToday: boolean;
   setDate: (date: string) => void;
   sort: SlateSort;
   setSort: (sort: SlateSort) => void;
@@ -28,5 +30,7 @@ export function useSlate(): UseSlate {
   // a cleared date input falls back to today rather than requesting an empty date.
   const setDate = (next: string): void => setDateState(next || todayInEastern());
 
-  return { date, setDate, sort, setSort, data, loading, error, reload };
+  const isToday = date === todayInEastern();
+
+  return { date, isToday, setDate, sort, setSort, data, loading, error, reload };
 }

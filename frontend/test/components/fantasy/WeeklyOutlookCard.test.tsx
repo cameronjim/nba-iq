@@ -116,7 +116,10 @@ describe('WeeklyOutlookCard', () => {
 
     expect(screen.getByText('Ann Guard: 24% miss risk')).toBeInTheDocument();
     expect(screen.getByText('Bo Center: no games')).toBeInTheDocument();
-    expect(screen.getByText(/model v-test/i)).toBeInTheDocument();
+    expect(screen.getByTestId('weekly-outlook-provenance')).toHaveTextContent(
+      /^Published \w{3} \d{1,2}, \d{1,2}:\d{2}\s[AP]M \S+ · illustrative outlook: category win odds are against a fixed typical opponent$/
+    );
+    expect(screen.queryByText(/v-test/)).not.toBeInTheDocument();
     expect(screen.getByText(/default spreads used/i)).toHaveTextContent('Ann Guard (blk)');
     expect(screen.getByText('2026-01-15 to 2026-01-21')).toBeInTheDocument();
   });
