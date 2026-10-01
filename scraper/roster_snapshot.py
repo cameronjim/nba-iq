@@ -9,6 +9,7 @@ import psycopg2
 from config import (
     ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS,
     ROSTER_SNAPSHOT_SOURCE,
+    ROSTER_WEB_SOURCE,
     SEASON,
     TEAM_ID_TO_ABBR,
 )
@@ -17,11 +18,15 @@ from database import (
     _start_ingestion_run,
     maybe_write_cursor,
 )
-from fetching import _fetch_team_roster
+from fetching import _fetch_nba_web_players, _fetch_team_roster
 from parsing import season_label, season_start_year
-from rows import plan_roster_snapshot
+from rows import plan_roster_snapshot, roster_rows_from_nba_players_index
 
 logger = logging.getLogger(__name__)
+
+ROSTER_MAX_CONSECUTIVE_FAILURES = 2
+ROSTER_FETCH_ATTEMPTS = 1
+ROSTER_FETCH_TIMEOUT_SECONDS = 30
 
 
 def fetch_roster_snapshot(
@@ -32,17 +37,26 @@ def fetch_roster_snapshot(
     # cannot cost correctness.
     snapshot: dict[str, str] = {}
     failed: list[str] = []
+    consecutive_failures = 0
     team_ids = sorted(TEAM_ID_TO_ABBR)
     for index, team_id in enumerate(team_ids):
         try:
-            rows = _fetch_team_roster(team_id, season)
+            rows = _fetch_team_roster(
+                team_id, season, ROSTER_FETCH_ATTEMPTS, ROSTER_FETCH_TIMEOUT_SECONDS
+            )
         except Exception as e:  # noqa: BLE001 - one team must not end the phase
             failed.append(TEAM_ID_TO_ABBR[team_id])
+            consecutive_failures += 1
             logger.warning(
                 "roster snapshot: %s roster failed (%s)", TEAM_ID_TO_ABBR[team_id], e
             )
+            if consecutive_failures >= ROSTER_MAX_CONSECUTIVE_FAILURES:
+                failed.extend(TEAM_ID_TO_ABBR[t] for t in team_ids[index + 1:])
+                logger.warning("roster snapshot: stats.nba.com unreachable, giving up")
+                break
             time.sleep(delay_seconds * 2)
             continue
+        consecutive_failures = 0
 
         for raw in rows:
             player_id = str(raw.get("PLAYER_ID") or "").strip()
@@ -64,6 +78,10 @@ def fetch_roster_snapshot(
         if done < len(team_ids):
             time.sleep(delay_seconds)
     return snapshot, failed
+
+
+def fetch_web_roster_snapshot() -> dict[str, str]:
+    return roster_rows_from_nba_players_index(_fetch_nba_web_players())
 
 
 def _open_stints(conn: psycopg2.extensions.connection) -> dict[str, tuple[str, date]]:
@@ -104,7 +122,11 @@ def _last_logged_team(
 
 
 def write_roster_snapshot_csv(
-    path: str, snapshot: Mapping[str, str], snapshot_date: date, season: str
+    path: str,
+    snapshot: Mapping[str, str],
+    snapshot_date: date,
+    season: str,
+    source: str = ROSTER_SNAPSHOT_SOURCE,
 ) -> int:
     # a file, not a database write, so it happens under --dry-run too: the point
     # of a dry run is to see what the snapshot says before committing it.
@@ -114,7 +136,7 @@ def write_roster_snapshot_csv(
         for player_id in sorted(snapshot):
             writer.writerow([
                 player_id, snapshot[player_id], snapshot_date.isoformat(),
-                ROSTER_SNAPSHOT_SOURCE, season,
+                source, season,
             ])
     return len(snapshot)
 
@@ -135,7 +157,7 @@ def scrape_roster_snapshot(
     reference_season = reference_season or season_label(season_start_year(season) - 1)
 
     logger.info(
-        "truth layer: roster snapshot for %s as of %s (30 teams)",
+        "truth layer: roster snapshot for %s as of %s",
         season, snapshot_date.isoformat(),
     )
     run_id = _start_ingestion_run(
@@ -147,16 +169,31 @@ def scrape_roster_snapshot(
     )
 
     snapshot, failed = fetch_roster_snapshot(season, delay_seconds)
+    source = ROSTER_SNAPSHOT_SOURCE
+    if failed and season == SEASON:
+        # the index only describes the current season. it covers all 30 teams in
+        # one page, so it replaces an incomplete CommonTeamRoster pass.
+        try:
+            web_snapshot = fetch_web_roster_snapshot()
+        except Exception as e:  # noqa: BLE001 - keep whatever the stats path got
+            logger.warning("roster snapshot: nba.com players index failed (%s)", e)
+            web_snapshot = {}
+        if web_snapshot:
+            logger.info(
+                "roster snapshot: %d players from the nba.com players index",
+                len(web_snapshot),
+            )
+            snapshot, failed, source = web_snapshot, [], ROSTER_WEB_SOURCE
     if not snapshot:
-        logger.error("roster snapshot: every team failed; nothing to do")
+        logger.error("roster snapshot: every source failed; nothing to do")
         _finish_ingestion_run(
-            conn, run_id, "failed", 0, notes="all 30 team rosters failed"
+            conn, run_id, "failed", 0, notes="all roster sources failed"
         )
         return 0
 
     if snapshot_out:
         written_csv = write_roster_snapshot_csv(
-            snapshot_out, snapshot, snapshot_date, season
+            snapshot_out, snapshot, snapshot_date, season, source
         )
         logger.info("roster snapshot: %d row(s) -> %s", written_csv, snapshot_out)
 
@@ -199,7 +236,7 @@ def scrape_roster_snapshot(
                     change["player_id"],
                     change["open_team_id"],
                     change["open_valid_from"],
-                    ROSTER_SNAPSHOT_SOURCE,
+                    source,
                 ),
             )
     finally:
@@ -213,8 +250,8 @@ def scrape_roster_snapshot(
     )
 
     logger.info(
-        "roster snapshot: %d players across %d team(s)%s",
-        len(snapshot), 30 - len(failed),
+        "roster snapshot: %d players across %d team(s) from %s%s",
+        len(snapshot), len(set(snapshot.values())), source,
         f" ({len(failed)} failed: {', '.join(failed)})" if failed else "",
     )
     logger.info(

@@ -17,9 +17,9 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    # the full scrape finishes in a few minutes; the injuries-only lane in
+    # the full scrape takes about 15 minutes; the injuries-only lane takes
     # seconds. either way a hang must not burn the 6-hour default.
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 

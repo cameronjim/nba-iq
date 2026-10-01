@@ -1,3 +1,4 @@
+import json
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -13,6 +14,9 @@ from config import (
 )
 
 _SEASON_PATTERN = re.compile(r"^(\d{4})-\d{2}$")
+_NEXT_DATA_PATTERN = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.DOTALL
+)
 _MATCHUP_PATTERN = re.compile(
     r"^\s*(?P<team>[A-Za-z]{2,4})\s+(?P<sep>vs\.?|@)\s+(?P<opp>[A-Za-z]{2,4})\s*$",
     re.IGNORECASE,
@@ -294,3 +298,13 @@ def parse_team_types(raw: str) -> list[str]:
         if part not in ordered:
             ordered.append(part)
     return ordered
+
+
+def extract_next_data(html: str) -> dict:
+    match = _NEXT_DATA_PATTERN.search(html)
+    if not match:
+        raise ValueError("page has no __NEXT_DATA__ payload")
+    data = json.loads(match.group(1))
+    if not isinstance(data, dict):
+        raise ValueError("__NEXT_DATA__ payload is not an object")
+    return data

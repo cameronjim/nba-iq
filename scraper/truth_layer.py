@@ -1,7 +1,8 @@
 import logging
 import time
 from collections.abc import Mapping, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import psycopg2
 
@@ -9,6 +10,9 @@ from config import (
     BACKFILL_REQUEST_DELAY_SECONDS,
     GAME_STATUS_MAX_GAMES_PER_RUN,
     GAME_STATUS_RECENT_WINDOW_DAYS,
+    NBA_WEB_PAGE_DELAY_SECONDS,
+    NBA_WEB_SCHEDULE_DAYS_AHEAD,
+    NBA_WEB_SCHEDULE_DAYS_BACK,
     SEASON,
 )
 from database import (
@@ -21,6 +25,7 @@ from fetching import (
     _fetch_inactive_players,
     _fetch_league_player_game_logs,
     _fetch_league_schedule,
+    _fetch_nba_web_games,
     _fetch_player_game_logs,
     _fetch_team_game_logs,
 )
@@ -34,6 +39,7 @@ from rows import (
     game_log_fetch_from,
     plan_stint_change,
     schedule_rows_from_league_schedule,
+    schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
     split_rows_on_season_boundary,
     supplement_player_log_rows,
@@ -255,13 +261,45 @@ def _played_rows_for_games(
         cur.close()
 
 
+NBA_WEB_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def fetch_nba_web_schedule_rows(
+    season: str,
+    today: date | None = None,
+    delay_seconds: float = NBA_WEB_PAGE_DELAY_SECONDS,
+) -> list[dict]:
+    # one page per eastern date. consecutive failures end the crawl early so an
+    # unreachable site costs seconds, not one timeout per page.
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    days = range(-NBA_WEB_SCHEDULE_DAYS_BACK, NBA_WEB_SCHEDULE_DAYS_AHEAD + 1)
+    rows: list[dict] = []
+    failures = 0
+    for index, offset in enumerate(days):
+        game_date = today + timedelta(days=offset)
+        try:
+            page = _fetch_nba_web_games(game_date)
+        except Exception as e:  # noqa: BLE001 - one date must not end the crawl
+            failures += 1
+            logger.warning("schedule: nba.com %s failed (%s)", game_date.isoformat(), e)
+            if failures >= NBA_WEB_MAX_CONSECUTIVE_FAILURES:
+                logger.warning("schedule: nba.com unreachable, giving up")
+                break
+        else:
+            failures = 0
+            rows.extend(schedule_rows_from_nba_web(page, game_date, season))
+        if index < len(days) - 1:
+            time.sleep(delay_seconds)
+    return rows
+
+
 def scrape_schedule(
     conn: psycopg2.extensions.connection,
     season: str = SEASON,
     dry_run: bool = False,
-) -> None:
-    # ESPN is deliberately not the fallback even though the scoreboard scrape
-    # exists: ESPN event ids join to no stats.nba.com game id.
+) -> bool:
+    # returns False only when every source failed. ESPN is deliberately not a
+    # source: its event ids join to no NBA game id, unlike nba.com's.
     logger.info("truth layer: syncing %s schedule...", season)
     run_id = _start_ingestion_run(
         conn, "schedule", watermark_from=season, watermark_to=season, dry_run=dry_run
@@ -272,22 +310,25 @@ def scrape_schedule(
         rows = schedule_rows_from_league_schedule(_fetch_league_schedule(season), season)
         logger.info("schedule: %d game(s) from scheduleleaguev2", len(rows))
     except Exception as e:  # noqa: BLE001 - falling back is the handling
-        logger.warning(
-            "scheduleleaguev2 unavailable (%s); falling back to completed games "
-            "from the team game log — upcoming games will be missing until it "
-            "recovers",
-            e,
-        )
-        try:
-            team_rows = _fetch_team_game_logs(season, None)
-            rows = schedule_rows_from_team_logs(team_rows, season)
-            logger.info("schedule: %d completed game(s) from leaguegamelog", len(rows))
-        except Exception as fallback_error:  # noqa: BLE001
-            logger.error("schedule: both sources failed (%s)", fallback_error)
-            _finish_ingestion_run(
-                conn, run_id, "failed", 0, notes=str(fallback_error)[:500]
+        logger.warning("scheduleleaguev2 unavailable (%s); trying nba.com", e)
+        rows = fetch_nba_web_schedule_rows(season)
+        if rows:
+            logger.info("schedule: %d game(s) from nba.com", len(rows))
+        else:
+            logger.warning(
+                "schedule: nba.com returned nothing; falling back to completed "
+                "games from the team game log, so upcoming games will be missing"
             )
-            return
+            try:
+                team_rows = _fetch_team_game_logs(season, None)
+                rows = schedule_rows_from_team_logs(team_rows, season)
+                logger.info("schedule: %d completed game(s) from leaguegamelog", len(rows))
+            except Exception as fallback_error:  # noqa: BLE001
+                logger.error("schedule: every source failed (%s)", fallback_error)
+                _finish_ingestion_run(
+                    conn, run_id, "failed", 0, notes=str(fallback_error)[:500]
+                )
+                return False
 
     cur = maybe_write_cursor(conn.cursor(), dry_run)
     try:
@@ -301,6 +342,7 @@ def scrape_schedule(
         written,
         " (dry run: nothing written)" if dry_run else "",
     )
+    return True
 
 
 def scrape_game_logs(
