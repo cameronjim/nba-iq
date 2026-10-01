@@ -180,9 +180,11 @@ jobs:
           STEM: ${{ inputs.challenger_version }}
         run: |
           stem="${STEM:-p3-$(date -u +%Y-%m-%d)}"
-          python ml/run_p3_bracket.py --version "$stem" --reports-dir ml/reports/challengers
-          python ml/report_coherence.py --version "$VERSION" --reports-dir ml/reports/challengers
-          python ml/report_counts.py --version "$VERSION" --reports-dir ml/reports/challengers
+          # build_dataset.py writes dataset.parquet with the v4 columns attached;
+          # run_p3_bracket's default name is the older separate v4 file.
+          python ml/run_p3_bracket.py --dataset ml/data/dataset.parquet --version "$stem" --reports-dir ml/reports/challengers
+          python ml/report_coherence.py --dataset ml/data/dataset.parquet --version "$VERSION" --reports-dir ml/reports/challengers
+          python ml/report_counts.py --dataset ml/data/dataset.parquet --version "$VERSION" --reports-dir ml/reports/challengers
 
       - name: Upload challenger reports
         if: always() && inputs.challengers
