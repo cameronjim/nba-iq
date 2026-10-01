@@ -60,17 +60,22 @@ describe('Navbar', () => {
     expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
   });
 
-  it('lists the themes and marks the current one', () => {
-    // arrange + act
+  it('toggles between dark and light from the navbar', async () => {
+    // arrange
+    localStorage.removeItem('theme');
+    const user = userEvent.setup();
     render(
       <MemoryRouter>
         <Navbar isLoggedIn={false} onLogout={() => {}} />
       </MemoryRouter>
     );
 
+    // act
+    await user.click(screen.getByRole('button', { name: 'Switch to light mode' }));
+
     // assert
-    expect(screen.getByRole('button', { name: 'Theme' })).toBeInTheDocument();
-    expect(document.querySelectorAll('[aria-current="true"]')).toHaveLength(1);
+    expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
+    expect(screen.getByRole('button', { name: 'Switch to dark mode' })).toBeInTheDocument();
   });
 });
 

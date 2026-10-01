@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { GoogleLogin, useGoogleLogin } from '@react-oauth/google';
-import { register, googleSignIn, googleSignInWithToken } from '../api/client';
+import { useGoogleLogin } from '@react-oauth/google';
+import { register, googleSignInWithToken } from '../api/client';
+import { GoogleSignInButton } from '../components/GoogleSignInButton';
 
 interface RegisterPageProps {
   onRegister: () => void;
@@ -31,24 +32,8 @@ export const RegisterPage = ({ onRegister }: RegisterPageProps) => {
   const pwValidationError = password ? validatePassword(password) : null;
   const emailLooksValid = email && isValidEmail(email);
 
-  const handleGoogleSuccess = async (credential: string | undefined): Promise<void> => {
-    if (!credential) return;
-    setError('');
-    setLoading(true);
-    try {
-      await googleSignIn(credential);
-      onRegister();
-      navigate('/', { replace: true });
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setError(msg ?? 'Google sign-in failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // forces the account picker rather than silently using the cached account.
-  const switchGoogleAccount = useGoogleLogin({
+  // select_account forces the picker rather than silently using the cached account.
+  const signUpWithGoogle = useGoogleLogin({
     flow: 'implicit',
     prompt: 'select_account',
     scope: 'openid email profile',
@@ -105,23 +90,7 @@ export const RegisterPage = ({ onRegister }: RegisterPageProps) => {
       <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Create Account</h1>
       <p className="text-sm text-muted mt-1 mb-6">Sign up to save a roster, track bets, and set preferences.</p>
 
-      <div className="space-y-2">
-        <GoogleLogin
-          onSuccess={(resp) => handleGoogleSuccess(resp.credential)}
-          onError={() => setError('Google sign-in failed')}
-          theme="outline"
-          size="large"
-          text="signup_with"
-          width="290"
-        />
-        <button
-          type="button"
-          onClick={() => switchGoogleAccount()}
-          className="link link-primary text-xs block"
-        >
-          Use a different Google account
-        </button>
-      </div>
+      <GoogleSignInButton label="Sign up with Google" disabled={loading} onClick={() => signUpWithGoogle()} />
 
       <p className="text-xs text-muted my-4">Or create an account with an email address.</p>
 

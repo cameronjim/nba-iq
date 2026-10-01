@@ -4,15 +4,12 @@ import { ScoreboardStrip } from '../components/ScoreboardStrip';
 import { SkeletonTable } from '../components/Skeleton';
 import { getPlayers, getTeams } from '../api/client';
 import { prefetchCached, CACHE_KEYS } from '../api/resourceCache';
-import { useCachedResource } from '../hooks/useCachedResource';
 import { useSlate } from '../hooks/useSlate';
 import { formatStat, toStatNumber, STAT_PLACEHOLDER } from '../utils/stats';
 import { formatSlateDate } from '../utils/dates';
-import type { Player, SlateGame, SlatePlayer } from '../types';
+import type { SlateGame, SlatePlayer } from '../types';
 
 const PROJECTION_ROWS = 8;
-const LEADER_ROWS = 5;
-const LEADER_MIN_GAMES = 10;
 
 interface ProjectionRow {
   player: SlatePlayer;
@@ -120,65 +117,6 @@ const TonightsProjections = (): JSX.Element => {
   );
 };
 
-function leadersOf(players: Player[]): Player[] {
-  const qualified = players.filter((p) => p.games_played >= LEADER_MIN_GAMES);
-  const pool = qualified.length > 0 ? qualified : players;
-  return [...pool].sort((a, b) => b.points_per_game - a.points_per_game).slice(0, LEADER_ROWS);
-}
-
-const Leaders = (): JSX.Element => {
-  const { data, loading, error } = useCachedResource<Player[]>(CACHE_KEYS.players, () => getPlayers(), {
-    errorMessage: 'Could not load player stats',
-  });
-  const leaders = data ? leadersOf(data) : [];
-
-  return (
-    <section className="border-t border-base-300 pt-6">
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="font-display text-2xl font-semibold uppercase tracking-wide">Scoring leaders</h2>
-        <Link to="/stats" className="link link-hover text-sm">
-          All players
-        </Link>
-      </div>
-
-      {loading && <SkeletonTable rows={LEADER_ROWS} cols={5} label="Loading leaders" />}
-
-      {!loading && error && <p className="text-sm text-error">{error}. Try again in a moment.</p>}
-
-      {!loading && !error && leaders.length === 0 && (
-        <p className="text-sm text-muted">No player stats loaded yet. Check back after the next update.</p>
-      )}
-
-      {!loading && !error && leaders.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="table table-sm">
-            <thead>
-              <tr>
-                <th>Player</th>
-                <th>Team</th>
-                <th className="text-right">PPG</th>
-                <th className="text-right">RPG</th>
-                <th className="text-right">APG</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leaders.map((p) => (
-                <tr key={p.id}>
-                  <td className="font-medium">{p.name}</td>
-                  <td className="text-muted">{p.team}</td>
-                  <td className="text-right tabular font-semibold">{formatStat(p.points_per_game)}</td>
-                  <td className="text-right tabular">{formatStat(p.rebounds_per_game)}</td>
-                  <td className="text-right tabular">{formatStat(p.assists_per_game)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
-  );
-};
-
 export const HomePage = ({ isLoggedIn }: { isLoggedIn: boolean }): JSX.Element => {
   // this page is meant to be read while the stats caches warm, so fire the
   // prefetch immediately rather than waiting on the app-wide warmup delay.
@@ -206,7 +144,6 @@ export const HomePage = ({ isLoggedIn }: { isLoggedIn: boolean }): JSX.Element =
         )}
 
         <TonightsProjections />
-        <Leaders />
 
         <section className="border-t border-base-300 pt-6">
           <h2 className="mb-3 font-display text-2xl font-semibold uppercase tracking-wide">Sections</h2>

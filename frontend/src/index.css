@@ -16,7 +16,6 @@
 
 @plugin "daisyui/theme" {
   name: "paper";
-  default: true;
   color-scheme: light;
   --color-base-100: oklch(0.972 0.008 85);
   --color-base-200: oklch(0.945 0.011 84);
@@ -26,7 +25,7 @@
   --color-primary-content: oklch(0.97 0.008 85);
   --color-secondary: oklch(0.45 0.02 70);
   --color-secondary-content: oklch(0.97 0.008 85);
-  --color-accent: oklch(0.6 0.15 45);
+  --color-accent: oklch(0.5 0.17 322);
   --color-accent-content: oklch(0.98 0.01 85);
   --color-neutral: oklch(0.28 0.012 70);
   --color-neutral-content: oklch(0.97 0.008 85);
@@ -50,7 +49,7 @@
 
 @plugin "daisyui/theme" {
   name: "night";
-  prefersdark: true;
+  default: true;
   color-scheme: dark;
   --color-base-100: oklch(0.235 0.008 70);
   --color-base-200: oklch(0.205 0.008 70);
@@ -60,8 +59,8 @@
   --color-primary-content: oklch(0.2 0.02 250);
   --color-secondary: oklch(0.7 0.02 80);
   --color-secondary-content: oklch(0.2 0.01 80);
-  --color-accent: oklch(0.72 0.14 50);
-  --color-accent-content: oklch(0.2 0.03 50);
+  --color-accent: oklch(0.72 0.17 318);
+  --color-accent-content: oklch(0.2 0.04 318);
   --color-neutral: oklch(0.3 0.01 70);
   --color-neutral-content: oklch(0.9 0.01 85);
   --color-info: oklch(0.75 0.08 250);
@@ -72,39 +71,6 @@
   --color-warning-content: oklch(0.22 0.04 80);
   --color-error: oklch(0.68 0.15 28);
   --color-error-content: oklch(0.2 0.03 28);
-  --radius-selector: 0.125rem;
-  --radius-field: 0.125rem;
-  --radius-box: 0.125rem;
-  --size-selector: 0.25rem;
-  --size-field: 0.25rem;
-  --border: 1px;
-  --depth: 0;
-  --noise: 0;
-}
-
-@plugin "daisyui/theme" {
-  name: "contrast";
-  color-scheme: light;
-  --color-base-100: oklch(0.985 0.004 85);
-  --color-base-200: oklch(0.955 0.005 85);
-  --color-base-300: oklch(0.78 0.006 85);
-  --color-base-content: oklch(0.15 0.005 70);
-  --color-primary: oklch(0.3 0.08 255);
-  --color-primary-content: oklch(0.985 0.004 85);
-  --color-secondary: oklch(0.3 0.01 70);
-  --color-secondary-content: oklch(0.985 0.004 85);
-  --color-accent: oklch(0.5 0.15 42);
-  --color-accent-content: oklch(0.985 0.004 85);
-  --color-neutral: oklch(0.15 0.005 70);
-  --color-neutral-content: oklch(0.985 0.004 85);
-  --color-info: oklch(0.3 0.08 255);
-  --color-info-content: oklch(0.985 0.004 85);
-  --color-success: oklch(0.42 0.11 150);
-  --color-success-content: oklch(0.985 0.004 85);
-  --color-warning: oklch(0.62 0.13 70);
-  --color-warning-content: oklch(0.15 0.005 70);
-  --color-error: oklch(0.45 0.17 28);
-  --color-error-content: oklch(0.985 0.004 85);
   --radius-selector: 0.125rem;
   --radius-field: 0.125rem;
   --radius-box: 0.125rem;

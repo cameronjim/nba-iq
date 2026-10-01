@@ -9,11 +9,9 @@
     <script>
       // mirrors THEMES in src/hooks/useTheme.ts so the first paint uses the saved theme.
       (function () {
-        var themes = ['paper', 'contrast', 'night'];
+        var themes = ['night', 'paper'];
         var stored = localStorage.getItem('theme');
-        var theme = themes.indexOf(stored) !== -1
-          ? stored
-          : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'night' : 'paper');
+        var theme = themes.indexOf(stored) !== -1 ? stored : 'night';
         document.documentElement.setAttribute('data-theme', theme);
       })();
     </script>

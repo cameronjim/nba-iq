@@ -6,9 +6,10 @@ import { RegisterPage } from '../../src/pages/RegisterPage';
 import { LoginPage } from '../../src/pages/LoginPage';
 import { ResetPasswordPage } from '../../src/pages/ResetPasswordPage';
 
+const openGooglePopup = vi.fn();
+
 vi.mock('@react-oauth/google', () => ({
-  GoogleLogin: () => <div>google button</div>,
-  useGoogleLogin: () => vi.fn(),
+  useGoogleLogin: () => openGooglePopup,
 }));
 
 vi.mock('../../src/api/client', async (importOriginal) => {
@@ -25,6 +26,29 @@ const { register, login, resetPassword } = await import('../../src/api/client');
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('Google sign-in button', () => {
+  it('renders as a themed in-app button and opens the google popup on click', async () => {
+    // arrange
+    render(<MemoryRouter><LoginPage onLogin={vi.fn()} /></MemoryRouter>);
+    const user = userEvent.setup();
+
+    // act
+    await user.click(screen.getByRole('button', { name: 'Continue with Google' }));
+
+    // assert
+    expect(openGooglePopup).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Use a different Google account')).not.toBeInTheDocument();
+  });
+
+  it('offers google sign-up on the register page', () => {
+    // arrange + act
+    render(<MemoryRouter><RegisterPage onRegister={vi.fn()} /></MemoryRouter>);
+
+    // assert
+    expect(screen.getByRole('button', { name: 'Sign up with Google' })).toBeInTheDocument();
+  });
 });
 
 describe('RegisterPage', () => {

@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { GoogleLogin, useGoogleLogin } from '@react-oauth/google';
-import { login, googleSignIn, googleSignInWithToken } from '../api/client';
+import { useGoogleLogin } from '@react-oauth/google';
+import { login, googleSignInWithToken } from '../api/client';
+import { GoogleSignInButton } from '../components/GoogleSignInButton';
 
 interface LoginPageProps {
   onLogin: () => void;
@@ -22,24 +23,9 @@ export const LoginPage = ({ onLogin }: LoginPageProps) => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleGoogleSuccess = async (credential: string | undefined): Promise<void> => {
-    if (!credential) return;
-    setError('');
-    setLoading(true);
-    try {
-      await googleSignIn(credential);
-      onLogin();
-      navigate(redirectTo, { replace: true });
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setError(msg ?? 'Google sign-in failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // forces the account picker so users can switch google accounts on a shared device.
-  const switchGoogleAccount = useGoogleLogin({
+  // a custom button on the popup flow, because google's iframe button can't follow the theme.
+  // select_account lets users switch google accounts on a shared device.
+  const signInWithGoogle = useGoogleLogin({
     flow: 'implicit',
     prompt: 'select_account',
     scope: 'openid email profile',
@@ -81,23 +67,7 @@ export const LoginPage = ({ onLogin }: LoginPageProps) => {
       <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Sign In</h1>
       <p className="text-sm text-muted mt-1 mb-6">Sign in to NBA IQ.</p>
 
-      <div className="space-y-2">
-        <GoogleLogin
-          onSuccess={(resp) => handleGoogleSuccess(resp.credential)}
-          onError={() => setError('Google sign-in failed')}
-          theme="outline"
-          size="large"
-          text="continue_with"
-          width="290"
-        />
-        <button
-          type="button"
-          onClick={() => switchGoogleAccount()}
-          className="link link-primary text-xs block"
-        >
-          Use a different Google account
-        </button>
-      </div>
+      <GoogleSignInButton label="Continue with Google" disabled={loading} onClick={() => signInWithGoogle()} />
 
       <p className="text-xs text-muted my-4">Or use your username and password.</p>
 

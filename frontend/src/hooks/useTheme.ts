@@ -9,20 +9,17 @@ export interface ThemeOption {
 }
 
 export const THEMES: readonly ThemeOption[] = [
-  { id: 'paper', label: 'Paper', scheme: 'light' },
-  { id: 'contrast', label: 'High contrast', scheme: 'light' },
-  { id: 'night', label: 'Night', scheme: 'dark' },
+  { id: 'night', label: 'Dark', scheme: 'dark' },
+  { id: 'paper', label: 'Light', scheme: 'light' },
 ];
 
 const THEME_IDS = new Set(THEMES.map((t) => t.id));
-const DEFAULT_LIGHT = 'paper';
-const DEFAULT_DARK = 'night';
+const DEFAULT_THEME = 'night';
 
 function getInitialTheme(): string {
-  if (typeof window === 'undefined') return DEFAULT_LIGHT;
+  if (typeof window === 'undefined') return DEFAULT_THEME;
   const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored && THEME_IDS.has(stored)) return stored;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? DEFAULT_DARK : DEFAULT_LIGHT;
+  return stored && THEME_IDS.has(stored) ? stored : DEFAULT_THEME;
 }
 
 // the pre-paint script in index.html mirrors this logic and must change with it.

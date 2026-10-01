@@ -41,11 +41,6 @@ export async function register(username: string, email: string, password: string
   setAuthToken(data.token);
 }
 
-export async function googleSignIn(credential: string): Promise<void> {
-  const { data } = await api.post('/auth/google', { credential });
-  setAuthToken(data.token);
-}
-
 export async function googleSignInWithToken(accessToken: string): Promise<void> {
   const { data } = await api.post('/auth/google', { access_token: accessToken });
   setAuthToken(data.token);

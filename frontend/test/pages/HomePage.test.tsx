@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { HomePage } from '../../src/pages/HomePage';
 import { clearCachedResources } from '../../src/api/resourceCache';
-import type { Player, SlateGame, SlatePlayer, SlateResponse } from '../../src/types';
+import type { SlateGame, SlatePlayer, SlateResponse } from '../../src/types';
 
 vi.mock('../../src/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/api/client')>();
@@ -189,28 +189,15 @@ describe('HomePage', () => {
     expect(await screen.findByText(/Failed to load the slate/)).toBeInTheDocument();
   });
 
-  it('lists scoring leaders from the players cache', async () => {
+  it('does not show a scoring leaders table', async () => {
     // arrange
-    const player = (id: number, name: string, ppg: number): Player =>
-      ({
-        id,
-        name,
-        team: 'OKC',
-        position: 'G',
-        points_per_game: ppg,
-        rebounds_per_game: 4,
-        assists_per_game: 5,
-        games_played: 40,
-      }) as Player;
-    playersMock.mockResolvedValue([player(1, 'Low Scorer', 8), player(2, 'High Scorer', 32.4)]);
-
-    // act
     renderHome(true);
 
+    // act
+    await screen.findByText(/No projections for/);
+
     // assert
-    expect(await screen.findByText('High Scorer')).toBeInTheDocument();
-    expect(screen.getByText('32.4')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'All players' })).toHaveAttribute('href', '/stats');
+    expect(screen.queryByRole('heading', { name: /scoring leaders/i })).not.toBeInTheDocument();
   });
 
   it('never calls an AI endpoint', async () => {
