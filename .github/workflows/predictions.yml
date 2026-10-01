@@ -22,6 +22,15 @@
 # still be re-dispatched manually before the afternoon's first tip and publish the
 # whole slate at a valid gameday offset.
 #
+# THE RESCORE LANE. A second cron mirrors scraper.yml's injuries-only lane 15 minutes
+# later, so the fresh CBS/official rows exist when it reads them. It runs
+# `daily_run.py --if-status-changed`: when no player on a team with an untipped game in
+# the 7-day window changed designation class (available / questionable / out) since
+# the newest production run's information boundary, it exits 0 having written
+# nothing; otherwise it publishes a normal run (A if it qualifies, then B) whose notes
+# carry `rescore=status_change; changed_players=N` and whose registry entries carry
+# `trigger: status_change`. The 16:00 lane is unchanged. See MODEL.md 20.3.
+#
 # Python 3.14, not the 3.12 the scraper uses. See the header of ml/requirements.txt:
 # this job unpickles the frozen scikit-learn 1.9.0 serving artifact, and 3.12 cannot
 # install scikit-learn 1.9.0.
@@ -39,6 +48,8 @@ on:
     # See MODEL.md 16.3 for the tradeoff. Rare noon/1pm ET holiday tips land in
     # the `lock` bucket (0, 2] - published before tip, recorded off-gameday.
     - cron: "0 16 * * *"
+    # the rescore lane: scraper.yml's injuries-only lane ("30 15,19-02") plus 15 min.
+    - cron: "45 15,19,20,21,22,23,0,1,2 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -80,8 +91,21 @@ jobs:
       # --shadow-feature-set v1 adds the 13.4 rung (c) shadow run (channel 'shadow',
       # never served). until ml/models/20260818-v1/ is committed it is skipped with
       # a warning and the served runs are unchanged.
+      #
+      # github.event.schedule carries the cron expression that fired. each pattern
+      # below must match its cron line above character for character; an unknown
+      # schedule fails the run rather than silently falling through to a publish.
+      # a manual dispatch has an empty schedule and runs the scheduled lane.
       - name: Run daily predictions
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SCHEDULE: ${{ github.event.schedule }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
         run: |
-          python ml/daily_run.py --shadow-feature-set v1 ${{ inputs.dry_run && '--dry-run' || '' }}
+          case "$SCHEDULE" in
+            "0 16 * * *" | "")
+              python ml/daily_run.py --shadow-feature-set v1 $DRY_RUN ;;
+            "45 15,19,20,21,22,23,0,1,2 * * *")
+              python ml/daily_run.py --if-status-changed --shadow-feature-set v1 $DRY_RUN ;;
+            *) echo "unknown schedule '$SCHEDULE'" >&2; exit 1 ;;
+          esac
