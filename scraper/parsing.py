@@ -290,6 +290,28 @@ def normalize_injury_status(raw: object) -> str:
     return "unknown"
 
 
+def clearances_for_report(
+    previous_rows: Iterable[tuple[str, str]],
+    currently_listed: Iterable[str],
+    unmatched_names: Iterable[str] = (),
+    complete: bool = True,
+) -> list[str]:
+    """players to clear: previously listed, absent now, and provably not just unparsed.
+
+    an incomplete report (a table skipped for a bad header) clears nobody. a
+    previously listed player whose name is on the page but could not be matched
+    is not cleared either: the page still lists him, we just lost the link.
+    """
+    if not complete:
+        return []
+    unmatched = {canonical_player_name(name) for name in unmatched_names if name}
+    previous_ids = [
+        nba_id for nba_id, name in previous_rows
+        if canonical_player_name(name or "") not in unmatched
+    ]
+    return cleared_player_ids(previous_ids, currently_listed)
+
+
 def cleared_player_ids(
     previously_listed: Iterable[str], currently_listed: Iterable[str]
 ) -> list[str]:
