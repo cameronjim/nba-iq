@@ -200,15 +200,17 @@ export function parseEventOdds(event: EspnEvent): BettingGame | null {
 
 let oddsCache: { data: BettingGame[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
 
-export async function getUpcomingOdds(): Promise<BettingGame[]> {
-  if (Date.now() - oddsCache.fetchedAt < ODDS_CACHE_TTL && oddsCache.data.length > 0) {
-    return oddsCache.data;
-  }
+const SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
 
-  const start = etIsoDate(0).replace(/-/g, '');
-  const end = etIsoDate(FUTURE_WINDOW_DAYS).replace(/-/g, '');
-  const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${start}-${end}`;
+// espn rejects date ranges with 400, so each day needs its own request
+export function scoreboardUrls(days: number): string[] {
+  return Array.from({ length: days }, (_, i) => {
+    const date = etIsoDate(i).replace(/-/g, '');
+    return `${SCOREBOARD_URL}?dates=${date}`;
+  });
+}
 
+async function fetchScoreboardDay(url: string): Promise<EspnEvent[]> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10_000);
   let resp: globalThis.Response;
@@ -225,12 +227,36 @@ export async function getUpcomingOdds(): Promise<BettingGame[]> {
   }
 
   const data = (await resp.json()) as { events?: EspnEvent[] };
-  const games = (data.events ?? [])
-    .filter((e) => e.status?.type?.name === 'STATUS_SCHEDULED')
-    .map(parseEventOdds)
-    .filter((g): g is BettingGame => g !== null);
+  return data.events ?? [];
+}
 
-  if (games.length > 0) {
+export async function getUpcomingOdds(): Promise<BettingGame[]> {
+  if (Date.now() - oddsCache.fetchedAt < ODDS_CACHE_TTL && oddsCache.data.length > 0) {
+    return oddsCache.data;
+  }
+
+  const results = await Promise.allSettled(
+    scoreboardUrls(FUTURE_WINDOW_DAYS + 1).map(fetchScoreboardDay)
+  );
+
+  const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failures.length === results.length) {
+    throw failures[0].reason;
+  }
+
+  const seen = new Set<string>();
+  const games: BettingGame[] = [];
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    for (const event of result.value) {
+      if (event.status?.type?.name !== 'STATUS_SCHEDULED' || seen.has(event.id)) continue;
+      seen.add(event.id);
+      const game = parseEventOdds(event);
+      if (game) games.push(game);
+    }
+  }
+
+  if (failures.length === 0 && games.length > 0) {
     oddsCache = { data: games, fetchedAt: Date.now() };
   }
   return games;
