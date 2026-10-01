@@ -4,7 +4,9 @@ from datetime import date, timedelta
 import pytest
 import requests
 
+import database
 import fetching
+import odds
 import scrapes
 import truth_layer
 from backfill import NOT_POSTPONED_PREDICATE
@@ -18,6 +20,7 @@ from config import (
     V2_INACTIVE_UNRELIABLE_FROM,
 )
 from database import is_write_statement
+from odds import map_event_to_nba_game, parse_event_odds, plan_odds_snapshot
 from parsing import (
     box_score_violations,
     cleared_player_ids,
@@ -1392,3 +1395,348 @@ class TestScrapeInjuries:
 
         executed = [sql for sql, _ in conn.cursor_.statements]
         assert executed and all(not is_write_statement(sql) for sql in executed)
+
+
+# espn scoreboard shapes, trimmed to the fields the odds parser reads.
+def _espn_event(odds_node=None, event_id="401810001", home="NY", away="GS",
+                status="STATUS_SCHEDULED", when="2026-10-21T23:30Z"):
+    competition = {
+        "competitors": [
+            {"homeAway": "home", "team": {"abbreviation": home, "displayName": "Home"}},
+            {"homeAway": "away", "team": {"abbreviation": away, "displayName": "Away"}},
+        ],
+    }
+    if odds_node is not None:
+        competition["odds"] = [odds_node]
+    return {
+        "id": event_id,
+        "date": when,
+        "status": {"type": {"name": status}},
+        "competitions": [competition],
+    }
+
+
+FULL_ODDS = {
+    "provider": {"name": "ESPN BET"},
+    "details": "NY -2.5",
+    "overUnder": 224.5,
+    "spread": -2.5,
+    "pointSpread": {
+        "home": {"close": {"line": "-2.5", "odds": "-110"}},
+        "away": {"close": {"line": "+2.5", "odds": "-110"}},
+    },
+    "total": {
+        "over": {"close": {"line": "o224.5", "odds": "-105"}},
+        "under": {"close": {"line": "u224.5", "odds": "-115"}},
+    },
+    "moneyline": {
+        "home": {"close": {"odds": "-140"}},
+        "away": {"close": {"odds": "+120"}},
+    },
+}
+
+
+def _by_key(rows):
+    return {(r["market"], r["selection"]): r for r in rows}
+
+
+class TestParseEventOdds:
+    def test_full_prices_give_six_rows_with_observed_prices(self):
+        rows = _by_key(parse_event_odds(_espn_event(FULL_ODDS)))
+
+        assert set(rows) == {
+            ("spread", "home"), ("spread", "away"), ("total", "over"),
+            ("total", "under"), ("moneyline", "home"), ("moneyline", "away"),
+        }
+        assert rows[("spread", "home")]["line"] == -2.5
+        assert rows[("spread", "home")]["price"] == -110
+        assert rows[("total", "over")]["line"] == 224.5
+        assert rows[("total", "under")]["line"] == 224.5
+        assert rows[("total", "under")]["price"] == -115
+        assert rows[("moneyline", "home")]["price"] == -140
+        assert rows[("moneyline", "away")]["price"] == 120
+        assert rows[("moneyline", "away")]["line"] is None
+        assert all(r["price_observed"] for r in rows.values())
+        assert all(r["provider"] == "ESPN BET" for r in rows.values())
+        assert all(r["espn_event_id"] == "401810001" for r in rows.values())
+
+    def test_the_game_date_is_the_eastern_date_not_utc(self):
+        # 02:00 utc on the 22nd is 10pm et on the 21st
+        event = _espn_event(FULL_ODDS, when="2026-10-22T02:00Z")
+
+        rows = parse_event_odds(event)
+
+        assert {r["game_date"] for r in rows} == {date(2026, 10, 21)}
+
+    def test_the_away_spread_line_is_the_home_line_sign_flipped(self):
+        node = {
+            "provider": {"name": "ESPN BET"},
+            "pointSpread": {
+                "home": {"close": {"line": "+4.5", "odds": "-108"}},
+                "away": {"close": {"line": "-4.5", "odds": "-112"}},
+            },
+        }
+
+        rows = _by_key(parse_event_odds(_espn_event(node)))
+
+        assert rows[("spread", "home")]["line"] == 4.5
+        assert rows[("spread", "away")]["line"] == -4.5
+        assert rows[("spread", "away")]["price"] == -112
+
+    def test_missing_spread_prices_are_null_and_unobserved_never_defaulted(self):
+        node = {
+            "provider": {"name": "ESPN BET"},
+            "spread": -3.0,
+            "overUnder": 219.0,
+            "homeTeamOdds": {"moneyLine": -150},
+            "awayTeamOdds": {"moneyLine": 130},
+        }
+
+        rows = _by_key(parse_event_odds(_espn_event(node)))
+
+        for key in (("spread", "home"), ("spread", "away"), ("total", "over")):
+            assert rows[key]["price"] is None
+            assert rows[key]["price_observed"] is False
+        assert rows[("spread", "home")]["line"] == -3.0
+        assert rows[("spread", "away")]["line"] == 3.0
+        assert rows[("moneyline", "home")]["price"] == -150
+        assert rows[("moneyline", "home")]["price_observed"] is True
+
+    def test_even_prices_read_as_plus_one_hundred(self):
+        node = {
+            "provider": {"name": "ESPN BET"},
+            "pointSpread": {
+                "home": {"close": {"line": "-1.5", "odds": "EVEN"}},
+                "away": {"close": {"line": "+1.5", "odds": "-120"}},
+            },
+            "moneyline": {
+                "home": {"close": {"odds": "EVEN"}},
+                "away": {"close": {"odds": "-120"}},
+            },
+        }
+
+        rows = _by_key(parse_event_odds(_espn_event(node)))
+
+        assert rows[("spread", "home")]["price"] == 100
+        assert rows[("moneyline", "home")]["price"] == 100
+
+    def test_even_details_is_a_pick_em_with_no_negative_zero(self):
+        rows = _by_key(parse_event_odds(_espn_event({"details": "EVEN"})))
+
+        assert rows[("spread", "home")]["line"] == 0.0
+        assert str(rows[("spread", "away")]["line"]) == "0.0"
+
+    def test_a_details_only_spread_is_read_relative_to_the_home_team(self):
+        # the away team (GS) is favoured by 6
+        node = {"provider": {"name": "ESPN BET"}, "details": "GS -6"}
+
+        rows = _by_key(parse_event_odds(_espn_event(node)))
+
+        assert set(rows) == {("spread", "home"), ("spread", "away")}
+        assert rows[("spread", "home")]["line"] == 6.0
+        assert rows[("spread", "away")]["line"] == -6.0
+        assert rows[("spread", "home")]["price_observed"] is False
+
+    def test_an_unpublished_price_string_is_null_not_zero(self):
+        node = {
+            "pointSpread": {
+                "home": {"close": {"line": "-2.5", "odds": "OFF"}},
+                "away": {"close": {"line": "+2.5"}},
+            },
+        }
+
+        rows = _by_key(parse_event_odds(_espn_event(node)))
+
+        assert rows[("spread", "home")]["price"] is None
+        assert rows[("spread", "away")]["price"] is None
+
+    def test_no_odds_node_gives_no_rows(self):
+        assert parse_event_odds(_espn_event(None)) == []
+
+
+SCHEDULE_ROWS = [
+    {"nba_game_id": "0022600011", "game_date": date(2026, 10, 21),
+     "home_team_abbr": "BOS", "away_team_abbr": "MIA"},
+    {"nba_game_id": "0022600012", "game_date": date(2026, 10, 21),
+     "home_team_abbr": "NYK", "away_team_abbr": "GSW"},
+    {"nba_game_id": "0022600031", "game_date": date(2026, 10, 23),
+     "home_team_abbr": "NYK", "away_team_abbr": "GSW"},
+]
+
+
+class TestMapEventToNbaGame:
+    def test_an_exact_tricode_match_maps(self):
+        game_id = map_event_to_nba_game(date(2026, 10, 21), "BOS", "MIA", SCHEDULE_ROWS)
+
+        assert game_id == "0022600011"
+
+    def test_espn_abbreviations_are_aliased_to_nba_tricodes(self):
+        game_id = map_event_to_nba_game(date(2026, 10, 21), "NY", "GS", SCHEDULE_ROWS)
+
+        assert game_id == "0022600012"
+
+    def test_the_date_disambiguates_a_repeat_matchup(self):
+        game_id = map_event_to_nba_game(date(2026, 10, 23), "NY", "GS", SCHEDULE_ROWS)
+
+        assert game_id == "0022600031"
+
+    def test_no_match_maps_to_none(self):
+        game_id = map_event_to_nba_game(date(2026, 10, 21), "UTAH", "WSH", SCHEDULE_ROWS)
+
+        assert game_id is None
+
+    def test_swapped_home_and_away_do_not_match(self):
+        game_id = map_event_to_nba_game(date(2026, 10, 21), "MIA", "BOS", SCHEDULE_ROWS)
+
+        assert game_id is None
+
+
+class TestPlanOddsSnapshot:
+    def test_unmapped_events_keep_their_rows_with_a_null_game_id(self):
+        events = [
+            _espn_event(FULL_ODDS),
+            _espn_event(FULL_ODDS, event_id="401810002", home="UTAH", away="WSH"),
+        ]
+
+        rows, mappings, unmapped = plan_odds_snapshot(events, SCHEDULE_ROWS, {})
+
+        assert unmapped == 1
+        assert {r["nba_game_id"] for r in rows if r["espn_event_id"] == "401810002"} == {None}
+        assert [m["nba_game_id"] for m in mappings] == ["0022600012"]
+        assert mappings[0]["mapped_by"] == "date_abbr"
+        assert mappings[0]["home_team_abbr"] == "NYK"
+
+    def test_a_known_mapping_is_reused_and_not_rewritten(self):
+        rows, mappings, unmapped = plan_odds_snapshot(
+            [_espn_event(FULL_ODDS)], [], {"401810001": "0022600099"}
+        )
+
+        assert {r["nba_game_id"] for r in rows} == {"0022600099"}
+        assert mappings == []
+        assert unmapped == 0
+
+    def test_games_already_underway_are_not_snapshotted(self):
+        rows, _, _ = plan_odds_snapshot(
+            [_espn_event(FULL_ODDS, status="STATUS_IN_PROGRESS")], SCHEDULE_ROWS, {}
+        )
+
+        assert rows == []
+
+
+class OddsCursor:
+    def __init__(self):
+        self.statements: list[str] = []
+
+    def execute(self, sql, params=None):
+        self.statements.append(sql)
+
+    def fetchall(self):
+        if "FROM nba_schedule" in self.statements[-1]:
+            return [
+                (r["nba_game_id"], r["game_date"], r["home_team_abbr"], r["away_team_abbr"])
+                for r in SCHEDULE_ROWS
+            ]
+        return []
+
+    def fetchone(self):
+        return (7,) if "RETURNING id" in self.statements[-1] else None
+
+    def close(self):
+        pass
+
+
+class OddsConn:
+    def __init__(self):
+        self.cursor_ = OddsCursor()
+
+    def cursor(self):
+        return self.cursor_
+
+
+class TestScrapeOddsSnapshots:
+    @pytest.fixture
+    def written(self, monkeypatch):
+        batches: list[tuple[str, list]] = []
+        monkeypatch.setattr(
+            database, "execute_values",
+            lambda cur, sql, rows, page_size: batches.append((sql, list(rows))),
+        )
+        return batches
+
+    def _serve(self, monkeypatch, events):
+        monkeypatch.setattr(
+            odds, "fetch_espn_scoreboard_events",
+            lambda day: events if day == date(2026, 10, 21) else [],
+        )
+
+    def test_snapshot_rows_and_the_new_mapping_are_written(self, monkeypatch, written):
+        self._serve(monkeypatch, [_espn_event(FULL_ODDS)])
+
+        ok = odds.scrape_odds_snapshots(OddsConn(), today=date(2026, 10, 21))
+
+        inserts = [rows for sql, rows in written if "INSERT INTO odds_snapshots" in sql]
+        maps = [rows for sql, rows in written if "INSERT INTO espn_event_map" in sql]
+        assert ok is True
+        assert len(inserts[0]) == 6
+        assert {row[1] for row in inserts[0]} == {"0022600012"}
+        assert {row[10:] for row in inserts[0]} == {("espn_scoreboard", 7)}
+        assert maps[0][0][:2] == ("401810001", "0022600012")
+
+    def test_dry_run_reads_but_writes_nothing(self, monkeypatch, written):
+        self._serve(monkeypatch, [_espn_event(FULL_ODDS)])
+        conn = OddsConn()
+
+        ok = odds.scrape_odds_snapshots(conn, dry_run=True, today=date(2026, 10, 21))
+
+        assert ok is True
+        assert written == []
+        assert conn.cursor_.statements
+        assert all(not is_write_statement(sql) for sql in conn.cursor_.statements)
+
+    def test_a_failed_fetch_writes_nothing_and_reports_failure(self, monkeypatch, written):
+        def boom(day):
+            raise requests.ConnectionError("down")
+
+        monkeypatch.setattr(odds, "fetch_espn_scoreboard_events", boom)
+        conn = OddsConn()
+
+        ok = odds.scrape_odds_snapshots(conn, dry_run=True, today=date(2026, 10, 21))
+
+        assert ok is False
+        assert written == []
+        assert conn.cursor_.statements == []
+
+    def test_the_fetch_window_is_today_through_two_days_out(self, monkeypatch, written):
+        seen: list[date] = []
+        monkeypatch.setattr(
+            odds, "fetch_espn_scoreboard_events", lambda day: seen.append(day) or []
+        )
+
+        odds.scrape_odds_snapshots(OddsConn(), dry_run=True, today=date(2026, 10, 21))
+
+        assert seen == [date(2026, 10, 21), date(2026, 10, 22), date(2026, 10, 23)]
+
+    def test_one_failed_day_still_snapshots_the_others(self, monkeypatch, written):
+        def flaky(day):
+            if day == date(2026, 10, 22):
+                raise requests.ConnectionError("down")
+            return [_espn_event(FULL_ODDS)] if day == date(2026, 10, 21) else []
+
+        monkeypatch.setattr(odds, "fetch_espn_scoreboard_events", flaky)
+
+        ok = odds.scrape_odds_snapshots(OddsConn(), today=date(2026, 10, 21))
+
+        inserts = [rows for sql, rows in written if "INSERT INTO odds_snapshots" in sql]
+        assert ok is True
+        assert len(inserts[0]) == 6
+
+
+class TestOddsCli:
+    def test_odds_only_is_off_by_default(self):
+        assert _parse_args([]).odds_only is False
+
+    def test_odds_only_parses_with_dry_run(self):
+        args = _parse_args(["--odds-only", "--dry-run"])
+
+        assert args.odds_only is True
+        assert args.dry_run is True

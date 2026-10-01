@@ -134,11 +134,11 @@ component fetches directly.
   `player_injury_reports`. It uses `CREATE TABLE / INDEX IF NOT EXISTS`
   throughout, so re-running it is safe.
 - **`db/migrations/`** holds sequential, hand-written SQL migrations, `001`
-  through `014`, covering email and password reset, team conference backfill,
+  through `016`, covering email and password reset, team conference backfill,
   user preferences, Google Sign-In, profile fields, betting, bet money fields,
   rate limits, admin and pageviews, the team abbreviation backfill, the
   historical season-stats tables, the NBA 2K ratings tables, the data truth
-  layer, and the prediction store. Each is idempotent, so re-applying one is
+  layer, the prediction store and its run provenance, and the odds history. Each is idempotent, so re-applying one is
   harmless.
 - The four `nba_2k_*` tables are key-value rather than wide (one row per
   attribute, per badge, per game version) because 2K reshuffles its attribute and
@@ -186,6 +186,7 @@ ones a player missed and the reason he missed them.
 | `player_team_stints` | Which team a player belonged to over which span, so a feature cannot leak a trade backwards into pre-trade rows. |
 | `player_injury_reports` | Append-only history of scraped injury designations — "what was known at the time", which the overwrite-in-place `players.injury_status` cannot answer. |
 | `ingestion_runs` | One row per truth-layer scraper phase invocation, for tracing which rows came from which run. |
+| `odds_snapshots` / `espn_event_map` | Migration `016`. Append-only odds history and the ESPN event to NBA game id map; see "Odds snapshots" below. |
 | `prediction_runs` / `player_game_predictions` | Migration `014`. The append-only prediction store — see `ml/README.md` and `ml/MODEL.md` for the modeling side. |
 
 Ids are `TEXT` throughout, because NBA game ids carry leading zeros
@@ -258,6 +259,22 @@ python -m pytest scraper/test_truth_layer.py
 
 Fixtures are copied from `nba_api`'s own `expected_data` column declarations, so
 a fixture that drifts from the real response shape cannot pass silently.
+
+### Odds snapshots
+
+Migration `016` adds `odds_snapshots`, an append-only history of the ESPN
+scoreboard odds the Betting page otherwise only fetches live. `scraper/odds.py`
+reads today through today+2 (Eastern), one request per day, and writes one row
+per market and selection (spread home/away, total over/under, moneyline
+home/away) for every game not yet tipped. The away spread line is the home line
+sign-flipped; `price` is NULL with `price_observed = false` when the provider
+published no price, never a default. Each event is matched to an `nba_schedule`
+game on Eastern date plus home and away tricodes, through an explicit ESPN to
+NBA alias table (`GS` to `GSW`, `NY` to `NYK`, ...), and the match is kept in
+`espn_event_map`; an unmatched event is still recorded, with a NULL
+`nba_game_id`, and counted in its `ingestion_runs` notes. It runs at the end of
+the full scrape and on its own every 30 minutes from 15:00 to 03:30 UTC
+(`python run_scraper.py --odds-only`).
 
 ## Prediction system
 
@@ -334,8 +351,10 @@ successfully. It then:
 3. Runs a smoke test against `/api/health` and the frontend root
 
 **On a 6-hour cron** (`.github/workflows/scraper.yml`): `python
-scraper/run_scraper.py` refreshes stats in Postgres. It can also be triggered
-manually with `workflow_dispatch`.
+scraper/run_scraper.py` refreshes stats in Postgres. The same workflow runs two
+lighter lanes, `--injuries-only` and `--odds-only`, on their own schedules. It
+can also be triggered manually with `workflow_dispatch`, which runs the full
+scrape.
 
 **On a daily cron** (`.github/workflows/predictions.yml`): publishes a fresh
 prediction run to the store once the season is underway; a no-op in the

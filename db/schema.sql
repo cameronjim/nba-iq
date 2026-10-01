@@ -459,6 +459,38 @@ CREATE TABLE IF NOT EXISTS player_injury_reports (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- odds history (migration 016), append-only so a backtest can replay what the
+-- market said at any instant. away spread lines are the home line sign-flipped;
+-- price is NULL when the provider published none, never a default.
+CREATE TABLE IF NOT EXISTS odds_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    espn_event_id TEXT NOT NULL,
+    nba_game_id TEXT,
+    game_date DATE NOT NULL,
+    provider TEXT NOT NULL,
+    market TEXT NOT NULL CHECK (market IN ('spread', 'total', 'moneyline')),
+    selection TEXT NOT NULL CHECK (selection IN ('home', 'away', 'over', 'under')),
+    line NUMERIC,
+    price INTEGER,
+    price_observed BOOLEAN NOT NULL,
+    provider_updated_at TIMESTAMPTZ,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source TEXT NOT NULL,
+    ingestion_run_id INTEGER REFERENCES ingestion_runs (id) ON DELETE SET NULL,
+    CHECK (price_observed = (price IS NOT NULL))
+);
+
+-- espn event id to nba game id; the two id spaces do not join on their own.
+CREATE TABLE IF NOT EXISTS espn_event_map (
+    espn_event_id TEXT PRIMARY KEY,
+    nba_game_id TEXT NOT NULL,
+    game_date DATE NOT NULL,
+    home_team_abbr TEXT,
+    away_team_abbr TEXT,
+    mapped_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- prediction store (migrations 014, 015), append-only: a run writes new rows,
 -- never edits old ones, so a backtest measures foresight not hindsight.
 -- forecast_cutoff_at is the latest instant any input was allowed to see:
@@ -534,6 +566,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_player_team_stints_one_open
   ON player_team_stints(nba_player_id) WHERE valid_to IS NULL;
 CREATE INDEX IF NOT EXISTS idx_player_injury_reports_player_captured
   ON player_injury_reports(nba_player_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_odds_snapshots_game_captured ON odds_snapshots(nba_game_id, captured_at);
+CREATE INDEX IF NOT EXISTS idx_odds_snapshots_event_captured ON odds_snapshots(espn_event_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_predicted_at ON prediction_runs(status, predicted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_channel_served ON prediction_runs(channel, status, predicted_at DESC);
 -- the UNIQUE constraint above does not bite for expected values: Postgres treats
