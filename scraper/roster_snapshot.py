@@ -149,6 +149,7 @@ def scrape_roster_snapshot(
     reference_season: str | None = None,
     delay_seconds: float = ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS,
     snapshot_out: str | None = None,
+    stats_reachable: bool = True,
 ) -> int:
     # the offseason patch for the game-log-derived stint table, which can only
     # learn that a player moved once he has played for the new team. Idempotent:
@@ -168,7 +169,10 @@ def scrape_roster_snapshot(
         dry_run=dry_run,
     )
 
-    snapshot, failed = fetch_roster_snapshot(season, delay_seconds)
+    if stats_reachable:
+        snapshot, failed = fetch_roster_snapshot(season, delay_seconds)
+    else:
+        snapshot, failed = {}, [TEAM_ID_TO_ABBR[t] for t in sorted(TEAM_ID_TO_ABBR)]
     source = ROSTER_SNAPSHOT_SOURCE
     if failed and season == SEASON:
         # the index only describes the current season. it covers all 30 teams in

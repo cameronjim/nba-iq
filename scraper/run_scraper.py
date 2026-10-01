@@ -17,6 +17,7 @@ from config import (
 # --dev/--prod rules must not come to mean two things in two files.
 from database import TARGET_DEV, TARGET_PROD, get_db, resolve_database_url  # noqa: F401
 from parsing import parse_team_types, season_range, season_start_year
+from fetching import stats_nba_reachable
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
@@ -226,8 +227,16 @@ def main(argv: list[str] | None = None) -> None:
         elif args.injuries_only:
             scrape_injuries(conn, dry_run=args.dry_run)
         else:
-            scrape_players(conn, dry_run=args.dry_run)
-            scrape_teams(conn, dry_run=args.dry_run)
+            stats_reachable = stats_nba_reachable()
+            if not stats_reachable:
+                logger.warning(
+                    "stats.nba.com is unreachable: skipping its phases, using nba.com"
+                )
+            scrape_players(
+                conn, dry_run=args.dry_run, stats_reachable=stats_reachable
+            )
+            if stats_reachable:
+                scrape_teams(conn, dry_run=args.dry_run)
             scrape_scoreboard(conn, dry_run=args.dry_run)
             scrape_injuries(conn, dry_run=args.dry_run)
             # truth layer runs last: the four scrapes above back user-visible
@@ -235,18 +244,27 @@ def main(argv: list[str] | None = None) -> None:
             # offseason trades, signings and rookies must land before predictions.
             _run_phase(
                 "roster snapshot",
-                lambda: scrape_roster_snapshot(conn, args.season, dry_run=args.dry_run),
+                lambda: scrape_roster_snapshot(
+                    conn, args.season, dry_run=args.dry_run,
+                    stats_reachable=stats_reachable,
+                ),
             )
             schedule_ok = _run_phase(
-                "schedule", lambda: scrape_schedule(conn, args.season, dry_run=args.dry_run)
+                "schedule",
+                lambda: scrape_schedule(
+                    conn, args.season, dry_run=args.dry_run,
+                    stats_reachable=stats_reachable,
+                ),
             )
-            _run_phase(
-                "game logs", lambda: scrape_game_logs(conn, args.season, dry_run=args.dry_run)
-            )
-            _run_phase(
-                "game status",
-                lambda: scrape_game_status(conn, args.season, dry_run=args.dry_run),
-            )
+            if stats_reachable:
+                _run_phase(
+                    "game logs",
+                    lambda: scrape_game_logs(conn, args.season, dry_run=args.dry_run),
+                )
+                _run_phase(
+                    "game status",
+                    lambda: scrape_game_status(conn, args.season, dry_run=args.dry_run),
+                )
     finally:
         conn.close()
 

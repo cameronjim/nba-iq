@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from datetime import date, datetime
+from functools import lru_cache
 from typing import Callable, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,9 @@ from config import (
     NBA_WEB_TIMEOUT_SECONDS,
     SEASON,
     SEASON_TYPE_REGULAR,
+    STATS_HEADERS,
+    STATS_PROBE_TIMEOUT_SECONDS,
+    STATS_PROBE_URL,
 )
 from parsing import (
     _normalize_name,
@@ -130,7 +134,9 @@ def _fetch_nba_positions() -> dict[str, str]:
 
     position_map: dict[str, str] = {}
     try:
-        pi = playerindex.PlayerIndex(season=SEASON, league_id="00", timeout=60)
+        pi = playerindex.PlayerIndex(
+            season=SEASON, league_id="00", timeout=60, headers=STATS_HEADERS
+        )
         df = pi.get_data_frames()[0]
         for _, row in df.iterrows():
             pid = str(row.get("PERSON_ID", ""))
@@ -148,6 +154,7 @@ def fetch_player_stats(season: str = SEASON) -> object:
         per_mode_detailed="PerGame",
         season_type_all_star="Regular Season",
         timeout=60,
+        headers=STATS_HEADERS,
     )
 
 
@@ -157,6 +164,7 @@ def fetch_team_stats(season: str = SEASON) -> object:
         per_mode_detailed="PerGame",
         season_type_all_star="Regular Season",
         timeout=60,
+        headers=STATS_HEADERS,
     )
 
 
@@ -167,6 +175,7 @@ def fetch_advanced_team_stats(season: str = SEASON) -> object:
         measure_type_detailed_defense="Advanced",
         season_type_all_star="Regular Season",
         timeout=60,
+        headers=STATS_HEADERS,
     )
 
 
@@ -350,6 +359,7 @@ def _fetch_player_game_logs(
             season_type_nullable=season_type,
             date_from_nullable=date_from.strftime("%m/%d/%Y") if date_from else "",
             timeout=60,
+            headers=STATS_HEADERS,
         )
 
     logs = _fetch_with_retry(f"player game logs {season}", fetch)
@@ -368,6 +378,7 @@ def _fetch_league_player_game_logs(
             player_or_team_abbreviation="P",
             date_from_nullable=date_from.strftime("%m/%d/%Y") if date_from else "",
             timeout=60,
+            headers=STATS_HEADERS,
         )
 
     logs = _fetch_with_retry(f"league player game logs {season}", fetch)
@@ -384,6 +395,7 @@ def _fetch_team_game_logs(
             player_or_team_abbreviation="T",
             date_from_nullable=date_from.strftime("%m/%d/%Y") if date_from else "",
             timeout=60,
+            headers=STATS_HEADERS,
         )
 
     logs = _fetch_with_retry(f"team game logs {season}", fetch)
@@ -396,7 +408,9 @@ def _fetch_league_schedule(season: str) -> list[dict]:
     from nba_api.stats.endpoints import scheduleleaguev2
 
     def fetch() -> object:
-        return scheduleleaguev2.ScheduleLeagueV2(season=season, timeout=60)
+        return scheduleleaguev2.ScheduleLeagueV2(
+            season=season, timeout=60, headers=STATS_HEADERS
+        )
 
     schedule = _fetch_with_retry(f"league schedule {season}", fetch)
     return schedule.season_games.get_data_frame().to_dict("records")
@@ -410,10 +424,14 @@ def _fetch_inactive_players(game_id: str, game_date: date | None) -> tuple[list[
     from nba_api.stats.endpoints import boxscoresummaryv2, boxscoresummaryv3
 
     def fetch_v3() -> object:
-        return boxscoresummaryv3.BoxScoreSummaryV3(game_id=game_id, timeout=60)
+        return boxscoresummaryv3.BoxScoreSummaryV3(
+            game_id=game_id, timeout=60, headers=STATS_HEADERS
+        )
 
     def fetch_v2() -> object:
-        return boxscoresummaryv2.BoxScoreSummaryV2(game_id=game_id, timeout=60)
+        return boxscoresummaryv2.BoxScoreSummaryV2(
+            game_id=game_id, timeout=60, headers=STATS_HEADERS
+        )
 
     v2_unreliable = v2_inactive_is_unreliable(game_date)
 
@@ -439,7 +457,8 @@ def _fetch_team_roster(
 ) -> list[dict]:
     def fetch() -> commonteamroster.CommonTeamRoster:
         return commonteamroster.CommonTeamRoster(
-            team_id=team_id, season=season, timeout=timeout
+            team_id=team_id, season=season, timeout=timeout,
+            headers=STATS_HEADERS,
         )
 
     roster = _fetch_with_retry(
@@ -472,5 +491,24 @@ def _fetch_nba_web_games(game_date: date) -> dict:
     )
 
 
+@lru_cache(maxsize=1)
 def _fetch_nba_web_players() -> dict:
+    # cached so the players table and the roster snapshot share one request.
     return _fetch_nba_web_page("nba.com players index", NBA_WEB_PLAYERS_URL)
+
+
+def stats_nba_reachable() -> bool:
+    # one cheap request: stats.nba.com either answers quickly or never does
+    # (datacenter ips are tarpitted), so there is no point retrying.
+    try:
+        resp = requests.get(
+            STATS_PROBE_URL,
+            params={"LeagueID": "00", "Season": SEASON, "TeamID": "1610612738"},
+            headers=STATS_HEADERS,
+            timeout=STATS_PROBE_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.warning("stats.nba.com unreachable (%s)", e)
+        return False
+    return True

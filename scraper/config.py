@@ -126,6 +126,24 @@ TRUTH_LAYER_TABLES = (
 ROSTER_SNAPSHOT_SOURCE = "roster_snapshot"
 ROSTER_WEB_SOURCE = "nba_web_players"
 
+# stats.nba.com tarpits requests that lack a current browser fingerprint,
+# including the Sec-Fetch-* headers; nba_api's defaults are too old.
+STATS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www.nba.com",
+    "Referer": "https://www.nba.com/",
+    "Sec-Fetch-Site": "same-site",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+}
+STATS_PROBE_URL = "https://stats.nba.com/stats/commonteamroster"
+STATS_PROBE_TIMEOUT_SECONDS = 10
+
 NBA_WEB_GAMES_URL = "https://www.nba.com/games"
 NBA_WEB_PLAYERS_URL = "https://www.nba.com/players"
 NBA_WEB_TIMEOUT_SECONDS = 30

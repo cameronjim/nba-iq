@@ -298,6 +298,7 @@ def scrape_schedule(
     conn: psycopg2.extensions.connection,
     season: str = SEASON,
     dry_run: bool = False,
+    stats_reachable: bool = True,
 ) -> bool:
     # returns False only when every source failed. ESPN is deliberately not a
     # source: its event ids join to no NBA game id, unlike nba.com's.
@@ -308,6 +309,8 @@ def scrape_schedule(
 
     rows: list[dict] = []
     try:
+        if not stats_reachable:
+            raise ConnectionError("stats.nba.com unreachable")
         rows = schedule_rows_from_league_schedule(_fetch_league_schedule(season), season)
         logger.info("schedule: %d game(s) from scheduleleaguev2", len(rows))
     except Exception as e:  # noqa: BLE001 - falling back is the handling
@@ -315,6 +318,12 @@ def scrape_schedule(
         rows = fetch_nba_web_schedule_rows(season)
         if rows:
             logger.info("schedule: %d game(s) from nba.com", len(rows))
+        elif not stats_reachable:
+            logger.error("schedule: nba.com returned nothing and stats.nba.com is down")
+            _finish_ingestion_run(
+                conn, run_id, "failed", 0, notes="nba.com empty, stats.nba.com down"
+            )
+            return False
         else:
             logger.warning(
                 "schedule: nba.com returned nothing; falling back to completed "

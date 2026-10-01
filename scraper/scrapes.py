@@ -7,10 +7,11 @@ import psycopg2
 from bs4 import BeautifulSoup
 
 from config import SEASON, TEAM_META
-from database import maybe_write_cursor
+from database import _batch_upsert, maybe_write_cursor
 from fetching import (
     _fetch_cbs_positions,
     _fetch_espn_scoreboard,
+    _fetch_nba_web_players,
     _fetch_nba_positions,
     fetch_advanced_team_stats,
     fetch_injury_page,
@@ -25,12 +26,62 @@ from parsing import (
     normalize_injury_status,
     resolve_positions,
 )
+from rows import player_rows_from_nba_players_index
 
 logger = logging.getLogger(__name__)
 
-def scrape_players(
+# a richer stored position (e.g. CBS's 'SF,PF') is never replaced by the index's
+# coarse one; the headshot and name of an existing row are left alone too.
+WEB_PLAYERS_UPSERT_SQL = """
+    INSERT INTO players (nba_id, name, team, position, headshot_url)
+    VALUES %s
+    ON CONFLICT (nba_id) DO UPDATE SET
+        team = EXCLUDED.team,
+        position = COALESCE(NULLIF(players.position, ''), EXCLUDED.position),
+        headshot_url = COALESCE(players.headshot_url, EXCLUDED.headshot_url),
+        updated_at = NOW()
+"""
+
+
+def scrape_players_from_web(
     conn: psycopg2.extensions.connection, dry_run: bool = False
+) -> int:
+    # fallback for when stats.nba.com is unreachable: the nba.com players index
+    # carries the current team of every rostered player, including offseason
+    # movers and rookies, but no stats. free agents and retired players are
+    # absent from it and keep their rows untouched.
+    logger.info("fetching players from the nba.com players index...")
+    try:
+        rows = player_rows_from_nba_players_index(_fetch_nba_web_players())
+    except Exception as e:  # noqa: BLE001 - nothing else to fall back to
+        logger.error("nba.com players index failed: %s", e)
+        return 0
+    if not rows:
+        logger.warning("nba.com players index had no rostered players")
+        return 0
+
+    cur = maybe_write_cursor(conn.cursor(), dry_run)
+    try:
+        written = _batch_upsert(cur, WEB_PLAYERS_UPSERT_SQL, rows)
+    finally:
+        cur.close()
+    logger.info(
+        "upserted %d players from nba.com%s",
+        written,
+        " (dry run: nothing written)" if dry_run else "",
+    )
+    return written
+
+
+def scrape_players(
+    conn: psycopg2.extensions.connection,
+    dry_run: bool = False,
+    stats_reachable: bool = True,
 ) -> None:
+    if not stats_reachable:
+        scrape_players_from_web(conn, dry_run=dry_run)
+        return
+
     logger.info("fetching player stats...")
 
     logger.info("fetching player positions from CBS Sports...")
@@ -49,6 +100,7 @@ def scrape_players(
         logger.info("got %d players from NBA API", len(df))
     except Exception as e:
         logger.error("error fetching player stats: %s", e)
+        scrape_players_from_web(conn, dry_run=dry_run)
         return
 
     cur = maybe_write_cursor(conn.cursor(), dry_run)
