@@ -1,7 +1,7 @@
 import axios from 'axios';
 import type {
   Player, Team, Game, RosterPlayer, ChatMessage, TeamAnalysis,
-  BettingGame, BettingPicksResponse, Bet, NewBet, LedgerSummary, BetStatus,
+  BettingGame, PropPicksResponse, Bet, NewBet, LedgerSummary, BetStatus,
   PlayerSeasonRow, TeamSeasonRow,
   Rating2kSummary, Rating2kDetail, Rating2kTeamType,
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, SlateSort, WatchlistResponse,
@@ -91,12 +91,6 @@ export async function updateProfile(updates: ProfileUpdate): Promise<CurrentUser
   return data;
 }
 
-export interface BettingPreferences {
-  risk_appetite?: 'conservative' | 'balanced' | 'aggressive';
-  preferred_markets?: Array<'spread' | 'total' | 'moneyline' | 'parlay'>;
-  extra_notes?: string;
-}
-
 export interface AIPreferences {
   risk_tolerance?: 'avoid_injured' | 'balanced' | 'high_upside';
   player_age_pref?: 'veterans' | 'balanced' | 'young_upside';
@@ -113,7 +107,6 @@ export interface AIPreferences {
   bench_philosophy?: 'high_upside_stash' | 'safe_role_players' | 'streaming_slots';
   position_needs?: string[];
   extra_notes?: string;
-  betting?: BettingPreferences;
 }
 
 export async function getPreferences(): Promise<AIPreferences> {
@@ -442,8 +435,8 @@ export async function getBettingOdds(): Promise<{ games: BettingGame[]; fetched_
   return data;
 }
 
-export async function getBettingPicks(refresh?: boolean): Promise<BettingPicksResponse> {
-  const { data } = await api.get('/betting/picks', { params: refresh ? { refresh: 'true' } : {} });
+export async function getPropPicks(): Promise<PropPicksResponse> {
+  const { data } = await api.get('/betting/props');
   return data;
 }
 

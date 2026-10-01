@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { BettingPage } from './pages';
 import { mockApi } from './fixtures/apiMock';
-import type { BettingGame, BettingPicksResponse } from '../src/types';
+import type { BettingGame, PropPicksResponse } from '../src/types';
 
 const makeGame = (id: string, home: string, away: string): BettingGame => ({
   espn_event_id: id,
@@ -35,36 +35,15 @@ const MANY_GAMES: BettingGame[] = [
 
 const KNICKS_GAME = 'San Antonio Spurs at New York Knicks · 6/10 - 8:30 PM EDT · New York Knicks favored by 2.5 · total 216.5';
 
-const PICKS_FIXTURE: BettingPicksResponse = {
+const PROPS_FIXTURE: PropPicksResponse = {
+  run: { predicted_at: '2026-06-10T15:00:00Z', information_as_of: '2026-06-10T14:00:00Z' },
   picks: [
     {
-      game_id: '401859966', category: 'best_value', market: 'spread', selection: 'home',
-      matchup: 'San Antonio Spurs @ New York Knicks', game_date: '2026-06-10',
-      tipoff: '6/10 - 8:30 PM EDT', selection_label: 'New York Knicks -2.5',
-      line: -2.5, american_odds: -105, implied_prob: 0.5122, implied_prob_novig: 0.4891,
-      estimated_win_prob: 0.58, estimate_source: 'claude', edge: 0.0678,
-      rationale: 'Rest advantage and a top-five defense at home.', confidence: 'medium',
-    },
-    {
-      game_id: '401859966', category: 'safe', market: 'moneyline', selection: 'home',
-      matchup: 'San Antonio Spurs @ New York Knicks', game_date: '2026-06-10',
-      tipoff: '6/10 - 8:30 PM EDT', selection_label: 'New York Knicks ML (-130)',
-      line: null, american_odds: -130, implied_prob: 0.5652, implied_prob_novig: 0.5367,
-      estimated_win_prob: 0.62, estimate_source: 'claude', edge: 0.0548,
-      rationale: 'Better team straight up.', confidence: 'high',
+      player_name: 'Jalen Brunson', team: 'NYK', opponent: 'SAS', game_date: '2026-06-10',
+      market: 'pts', line: 28.5, side: 'over', bookmaker: 'DraftKings', price: -115,
+      model_prob: 0.58, implied_prob_novig: 0.5304, ev: 0.08, prob_active: 0.82, void_rule: 'dnp',
     },
   ],
-  parlay: {
-    legs: [
-      { game_id: '401859966', market: 'spread', selection: 'home', selection_label: 'New York Knicks -2.5', matchup: 'San Antonio Spurs @ New York Knicks', american_odds: -105 },
-      { game_id: '401859967', market: 'total', selection: 'under', selection_label: 'Under 216.5', matchup: 'Boston Celtics @ Miami Heat', american_odds: -108 },
-    ],
-    combined_american: 271,
-    combined_implied_prob: 0.2695,
-    rationale: 'Two slow-pace plays.',
-    ev_note: 'Parlays multiply the house edge, so treat this as entertainment.',
-  },
-  summary: 'One strong value play on a thin slate.',
 };
 
 const signIn = async (page: import('@playwright/test').Page): Promise<void> => {
@@ -74,7 +53,7 @@ const signIn = async (page: import('@playwright/test').Page): Promise<void> => {
 };
 
 test.describe('Betting page', () => {
-  test('signed-out visitors see games in plain words, chat, glossary, and a sign-in prompt', async ({ page }) => {
+  test('signed-out visitors see games, prop picks, chat, glossary, and a sign-in prompt', async ({ page }) => {
     await mockApi(page, { bettingOdds: ODDS_FIXTURE });
 
     const betting = new BettingPage(page);
@@ -83,8 +62,9 @@ test.describe('Betting page', () => {
     await expect(betting.disclaimer()).toBeVisible();
     await expect(betting.signInPrompt()).toBeVisible();
     await expect(betting.gamesHeading()).toBeVisible();
-    await expect(betting.picksHeading()).toBeVisible();
-    await expect(betting.betsHeading()).toHaveCount(0);
+    await expect(betting.propsHeading()).toBeVisible();
+    await expect(betting.propsEmpty()).toBeVisible();
+    await expect(betting.betsHeading()).toBeVisible();
     await expect(betting.glossaryHeading()).toBeVisible();
     await expect(betting.chatHeading()).toBeVisible();
     await expect(page.getByText(KNICKS_GAME)).toBeVisible();
@@ -123,31 +103,47 @@ test.describe('Betting page', () => {
     await expect(page.getByRole('button', { name: 'See less' })).toBeVisible();
   });
 
-  test("signed-in users see Claude's picks in plain words and a folded parlay idea", async ({ page }) => {
-    await mockApi(page, { bettingOdds: ODDS_FIXTURE, bettingPicks: PICKS_FIXTURE });
-    await signIn(page);
+  test('prop picks are public and read as one sentence each', async ({ page }) => {
+    await mockApi(page, { bettingOdds: ODDS_FIXTURE, propPicks: PROPS_FIXTURE });
 
     const betting = new BettingPage(page);
     await betting.goto();
 
-    await expect(page.getByText(/win chances below are Claude's estimates, not the model's/)).toBeVisible();
-    await expect(page.getByText('New York Knicks -2.5 (-105)', { exact: true })).toBeVisible();
-    await expect(page.getByText(/Best value · Medium confidence/)).toBeVisible();
-    await expect(page.getByText('New York Knicks to win (-130)')).toBeVisible();
-    await expect(page.getByText(/Safer · High confidence/)).toBeVisible();
-    await expect(
-      page.getByText('Claude thinks this hits about 58% of the time; the price implies 49%.')
-    ).toBeVisible();
+    await expect(page.getByText('Probabilities come from the projection model, not Claude.')).toBeVisible();
+    await expect(page.getByText(
+      'Jalen Brunson over 28.5 points (-115, DraftKings) · the model gives this 58%; the price implies 53% · 82% to play'
+    )).toBeVisible();
+  });
 
-    const leg = page.getByText('Under 216.5 (-108), Boston Celtics at Miami Heat.');
-    await expect(leg).not.toBeVisible();
-    await betting.parlayToggle().click();
-    await expect(leg).toBeVisible();
-    await expect(page.getByText(/Parlays multiply the house edge/i)).toBeVisible();
+  test('prop picks fall back to one sentence when the endpoint is missing', async ({ page }) => {
+    await mockApi(page, { bettingOdds: ODDS_FIXTURE });
+    await page.route('**/api/betting/props', (route) => route.fulfill({ status: 404, json: { error: 'Not found' } }));
+
+    const betting = new BettingPage(page);
+    await betting.goto();
+
+    await expect(betting.propsEmpty()).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Try again' })).toHaveCount(0);
+  });
+
+  test('the page never asks Claude for game picks', async ({ page }) => {
+    await mockApi(page, { bettingOdds: ODDS_FIXTURE });
+    await signIn(page);
+    const picksRequests: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/betting/picks')) picksRequests.push(req.url());
+    });
+
+    const betting = new BettingPage(page);
+    await betting.goto();
+
+    await expect(betting.propsEmpty()).toBeVisible();
+    await expect(betting.betsHeading()).toBeVisible();
+    expect(picksRequests).toEqual([]);
   });
 
   test('adding a straight bet prefills the line and odds from the posted market', async ({ page }) => {
-    await mockApi(page, { bettingOdds: ODDS_FIXTURE, bettingPicks: PICKS_FIXTURE });
+    await mockApi(page, { bettingOdds: ODDS_FIXTURE, propPicks: PROPS_FIXTURE });
     await signIn(page);
 
     const posted: Array<Record<string, unknown>> = [];
@@ -183,7 +179,7 @@ test.describe('Betting page', () => {
   });
 
   test('adding a custom bet posts it and the ledger shows it', async ({ page }) => {
-    await mockApi(page, { bettingOdds: ODDS_FIXTURE, bettingPicks: PICKS_FIXTURE });
+    await mockApi(page, { bettingOdds: ODDS_FIXTURE, propPicks: PROPS_FIXTURE });
     await signIn(page);
 
     // registered after mockApi so this stateful handler takes precedence over the default one.
@@ -230,23 +226,6 @@ test.describe('Betting page', () => {
 
     await expect(page.getByRole('button', { name: 'Mark won' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Mark lost' })).toBeVisible();
-  });
-
-  test('saving betting preferences re-runs the analysis with refresh=true', async ({ page }) => {
-    await mockApi(page, { bettingOdds: ODDS_FIXTURE, bettingPicks: PICKS_FIXTURE });
-    await signIn(page);
-
-    const betting = new BettingPage(page);
-    await betting.goto();
-
-    await betting.prefsToggle().click();
-    await page.getByRole('button', { name: 'Aggressive' }).click();
-
-    const refreshRequest = page.waitForRequest((req) =>
-      req.url().includes('/api/betting/picks') && req.url().includes('refresh=true')
-    );
-    await betting.savePrefsButton().click();
-    await refreshRequest;
   });
 
   test('glossary entries expand with plain-english explanations', async ({ page }) => {

@@ -4,7 +4,7 @@ import { slateFixture } from './slate';
 import { watchlistFixture } from './watchlist';
 import type {
   Team, Game, TeamAnalysis,
-  BettingGame, BettingPicksResponse, Bet, LedgerSummary,
+  BettingGame, PropPicksResponse, Bet, LedgerSummary,
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, WatchlistResponse,
 } from '../../src/types';
 
@@ -27,7 +27,7 @@ export interface MockOptions {
   teamAnalysis?: TeamAnalysis;
   waiverSuggestions?: WaiverSuggestionsResponse;
   bettingOdds?: BettingGame[];
-  bettingPicks?: BettingPicksResponse;
+  propPicks?: PropPicksResponse;
   bets?: { bets: Bet[]; summary: LedgerSummary };
   watchlist?: WatchlistResponse | ((params: URLSearchParams) => WatchlistResponse);
   slate?: SlateResponse | ((params: URLSearchParams) => SlateResponse);
@@ -152,10 +152,9 @@ export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void>
     route.fulfill({ json: { games: opts.bettingOdds ?? [], fetched_at: '2026-05-24T12:00:00Z' } }),
   );
 
-  await page.route('**/api/betting/picks*', (route) => {
-    const fallback: BettingPicksResponse = { picks: [], parlay: null, summary: '', no_games: true };
-    route.fulfill({ json: opts.bettingPicks ?? fallback });
-  });
+  await page.route('**/api/betting/props', (route) =>
+    route.fulfill({ json: opts.propPicks ?? { run: null, picks: [] } }),
+  );
 
   await page.route('**/api/betting/bets**', (route) => {
     const method = route.request().method();

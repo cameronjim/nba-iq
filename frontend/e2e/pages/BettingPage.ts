@@ -16,15 +16,19 @@ export class BettingPage {
   }
 
   signInPrompt(): Locator {
-    return this.page.getByText(/Sign in to see Claude's betting picks/i);
+    return this.page.getByText('Sign in to track your bets.');
   }
 
   gamesHeading(): Locator {
     return this.page.getByRole('heading', { name: "Tonight's games" });
   }
 
-  picksHeading(): Locator {
-    return this.page.getByRole('heading', { name: 'Picks', exact: true });
+  propsHeading(): Locator {
+    return this.page.getByRole('heading', { name: 'Prop picks' });
+  }
+
+  propsEmpty(): Locator {
+    return this.page.getByText('Prop picks appear here once prop odds are connected.');
   }
 
   betsHeading(): Locator {
@@ -48,24 +52,12 @@ export class BettingPage {
     return row.getByText('Prices', { exact: true });
   }
 
-  parlayToggle(): Locator {
-    return this.page.getByText("Claude's parlay idea", { exact: true });
-  }
-
   addBetButton(): Locator {
     return this.page.getByRole('button', { name: 'Add a bet' });
   }
 
   manageToggle(betText: string): Locator {
     return this.page.getByLabel(`Manage bet: ${betText}`);
-  }
-
-  prefsToggle(): Locator {
-    return this.page.getByRole('button', { name: /Betting Preferences/i });
-  }
-
-  savePrefsButton(): Locator {
-    return this.page.getByRole('button', { name: /Save & Re-analyze/i });
   }
 
   chatHeading(): Locator {

@@ -1,12 +1,10 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { useBettingPicks } from '../hooks/useBettingPicks';
+import { useBettingOdds } from '../hooks/useBettingOdds';
 import { useBetLedger } from '../hooks/useBetLedger';
 import { GamesList } from '../components/betting/GamesList';
-import { PicksList } from '../components/betting/PicksList';
 import { ModelPropsSection } from '../components/betting/ModelPropsSection';
 import { MyBets } from '../components/betting/MyBets';
-import { BettingPrefsPanel } from '../components/betting/BettingPrefsPanel';
 import { BettingGlossary } from '../components/betting/BettingGlossary';
 import { ChatBox } from '../components/ChatBox';
 
@@ -24,10 +22,7 @@ const Section = ({ title, children }: { title: string; children: ReactNode }): J
 );
 
 export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
-  const {
-    odds, oddsLoading, oddsError, reloadOdds,
-    picks, picksLoading, refreshing, picksError, reloadPicks,
-  } = useBettingPicks(isLoggedIn);
+  const { odds, oddsLoading, oddsError, reloadOdds } = useBettingOdds();
   const {
     bets, summary, loading: ledgerLoading, error: ledgerError,
     trackBet, settleBet, removeBet, reload: reloadLedger,
@@ -47,30 +42,13 @@ export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
         <GamesList games={odds} loading={oddsLoading} error={oddsError} onRetry={reloadOdds} />
       </Section>
 
-      <Section title="Picks">
-        <p className="text-xs text-muted">
-          The win chances below are Claude's estimates, not the model's. Model-based player props will appear
-          here when available.
-        </p>
-        {isLoggedIn ? (
-          <>
-            <BettingPrefsPanel onSaved={() => void reloadPicks(true)} />
-            <PicksList
-              picks={picks}
-              loading={picksLoading}
-              refreshing={refreshing}
-              error={picksError}
-              onReload={(refresh) => void reloadPicks(refresh)}
-            />
-          </>
-        ) : (
-          <p className="text-sm">Sign in to see Claude's betting picks and track your own bets.</p>
-        )}
+      <Section title="Prop picks">
+        <p className="text-xs text-muted">Probabilities come from the projection model, not Claude.</p>
         <ModelPropsSection />
       </Section>
 
-      {isLoggedIn && (
-        <Section title="My bets">
+      <Section title="My bets">
+        {isLoggedIn ? (
           <MyBets
             bets={bets}
             summary={summary}
@@ -82,8 +60,10 @@ export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
             onSettleBet={settleBet}
             onRemoveBet={removeBet}
           />
-        </Section>
-      )}
+        ) : (
+          <p className="text-sm">Sign in to track your bets.</p>
+        )}
+      </Section>
 
       <ChatBox
         contextType="betting"

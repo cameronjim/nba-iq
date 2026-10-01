@@ -1,17 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import {
-  chanceSentence,
   favoredText,
   gameSentence,
   ledgerBetText,
   ledgerSummarySentence,
   moneyText,
   priceText,
+  propMarketWords,
+  propSentence,
   resultWord,
-  straightBetText,
   totalText,
 } from '../../src/utils/bettingCopy';
-import type { Bet, BettingGame, SpreadMarket } from '../../src/types';
+import type { Bet, BettingGame, PropPick, SpreadMarket } from '../../src/types';
 
 const spread = (homeLine: number): SpreadMarket => ({
   home_line: homeLine,
@@ -95,39 +95,49 @@ describe('gameSentence', () => {
   });
 });
 
-describe('chanceSentence', () => {
-  it('compares against the no-vig price when it is present', () => {
+const curry: PropPick = {
+  player_name: 'Stephen Curry', team: 'GSW', opponent: 'LAL', game_date: '2026-10-21',
+  market: 'pts', line: 24.5, side: 'over', bookmaker: 'DraftKings', price: -115,
+  model_prob: 0.58, implied_prob_novig: 0.5304, ev: 0.08, prob_active: 0.82, void_rule: 'dnp',
+};
+
+describe('propSentence', () => {
+  it('reads a prop as one sentence with the model, the price, and the chance to play', () => {
     // act
-    const sentence = chanceSentence(0.55, 0.5238, 0.5);
+    const sentence = propSentence(curry);
 
     // assert
-    expect(sentence).toBe('Claude thinks this hits about 55% of the time; the price implies 50%.');
+    expect(sentence).toBe(
+      'Stephen Curry over 24.5 points (-115, DraftKings) · the model gives this 58%; the price implies 53% · 82% to play'
+    );
   });
 
-  it('falls back to the raw implied price when no-vig is missing', () => {
+  it('keeps the sign on plus prices and handles unders', () => {
     // act
-    const sentence = chanceSentence(0.55, 0.5238, null);
+    const sentence = propSentence({ ...curry, side: 'under', market: 'fg3m', line: 4.5, price: 120 });
 
     // assert
-    expect(sentence).toBe('Claude thinks this hits about 55% of the time; the price implies 52%.');
+    expect(sentence).toMatch(/^Stephen Curry under 4\.5 threes \(\+120, DraftKings\)/);
+  });
+
+  it('drops the price chance and the chance to play when they are missing', () => {
+    // act
+    const sentence = propSentence({ ...curry, implied_prob_novig: null, prob_active: null });
+
+    // assert
+    expect(sentence).toBe('Stephen Curry over 24.5 points (-115, DraftKings) · the model gives this 58%');
   });
 });
 
-describe('straightBetText', () => {
-  it('appends the price to spread and total labels', () => {
-    // act + assert
-    expect(straightBetText({
-      market: 'spread', selection: 'home', selection_label: 'Golden State Warriors -4.5',
-      matchup: 'Los Angeles Lakers @ Golden State Warriors', american_odds: -110,
-    })).toBe('Golden State Warriors -4.5 (-110)');
-  });
+describe('propMarketWords', () => {
+  it('names every prop market in words', () => {
+    // act
+    const words = (['pts', 'reb', 'ast', 'fg3m', 'pra', 'stl', 'blk', 'tov'] as const).map((m) => propMarketWords(m));
 
-  it('turns a moneyline into a team to win', () => {
-    // act + assert
-    expect(straightBetText({
-      market: 'moneyline', selection: 'away', selection_label: 'Los Angeles Lakers ML (+150)',
-      matchup: 'Los Angeles Lakers @ Golden State Warriors', american_odds: 150,
-    })).toBe('Los Angeles Lakers to win (+150)');
+    // assert
+    expect(words).toEqual([
+      'points', 'rebounds', 'assists', 'threes', 'points + rebounds + assists', 'steals', 'blocks', 'turnovers',
+    ]);
   });
 });
 

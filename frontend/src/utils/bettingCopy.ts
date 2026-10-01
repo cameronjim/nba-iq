@@ -1,19 +1,17 @@
 import { formatAmerican, formatLine } from './formatOdds';
 import type {
-  Bet, BetSelection, BetStatus, BettingGame, BettingPick, LedgerSummary,
-  SpreadMarket, StraightMarket, TotalMarket,
+  Bet, BetStatus, BettingGame, LedgerSummary, PropMarket, PropPick, SpreadMarket, TotalMarket,
 } from '../types';
 
-const CATEGORY_LABELS: Record<BettingPick['category'], string> = {
-  best_value: 'Best value',
-  safe: 'Safer',
-  hail_mary: 'Long shot',
-};
-
-const CONFIDENCE_WORDS: Record<BettingPick['confidence'], string> = {
-  low: 'Low confidence',
-  medium: 'Medium confidence',
-  high: 'High confidence',
+const MARKET_WORDS: Record<PropMarket, string> = {
+  pts: 'points',
+  reb: 'rebounds',
+  ast: 'assists',
+  fg3m: 'threes',
+  pra: 'points + rebounds + assists',
+  stl: 'steals',
+  blk: 'blocks',
+  tov: 'turnovers',
 };
 
 const RESULT_WORDS: Record<BetStatus, string> = {
@@ -50,47 +48,18 @@ function percent(p: number): string {
   return `${Math.round(p * 100)}%`;
 }
 
-export function chanceSentence(estimate: number, implied: number, impliedNoVig: number | null): string {
-  // the no-vig price is the fairer comparison, so it wins whenever both sides were priced.
-  const priceChance = impliedNoVig ?? implied;
-  return `Claude thinks this hits about ${percent(estimate)} of the time; the price implies ${percent(priceChance)}.`;
+export function propMarketWords(market: PropMarket): string {
+  return MARKET_WORDS[market];
 }
 
-export function teamFromMatchup(matchup: string, selection: BetSelection): string | null {
-  const [away, home] = matchup.split(' @ ');
-  if (!away || !home) return null;
-  if (selection === 'home') return home;
-  if (selection === 'away') return away;
-  return null;
-}
-
-export function matchupWords(matchup: string): string {
-  return matchup.replace(' @ ', ' at ');
-}
-
-interface StraightBetFields {
-  market: StraightMarket;
-  selection: BetSelection;
-  selection_label: string;
-  matchup: string;
-  american_odds: number;
-}
-
-export function straightBetText(bet: StraightBetFields): string {
-  const odds = formatAmerican(bet.american_odds);
-  if (bet.market === 'moneyline') {
-    const team = teamFromMatchup(bet.matchup, bet.selection);
-    return team ? `${team} to win (${odds})` : bet.selection_label;
-  }
-  return `${bet.selection_label} (${odds})`;
-}
-
-export function categoryLabel(category: BettingPick['category']): string {
-  return CATEGORY_LABELS[category];
-}
-
-export function confidenceWord(confidence: BettingPick['confidence']): string {
-  return CONFIDENCE_WORDS[confidence];
+export function propSentence(pick: PropPick): string {
+  const bet = `${pick.player_name} ${pick.side} ${pick.line} ${propMarketWords(pick.market)}`;
+  const price = `(${formatAmerican(pick.price)}, ${pick.bookmaker})`;
+  const chance = pick.implied_prob_novig != null
+    ? `the model gives this ${percent(pick.model_prob)}; the price implies ${percent(pick.implied_prob_novig)}`
+    : `the model gives this ${percent(pick.model_prob)}`;
+  const play = pick.prob_active != null ? ` · ${percent(pick.prob_active)} to play` : '';
+  return `${bet} ${price} · ${chance}${play}`;
 }
 
 export function resultWord(status: BetStatus): string {
