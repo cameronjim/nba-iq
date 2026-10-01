@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { query } from '../db.js';
 import type { AuthRequest } from '../middleware/auth.js';
+import { parsePredictionDate } from '../services/slate.js';
+import { MAX_WINDOW_DAYS } from '../services/watchlist.js';
+import { getWeeklyOutlook, parseOutlookDays } from '../services/weeklyOutlook.js';
 
 const router = Router();
 
@@ -63,6 +66,26 @@ router.delete('/roster/:playerId', async (req: Request, res: Response): Promise<
     res.json({ message: 'Player removed' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to remove player' });
+  }
+});
+
+router.get('/weekly-outlook', async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as AuthRequest).userId;
+  const start = parsePredictionDate(req.query.start);
+  if (start === null) {
+    res.status(400).json({ error: 'start must be a calendar day formatted YYYY-MM-DD' });
+    return;
+  }
+  const days = parseOutlookDays(req.query.days);
+  if (days === null) {
+    res.status(400).json({ error: `days must be a whole number between 1 and ${MAX_WINDOW_DAYS}` });
+    return;
+  }
+
+  try {
+    res.json(await getWeeklyOutlook(userId, start, days));
+  } catch {
+    res.status(500).json({ error: 'Failed to build weekly outlook' });
   }
 });
 
