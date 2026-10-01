@@ -299,6 +299,14 @@ class TestWiring:
         assert notes.endswith("coherence=all")
         assert "slate" in notes
 
+    def test_the_default_choice_leaves_the_frozen_note_untouched(self) -> None:
+        # act
+        notes = predict.run_notes(3, 10, "slate", "none")
+
+        # assert
+        assert "coherence" not in notes
+        assert notes.endswith("slate")
+
     def test_report_cli_parses_its_args(self) -> None:
         # act
         args = report_coherence.parse_args(["--dataset", "x.parquet", "--version", "v"])

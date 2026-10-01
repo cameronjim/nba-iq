@@ -408,12 +408,16 @@ def forecast_cutoff(run_at: pd.Timestamp, information_as_of: pd.Timestamp) -> pd
 def run_notes(
     cold_rows: int, n_rows: int, notes: str | None, coherence: str = COHERENCE_NONE
 ) -> str:
-    """the run-level notes: cold-start count, user text, then the coherence choice."""
+    """the run-level notes: cold-start count, user text, then the coherence choice.
+
+    the token is written only for a non-default choice, so the frozen serving run's
+    note text is byte-identical to what section 13 pinned.
+    """
     return "; ".join(filter(None, [
         f"{PROSPECTIVE_COLD_START_FLAG}={cold_rows}/{n_rows} rows "
         f"(GAME_DATE <= {PROSPECTIVE_COLD_START_THROUGH})",
         notes,
-        f"coherence={coherence}",
+        f"coherence={coherence}" if coherence != COHERENCE_NONE else None,
     ]))
 
 
