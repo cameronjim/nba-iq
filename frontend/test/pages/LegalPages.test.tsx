@@ -64,12 +64,12 @@ describe('SiteFooter', () => {
     expect(screen.getByRole('link', { name: 'Privacy' })).toHaveAttribute('href', '/privacy');
   });
 
-  it('states the data sources and non-affiliation', () => {
+  it('states non-affiliation without a data-sources line', () => {
     // arrange + act
     renderInRouter(<SiteFooter />);
 
     // assert
-    expect(screen.getByText(/Stats from NBA\.com, odds from ESPN/)).toBeInTheDocument();
+    expect(screen.queryByText(/Stats from NBA\.com/)).not.toBeInTheDocument();
     expect(screen.getByText('Not affiliated with the NBA or any team.')).toBeInTheDocument();
   });
 });

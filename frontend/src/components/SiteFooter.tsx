@@ -18,10 +18,6 @@ export const SiteFooter = (): JSX.Element => (
           {LEGAL_CONTACT_EMAIL}
         </a>
       </nav>
-      <p>
-        Stats from NBA.com, odds from ESPN, injury reports from CBS Sports, 2K ratings from nba2kapi.com (data from
-        2kratings.com).
-      </p>
       <p>Not affiliated with the NBA or any team.</p>
     </div>
   </footer>

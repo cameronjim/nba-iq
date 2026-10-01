@@ -9,11 +9,6 @@ vi.mock('../../src/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/api/client')>();
   return {
     ...actual,
-    getDataStatus: vi.fn().mockResolvedValue({
-      players_updated_at: null,
-      teams_updated_at: null,
-      games_updated_at: null,
-    }),
     getCurrentUser: vi.fn().mockResolvedValue({ is_admin: false }),
   };
 });
@@ -60,7 +55,7 @@ describe('Navbar', () => {
     expect(screen.getByRole('button', { name: 'Account' })).toBeInTheDocument();
   });
 
-  it('toggles between dark and light from the navbar', async () => {
+  it('picks a theme from the theme menu and marks the current one', async () => {
     // arrange
     localStorage.removeItem('theme');
     const user = userEvent.setup();
@@ -71,11 +66,29 @@ describe('Navbar', () => {
     );
 
     // act
-    await user.click(screen.getByRole('button', { name: 'Switch to light mode' }));
+    await user.click(screen.getByRole('button', { name: 'Theme' }));
+    await user.click(screen.getByRole('button', { name: 'Light' }));
 
     // assert
     expect(document.documentElement.getAttribute('data-theme')).toBe('paper');
-    expect(screen.getByRole('button', { name: 'Switch to dark mode' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Light' })).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByRole('button', { name: 'Dark' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('lists tabs in the agreed order without a data-status badge', () => {
+    // arrange + act
+    render(
+      <MemoryRouter>
+        <Navbar isLoggedIn={false} onLogout={() => {}} />
+      </MemoryRouter>
+    );
+
+    // assert
+    const labels = screen.getAllByRole('link').map((l) => l.textContent).filter((l) => l !== 'NBA IQ');
+    expect(labels).toEqual([
+      'Home', 'Stats', 'Projections', 'Watchlist', 'Betting', 'My Team', 'Improve Team', 'History', '2K Ratings',
+    ]);
+    expect(screen.queryByText(/Updated .* ago|Data status/)).not.toBeInTheDocument();
   });
 });
 

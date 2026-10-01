@@ -95,6 +95,12 @@
     transition: none !important;
   }
 
+  *:not(.skeleton),
+  ::before,
+  ::after {
+    animation: none !important;
+  }
+
   body {
     font-family: var(--font-sans);
     font-feature-settings: "lnum";

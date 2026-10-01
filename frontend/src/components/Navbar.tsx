@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { StatusBadge } from './StatusBadge';
 import { ThemePicker } from './ThemePicker';
 import { getCurrentUser } from '../api/client';
 
@@ -14,11 +13,11 @@ const tabs = [
   { to: '/stats', label: 'Stats' },
   { to: '/projections', label: 'Projections' },
   { to: '/watchlist', label: 'Watchlist' },
-  { to: '/history', label: 'History' },
-  { to: '/ratings', label: '2K Ratings' },
+  { to: '/betting', label: 'Betting' },
   { to: '/fantasy', label: 'My Team' },
   { to: '/improve', label: 'Improve Team' },
-  { to: '/betting', label: 'Betting' },
+  { to: '/history', label: 'History' },
+  { to: '/ratings', label: '2K Ratings' },
 ];
 
 export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
@@ -64,16 +63,15 @@ export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
 
   return (
     <header className="navbar sticky top-0 z-50 flex-wrap gap-x-4 border-b border-base-300 bg-base-200 px-5 py-0 min-h-0">
-      <div className="flex items-center gap-3 py-3">
-        <NavLink to="/" className="font-display text-3xl font-semibold uppercase leading-none tracking-wide">
+      <div className="flex items-center gap-3 py-2.5">
+        <NavLink to="/" className="font-display text-[1.75rem] font-semibold uppercase leading-none tracking-wide">
           NBA <span className="text-accent">IQ</span>
         </NavLink>
-        <StatusBadge />
       </div>
 
       <nav
         aria-label="Primary"
-        className="order-3 -mx-4 flex w-[calc(100%+2rem)] gap-6 overflow-x-auto px-4 no-scrollbar md:order-none md:mx-0 md:w-auto md:flex-1 md:px-0 md:pl-2"
+        className="order-3 -mx-4 flex w-[calc(100%+2rem)] gap-5 overflow-x-auto px-4 no-scrollbar md:order-none md:mx-0 md:w-auto md:flex-1 md:px-0 md:pl-2"
       >
         {tabs.map((tab) => (
           <NavLink
@@ -81,7 +79,7 @@ export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
             to={tab.to}
             end={tab.to === '/'}
             className={({ isActive }) =>
-              `whitespace-nowrap border-b-2 py-4 text-base ${
+              `whitespace-nowrap border-b-2 py-3 text-[0.9375rem] ${
                 isActive
                   ? 'border-accent font-semibold text-base-content'
                   : 'border-transparent text-muted hover:text-base-content'
@@ -93,12 +91,12 @@ export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
         ))}
       </nav>
 
-      <div className="ml-auto flex items-center gap-2 py-2">
+      <div className="ml-auto flex items-center gap-2 py-1.5">
         <ThemePicker />
 
         {isLoggedIn ? (
           <div className="dropdown dropdown-end">
-            <button tabIndex={0} className="btn btn-ghost">
+            <button tabIndex={0} className="btn btn-ghost btn-sm h-9 px-3 text-sm">
               Account
             </button>
             <ul tabIndex={0} className="dropdown-content menu z-50 mt-1 w-52 border border-base-300 bg-base-200 p-2 rounded-box">
@@ -124,7 +122,7 @@ export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
             </ul>
           </div>
         ) : (
-          <button onClick={goToSignIn} className="btn btn-primary">
+          <button onClick={goToSignIn} className="btn btn-primary btn-sm h-9 px-4 text-sm">
             Sign In
           </button>
         )}

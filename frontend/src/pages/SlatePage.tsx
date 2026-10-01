@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useSlate } from '../hooks/useSlate';
-import { formatTimestampBeside, formatTimestampWithZone } from '../utils/analytics';
+import { formatTimestampWithZone } from '../utils/analytics';
 import { formatRange, formatSlateDate } from '../utils/dates';
 import { SlateGameCard } from '../components/slate/SlateGameCard';
 import { SlateLegend } from '../components/slate/SlateLegend';
@@ -32,11 +32,7 @@ export const SlatePage = (): JSX.Element => {
   const { date, isToday, setDate, sort, setSort, data, loading, error, reload } = useSlate();
 
   const run = data?.run ?? null;
-  const publishedAt = formatTimestampWithZone(run?.predicted_at ?? null);
-  const injuriesAsOf = formatTimestampBeside(
-    run?.information_as_of ?? null,
-    run?.predicted_at ?? null
-  );
+  const injuriesAsOf = formatTimestampWithZone(run?.information_as_of ?? null);
   const hasPreseason = data?.games.some((game) => game.preseason) ?? false;
   const scheduleOnly = run !== null && data?.covered === false;
 
@@ -47,11 +43,11 @@ export const SlatePage = (): JSX.Element => {
           <h1 className="font-display text-3xl font-semibold uppercase tracking-wide leading-tight">
             {isToday ? <>Today&apos;s Projections</> : 'Projections'}
           </h1>
-          <p className="text-sm text-muted mt-0.5" data-testid="slate-subtitle">
-            {formatSlateDate(data?.date ?? date)}
-            {publishedAt && ` · published ${publishedAt}`}
-            {injuriesAsOf && ` · injuries as of ${injuriesAsOf}`}
-          </p>
+          {injuriesAsOf && (
+            <p className="text-sm text-muted mt-0.5" data-testid="slate-subtitle">
+              Injuries as of {injuriesAsOf}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">

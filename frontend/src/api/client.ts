@@ -126,17 +126,6 @@ export async function updatePreferences(prefs: AIPreferences): Promise<AIPrefere
   return data;
 }
 
-export interface DataStatus {
-  players_updated_at: string | null;
-  teams_updated_at: string | null;
-  games_updated_at: string | null;
-}
-
-export async function getDataStatus(): Promise<DataStatus> {
-  const { data } = await api.get('/status');
-  return data;
-}
-
 export async function getPlayers(params?: { search?: string; team?: string; position?: string }): Promise<Player[]> {
   const { data } = await api.get('/players', { params });
   return data;

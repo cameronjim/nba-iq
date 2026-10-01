@@ -225,13 +225,13 @@ describe('SlatePage', () => {
     expect(screen.queryByTestId('slate-preseason-note')).not.toBeInTheDocument();
   });
 
-  it('dates the run by when it was published and its injury cutoff, never by artifact id', async () => {
+  it('says only when the injury report was read, never the publish time or artifact id', async () => {
     renderPage();
     await screen.findByText('Stephen Curry');
 
     const subtitle = screen.getByTestId('slate-subtitle');
-    expect(subtitle).toHaveTextContent(/published Feb \d{1,2}, \d{1,2}:\d{2}\s[AP]M \S+/);
-    expect(subtitle).toHaveTextContent(/injuries as of \d{1,2}:\d{2}\s[AP]M \S+/);
+    expect(subtitle).toHaveTextContent(/^Injuries as of Feb \d{1,2}, \d{1,2}:\d{2}\s[AP]M \S+$/);
+    expect(subtitle).not.toHaveTextContent(/published/);
     expect(screen.queryByText(/v1-decomposed/)).not.toBeInTheDocument();
   });
 
@@ -243,7 +243,7 @@ describe('SlatePage', () => {
     renderPage();
     await screen.findByText('Stephen Curry');
 
-    expect(screen.getByTestId('slate-subtitle')).not.toHaveTextContent(/injuries as of/);
+    expect(screen.queryByTestId('slate-subtitle')).not.toBeInTheDocument();
   });
 
   it('titles the page as today only while the picker is on today', async () => {
