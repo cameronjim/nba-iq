@@ -8,27 +8,24 @@ vi.mock('../../src/api/client', async (importOriginal) => {
   return {
     ...actual,
     getBettingOdds: vi.fn(),
-    getBettingPicks: vi.fn(),
+    getPropPicks: vi.fn(),
     getBets: vi.fn(),
-    getPreferences: vi.fn(),
   };
 });
 
-const { getBettingOdds, getBettingPicks, getBets, getPreferences } = await import('../../src/api/client');
+const { getBettingOdds, getPropPicks, getBets } = await import('../../src/api/client');
 const oddsMock = vi.mocked(getBettingOdds);
-const picksMock = vi.mocked(getBettingPicks);
+const propsMock = vi.mocked(getPropPicks);
 const betsMock = vi.mocked(getBets);
-const prefsMock = vi.mocked(getPreferences);
 
 beforeEach(() => {
   vi.clearAllMocks();
   oddsMock.mockResolvedValue({ games: [], fetched_at: '2026-06-09T12:00:00Z' });
-  picksMock.mockResolvedValue({ picks: [], parlay: null, summary: '', no_games: true });
+  propsMock.mockResolvedValue({ run: null, picks: [] });
   betsMock.mockResolvedValue({
     bets: [],
     summary: { wins: 0, losses: 0, pushes: 0, pending: 0, net: 0 },
   });
-  prefsMock.mockResolvedValue({});
 });
 
 const renderPage = (isLoggedIn: boolean): ReturnType<typeof render> =>
@@ -50,48 +47,64 @@ describe('BettingPage', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('shows skeleton tables while odds and bets load', () => {
+  it('shows skeletons while games, prop picks, and bets load', () => {
     // arrange
     oddsMock.mockReturnValue(new Promise(() => {}));
+    propsMock.mockReturnValue(new Promise(() => {}));
     betsMock.mockReturnValue(new Promise(() => {}));
-    picksMock.mockReturnValue(new Promise(() => {}));
 
     // act
     renderPage(true);
 
     // assert
-    expect(screen.getByRole('status', { name: 'Loading upcoming games and odds' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: "Loading tonight's games" })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading prop picks' })).toBeInTheDocument();
     expect(screen.getByRole('status', { name: 'Loading bets' })).toBeInTheDocument();
-    expect(screen.getByRole('status', { name: 'Loading picks' })).toBeInTheDocument();
     expect(document.querySelector('.loading-spinner')).toBeNull();
   });
 
-  it('shows the sign-in prompt, odds board, chat, and glossary when logged out', async () => {
+  it('stacks the three plainly named sections', async () => {
+    // arrange + act
+    renderPage(true);
+
+    // assert
+    const headings = (await screen.findAllByRole('heading', { level: 2 })).map((h) => h.textContent);
+    expect(headings.slice(0, 3)).toEqual(["Tonight's games", 'Prop picks', 'My bets']);
+    expect(screen.getByText('Probabilities come from the projection model, not Claude.')).toBeInTheDocument();
+  });
+
+  it('shows games and prop picks to signed-out visitors, with a sign-in line for bets', async () => {
+    // arrange + act
     renderPage(false);
 
-    expect(await screen.findByText(/Sign in to see Claude's betting picks/i)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /Upcoming Games & Odds/i })).toBeInTheDocument();
+    // assert
+    expect(await screen.findByText('Prop picks appear here once prop odds are connected.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Prop picks' })).toBeInTheDocument();
+    expect(screen.getByText('Sign in to track your bets.')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /New to betting\? Start here/i })).toBeInTheDocument();
     expect(screen.getByText('Ask Claude')).toBeInTheDocument();
-    expect(picksMock).not.toHaveBeenCalled();
+    expect(propsMock).toHaveBeenCalled();
     expect(betsMock).not.toHaveBeenCalled();
   });
 
-  it('loads picks, ledger, and prefs when logged in', async () => {
+  it('loads the ledger when logged in', async () => {
+    // arrange + act
     renderPage(true);
 
-    expect(await screen.findByText(/No bettable games right now/i)).toBeInTheDocument();
-    expect(picksMock).toHaveBeenCalled();
+    // assert
+    expect(await screen.findByText("You haven't tracked any bets yet.")).toBeInTheDocument();
     expect(betsMock).toHaveBeenCalled();
-    expect(screen.getByText('Betting Preferences')).toBeInTheDocument();
   });
 
   it('shows the odds error state with a retry button', async () => {
+    // arrange
     oddsMock.mockRejectedValue(new Error('espn down'));
 
+    // act
     renderPage(false);
 
-    expect(await screen.findByText(/Failed to load odds/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Try Again/i })).toBeInTheDocument();
+    // assert
+    expect(await screen.findByText("Couldn't load the odds right now.")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 });

@@ -1,4 +1,4 @@
-import type { TeamAnalysis, BettingPicksResponse } from '../types';
+import type { TeamAnalysis } from '../types';
 
 // invalidate on roster or prefs mutations: the server keys its own cache by roster and prefs hash.
 
@@ -17,7 +17,6 @@ interface Suggestions {
 
 let analysis: CacheEntry<TeamAnalysis> | null = null;
 let suggestions: CacheEntry<Suggestions> | null = null;
-let bettingPicks: CacheEntry<BettingPicksResponse> | null = null;
 
 const TTL_MS = 30 * 60_000;
 
@@ -39,18 +38,6 @@ export function getCachedSuggestions(): Suggestions | null {
 
 export function setCachedSuggestions(data: Suggestions): void {
   suggestions = { data, fetchedAt: Date.now() };
-}
-
-export function getCachedBettingPicks(): BettingPicksResponse | null {
-  return isFresh(bettingPicks) ? bettingPicks!.data : null;
-}
-
-export function setCachedBettingPicks(data: BettingPicksResponse): void {
-  bettingPicks = { data, fetchedAt: Date.now() };
-}
-
-export function invalidateBettingClientCache(): void {
-  bettingPicks = null;
 }
 
 export function invalidateAIClientCaches(): void {

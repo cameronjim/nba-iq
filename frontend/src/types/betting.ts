@@ -43,51 +43,33 @@ export interface BettingGame {
   };
 }
 
-export interface BettingPick {
-  game_id: string;
-  category: 'best_value' | 'safe' | 'hail_mary';
-  market: StraightMarket;
-  selection: BetSelection;
-  matchup: string;
+export type PropMarket = 'pts' | 'reb' | 'ast' | 'fg3m' | 'pra' | 'stl' | 'blk' | 'tov';
+
+export interface PropPick {
+  player_name: string;
+  team: string;
+  opponent: string;
   game_date: string;
-  tipoff: string;
-  selection_label: string;
-  line: number | null;
-  american_odds: number;
-  implied_prob: number;
+  market: PropMarket;
+  line: number;
+  side: 'over' | 'under';
+  bookmaker: string;
+  price: number;
+  model_prob: number;
   implied_prob_novig: number | null;
-  estimated_win_prob: number;
-  estimate_source: 'claude';
-  edge: number;
-  rationale: string;
-  confidence: 'low' | 'medium' | 'high';
+  ev: number;
+  prob_active: number | null;
+  void_rule: string;
 }
 
-export interface ParlayLeg {
-  game_id: string;
-  market: StraightMarket;
-  selection: BetSelection;
-  selection_label: string;
-  matchup: string;
-  american_odds: number;
+export interface PropPicksRun {
+  predicted_at: string;
+  information_as_of: string;
 }
 
-export interface ParlaySuggestion {
-  legs: ParlayLeg[];
-  combined_american: number;
-  combined_implied_prob: number;
-  rationale: string;
-  ev_note: string;
-}
-
-export interface BettingPicksResponse {
-  picks: BettingPick[];
-  parlay: ParlaySuggestion | null;
-  summary: string;
-  cached?: boolean;
-  cached_at?: string;
-  no_games?: boolean;
-  stale?: boolean;
+export interface PropPicksResponse {
+  run: PropPicksRun | null;
+  picks: PropPick[];
 }
 
 export type WagerType = 'cash' | 'bonus_bet' | 'odds_boost';

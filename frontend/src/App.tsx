@@ -26,7 +26,7 @@ import { PageViewTracker } from './components/PageViewTracker';
 import { getAuthToken, setAuthToken } from './api/client';
 import { useWarmupPrefetch } from './hooks/useWarmupPrefetch';
 import { invalidateCached, CACHE_KEYS } from './api/resourceCache';
-import { invalidateAIClientCaches, invalidateBettingClientCache } from './api/clientCaches';
+import { invalidateAIClientCaches } from './api/clientCaches';
 
 export const App = (): JSX.Element => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => !!getAuthToken());
@@ -41,7 +41,6 @@ export const App = (): JSX.Element => {
     invalidateCached(CACHE_KEYS.roster);
     invalidateCached(CACHE_KEYS.bets);
     invalidateAIClientCaches();
-    invalidateBettingClientCache();
   };
 
   const handleLoginSuccess = (): void => {
