@@ -25,6 +25,8 @@ from database import DryRunCursor, is_write_statement
 from odds import map_event_to_nba_game, parse_event_odds, plan_odds_snapshot
 from parsing import (
     box_score_violations,
+    canonical_player_name,
+    cbs_team_abbr,
     cleared_player_ids,
     extract_next_data,
     in_season,
@@ -371,8 +373,8 @@ class TestNormalizeInjuryStatus:
             ("Questionable", "questionable"),
             ("Probable", "probable"),
             ("Day-To-Day", "day_to_day"),
-            ("Game Time Decision", "day_to_day"),
-            ("GTD", "day_to_day"),
+            ("Game Time Decision", "questionable"),
+            ("GTD", "questionable"),
             ("Available", "available"),
             ("cleared", "cleared"),
         ],
@@ -382,6 +384,20 @@ class TestNormalizeInjuryStatus:
 
     def test_longest_phrase_wins(self):
         assert normalize_injury_status("out for season") == "out"
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("Expected to be out until at least Nov 1", "out"),
+            ("Out for the season", "out"),
+            ("Questionable for start of season", "questionable"),
+            ("Game Time Decision", "questionable"),
+            ("Day-To-Day", "day_to_day"),
+            ("Probable", "probable"),
+        ],
+    )
+    def test_buckets_live_cbs_wording(self, raw, expected):
+        assert normalize_injury_status(raw) == expected
 
     @pytest.mark.parametrize("raw", [None, "", "Reconditioning", "G League Two-Way"])
     def test_unrecognised_degrades_to_unknown(self, raw):
@@ -1317,7 +1333,51 @@ CBS_INJURY_HTML = """
 </table></div>
 """
 
-INJURY_IDS_BY_NAME = {"lebron james": "2544", "stephen curry": "201939"}
+def _cbs_row(name, cells, href="/nba/players/1/x/"):
+    tds = "".join(f"<td>{c}</td>" for c in cells)
+    return (
+        '<tr class="TableBase-bodyTr"><td>'
+        f'<span class="CellPlayerName--short"><a href="{href}">X. Short</a></span>'
+        f'<span class="CellPlayerName--long"><a href="{href}">{name}</a></span>'
+        f"</td>{tds}</tr>"
+    )
+
+
+def _cbs_table(team_code, headers, rows):
+    head = "".join(f'<th class="TableBase-headTh">{h}</th>' for h in headers)
+    thead = f'<thead><tr class="TableBase-headTr">{head}</tr></thead>' if headers else ""
+    title = (
+        '<h4 class="TableBase-title"><span class="TeamName">'
+        f'<a href="/nba/teams/{team_code}/team/">Team</a></span></h4>'
+    )
+    return f'<div class="TableBase">{title}<table>{thead}<tbody>{"".join(rows)}</tbody></table></div>'
+
+
+CBS_FIVE_HEADERS = ["Player", "Position", "Updated", "Injury", "Injury Status"]
+
+# the 2026-10 layout, with the live wording that broke the positional parser.
+CBS_FIVE_COLUMN_HTML = _cbs_table(
+    "NO",
+    CBS_FIVE_HEADERS,
+    [
+        _cbs_row(
+            "Brandon Ingram",
+            ["SF", '<span class="CellGameDate">Mon, Sep 28</span>', "Achilles",
+             "Expected to be out until at least Nov 1"],
+        ),
+    ],
+) + _cbs_table(
+    "MIA",
+    CBS_FIVE_HEADERS,
+    [_cbs_row("Jimmy Butler", ["SF", "Tue, Sep 22", "Knee", "Out for the season"])],
+)
+
+INJURY_PLAYERS = [
+    ("2544", "LeBron James", "LAL"),
+    ("201939", "Stephen Curry", "GSW"),
+    ("1627742", "Brandon Ingram", "NOP"),
+    ("202710", "Jimmy Butler III", "MIA"),
+]
 
 
 class InjuryCursor:
@@ -1330,13 +1390,8 @@ class InjuryCursor:
         self.statements.append((sql, params))
         if "injury_status IS NOT NULL" in sql:
             self._result = [(i,) for i in self.previously_listed]
-        elif "= ANY(" in sql:
-            self._result = [
-                (INJURY_IDS_BY_NAME[n],) for n in params[0] if n in INJURY_IDS_BY_NAME
-            ]
-        elif "RETURNING nba_id" in sql:
-            nba_id = INJURY_IDS_BY_NAME.get(params[2].lower())
-            self._result = [(nba_id,)] if nba_id else []
+        elif "SELECT nba_id, name, team" in sql:
+            self._result = list(INJURY_PLAYERS)
         else:
             self._result = []
 
@@ -1354,6 +1409,9 @@ class InjuryCursor:
             p for sql, p in self.statements
             if "INSERT INTO player_injury_reports" in sql and "'cleared'" in sql
         ]
+
+    def status_updates(self):
+        return [p for sql, p in self.statements if "WHERE nba_id = %s" in sql]
 
 
 class InjuryConn:
@@ -1405,6 +1463,169 @@ class TestScrapeInjuries:
 
         executed = [sql for sql, _ in conn.cursor_.statements]
         assert executed and all(not is_write_statement(sql) for sql in executed)
+
+    def test_statuses_are_written_by_nba_id_from_the_five_column_page(self, monkeypatch):
+        monkeypatch.setattr(scrapes, "fetch_injury_page", lambda: CBS_FIVE_COLUMN_HTML)
+        conn = InjuryConn(previously_listed=["1627742"])
+
+        scrapes.scrape_injuries(conn)
+
+        assert conn.cursor_.status_updates() == [
+            ("Expected to be out until at least Nov 1", "Achilles", "1627742"),
+            ("Out for the season", "Knee", "202710"),
+        ]
+        assert [p[2] for p in conn.cursor_.report_inserts()] == ["out", "out"]
+        assert conn.cursor_.clearances() == []
+
+    def test_a_page_matching_no_player_writes_nothing(self, monkeypatch):
+        html = _cbs_table("ATL", CBS_FIVE_HEADERS, [_cbs_row("Nobody Known", ["G", "", "Hip", "Out"])])
+        monkeypatch.setattr(scrapes, "fetch_injury_page", lambda: html)
+        conn = InjuryConn(previously_listed=["2544"])
+
+        scrapes.scrape_injuries(conn)
+
+        assert all(not is_write_statement(sql) for sql, _ in conn.cursor_.statements)
+
+
+class TestParseCbsInjuryRows:
+    def test_five_column_layout_maps_status_and_injury_by_header(self):
+        rows = scrapes._parse_cbs_injury_rows(CBS_FIVE_COLUMN_HTML)
+
+        assert rows[0] == scrapes.CbsInjuryRow(
+            player_name="Brandon Ingram",
+            status="Expected to be out until at least Nov 1",
+            injury="Achilles",
+            updated="Mon, Sep 28",
+            team_abbr="NOP",
+        )
+        assert (rows[1].player_name, rows[1].status, rows[1].injury) == (
+            "Jimmy Butler", "Out for the season", "Knee",
+        )
+        assert rows[1].team_abbr == "MIA"
+
+    def test_four_column_legacy_layout_with_headers_still_parses(self):
+        html = _cbs_table(
+            "LAL",
+            ["Player", "Position", "Injury", "Injury Status"],
+            [_cbs_row("LeBron James", ["F", "Ankle", "Out"])],
+        )
+
+        rows = scrapes._parse_cbs_injury_rows(html)
+
+        assert [(r.player_name, r.status, r.injury, r.updated) for r in rows] == [
+            ("LeBron James", "Out", "Ankle", ""),
+        ]
+
+    def test_headerless_legacy_table_falls_back_to_positions(self):
+        rows = scrapes._parse_cbs_injury_rows(CBS_INJURY_HTML)
+
+        assert [(r.player_name, r.status, r.injury) for r in rows] == [
+            ("LeBron James", "Out", "Ankle"),
+            ("Stephen Curry", "Questionable", "Knee"),
+        ]
+
+    def test_missing_status_header_warns_and_yields_no_rows(self, caplog):
+        html = _cbs_table(
+            "LAL",
+            ["Player", "Position", "Updated", "Injury", "Return"],
+            [_cbs_row("LeBron James", ["F", "Mon, Sep 28", "Ankle", "Out"])],
+        )
+
+        with caplog.at_level("WARNING", logger="scrapes"):
+            rows = scrapes._parse_cbs_injury_rows(html)
+
+        assert rows == []
+        assert "status" in caplog.text and "Return" in caplog.text
+
+    def test_missing_status_header_makes_the_scrape_refuse_to_clear(self, monkeypatch):
+        html = _cbs_table(
+            "LAL", ["Player", "Position", "Updated", "Injury"],
+            [_cbs_row("LeBron James", ["F", "Mon, Sep 28", "Ankle"])],
+        )
+        monkeypatch.setattr(scrapes.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(scrapes, "fetch_injury_page", lambda: html)
+        conn = InjuryConn(previously_listed=["2544"])
+
+        scrapes.scrape_injuries(conn)
+
+        assert conn.cursor_.statements == []
+
+    @pytest.mark.parametrize(
+        "headers, expected",
+        [
+            (CBS_FIVE_HEADERS, {"player": 0, "position": 1, "updated": 2, "injury": 3, "status": 4}),
+            (["INJURY STATUS", "Injury", "player"], {"status": 0, "injury": 1, "player": 2}),
+        ],
+    )
+    def test_column_mapping_is_by_header_name(self, headers, expected):
+        assert scrapes.map_cbs_injury_columns(headers) == expected
+
+
+class TestCanonicalPlayerName:
+    @pytest.mark.parametrize(
+        "left, right",
+        [
+            ("Jimmy Butler III", "Jimmy Butler"),
+            ("Luka Dončić", "Luka Doncic"),
+            ("P.J. Washington", "PJ Washington"),
+            ("Gary Trent Jr.", "Gary Trent"),
+            ("De’Aaron Fox", "De'Aaron Fox"),
+            ("Robert Williams V", "robert williams"),
+        ],
+    )
+    def test_variants_share_a_canonical_form(self, left, right):
+        assert canonical_player_name(left) == canonical_player_name(right)
+
+    def test_a_suffix_alone_is_not_erased(self):
+        assert canonical_player_name("V") == "v"
+
+    def test_suffix_letters_inside_a_word_are_kept(self):
+        assert canonical_player_name("Ivica Zubac") == "ivica zubac"
+
+
+class TestMatchCbsInjuryRows:
+    def _row(self, name, team=None):
+        return scrapes.CbsInjuryRow(name, "Out", "Knee", "", team)
+
+    def test_matches_across_suffix_and_accent_differences(self):
+        index = scrapes.index_players_by_canonical_name(
+            [("202710", "Jimmy Butler III", "MIA"), ("1629029", "Luka Dončić", "LAL")]
+        )
+
+        match = scrapes.match_cbs_injury_rows(
+            [self._row("Jimmy Butler"), self._row("Luka Doncic")], index
+        )
+
+        assert [nba_id for nba_id, _ in match.matched] == ["202710", "1629029"]
+
+    def test_duplicate_name_is_disambiguated_by_team(self):
+        index = scrapes.index_players_by_canonical_name(
+            [("1", "Jalen Williams", "OKC"), ("2", "Jalen Williams", "DEN")]
+        )
+
+        match = scrapes.match_cbs_injury_rows([self._row("Jalen Williams", "DEN")], index)
+
+        assert [nba_id for nba_id, _ in match.matched] == ["2"]
+
+    def test_duplicate_name_without_a_team_is_skipped_as_ambiguous(self):
+        index = scrapes.index_players_by_canonical_name(
+            [("1", "Jalen Williams", "OKC"), ("2", "Jalen Williams", "DEN")]
+        )
+
+        match = scrapes.match_cbs_injury_rows([self._row("Jalen Williams")], index)
+
+        assert match.matched == []
+        assert [r.player_name for r in match.ambiguous] == ["Jalen Williams"]
+
+    def test_unknown_player_is_unmatched(self):
+        match = scrapes.match_cbs_injury_rows([self._row("Nobody Known")], {})
+
+        assert [r.player_name for r in match.unmatched] == ["Nobody Known"]
+
+    def test_cbs_team_codes_map_to_nba_abbreviations(self):
+        assert [cbs_team_abbr(c) for c in ["GS", "NO", "NY", "PHO", "SA", "LAL", "XYZ"]] == [
+            "GSW", "NOP", "NYK", "PHX", "SAS", "LAL", None,
+        ]
 
 
 def _box_player(person_id, position="", comment="", minutes="", oreb=0, dreb=0, pf=0):

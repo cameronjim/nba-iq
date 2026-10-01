@@ -28,7 +28,7 @@ from database import (
     maybe_write_cursor,
 )
 from fetching import BROWSER_USER_AGENT
-from parsing import _normalize_name, normalize_injury_status
+from parsing import canonical_player_name, normalize_injury_status
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +239,7 @@ def index_players(
     for nba_id, name, team in players:
         if not nba_id or not name:
             continue
-        key = (_normalize_name(str(name)), str(team or "").strip().upper())
+        key = (canonical_player_name(str(name)),str(team or "").strip().upper())
         index.setdefault(key, []).append(str(nba_id))
     return index
 
@@ -281,7 +281,7 @@ def match_report_rows(
             result.not_submitted.append(resolved)
             continue
 
-        name = _normalize_name(row.get("player_name") or "")
+        name = canonical_player_name(row.get("player_name") or "")
         candidates = set(players_by_name_team.get((name, team_abbr or ""), ()))
         if not candidates:
             # a traded player can be listed under his new team before the
