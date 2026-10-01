@@ -151,3 +151,14 @@ NBA_WEB_PAGE_DELAY_SECONDS = 1.5
 NBA_WEB_SCHEDULE_DAYS_BACK = 3
 NBA_WEB_SCHEDULE_DAYS_AHEAD = 21
 ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS = BACKFILL_REQUEST_DELAY_SECONDS
+
+ESPN_SCOREBOARD_URL = (
+    "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+)
+ESPN_TIMEOUT_SECONDS = 15
+ESPN_MAX_ATTEMPTS = 3
+ESPN_RETRY_DELAY_SECONDS = 2.0
+# matches the backend odds board window: today through today+2, eastern.
+ODDS_WINDOW_DAYS = 2
+ODDS_SNAPSHOT_SOURCE = "espn_scoreboard"
+ODDS_INGESTION_KIND = "odds_snapshot"

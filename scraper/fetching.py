@@ -20,6 +20,10 @@ from config import (
     ADVANCED_RATINGS_FIRST_SEASON_START_YEAR,
     BACKFILL_MAX_ATTEMPTS,
     BACKFILL_REQUEST_DELAY_SECONDS,
+    ESPN_MAX_ATTEMPTS,
+    ESPN_RETRY_DELAY_SECONDS,
+    ESPN_SCOREBOARD_URL,
+    ESPN_TIMEOUT_SECONDS,
     NBA_2K_API_URL,
     NBA_2K_MAX_ATTEMPTS,
     NBA_2K_PAGE_LIMIT,
@@ -246,6 +250,28 @@ def _fetch_espn_scoreboard(date_str: str) -> list[dict]:
         })
 
     return games
+
+
+def fetch_espn_scoreboard_events(day: date) -> list[dict]:
+    # one day per request: espn answers a dates=start-end range with a 400, and
+    # a spoofed browser user agent with a 403.
+    dates = f"{day:%Y%m%d}"
+
+    def fetch() -> list[dict]:
+        resp = requests.get(
+            ESPN_SCOREBOARD_URL,
+            params={"dates": dates},
+            timeout=ESPN_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return list(resp.json().get("events") or [])
+
+    return _fetch_with_retry(
+        f"espn scoreboard {dates}",
+        fetch,
+        max_attempts=ESPN_MAX_ATTEMPTS,
+        initial_delay=ESPN_RETRY_DELAY_SECONDS,
+    )
 
 
 def fetch_injury_page() -> str:

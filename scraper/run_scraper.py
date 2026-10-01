@@ -18,6 +18,7 @@ from config import (
 from database import TARGET_DEV, TARGET_PROD, get_db, resolve_database_url  # noqa: F401
 from parsing import parse_team_types, season_range, season_start_year
 from fetching import stats_nba_reachable
+from odds import scrape_odds_snapshots
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
@@ -151,6 +152,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="run ONLY the injury-report scrape, skipping every other phase",
     )
     parser.add_argument(
+        "--odds-only",
+        dest="odds_only",
+        action="store_true",
+        help="run ONLY the espn odds snapshot, skipping every other phase",
+    )
+    parser.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
@@ -265,6 +272,8 @@ def main(argv: list[str] | None = None) -> None:
             schedule_ok = _truth_layer_phases(conn, args.season, args.dry_run)
         elif args.injuries_only:
             scrape_injuries(conn, dry_run=args.dry_run)
+        elif args.odds_only:
+            scrape_odds_snapshots(conn, dry_run=args.dry_run)
         else:
             stats_reachable = stats_nba_reachable()
             if not stats_reachable:
@@ -304,6 +313,11 @@ def main(argv: list[str] | None = None) -> None:
                     "game status",
                     lambda: scrape_game_status(conn, args.season, dry_run=args.dry_run),
                 )
+            # after the schedule sync, so new games map to an nba game id.
+            _run_phase(
+                "odds snapshot",
+                lambda: scrape_odds_snapshots(conn, dry_run=args.dry_run),
+            )
     finally:
         conn.close()
 
