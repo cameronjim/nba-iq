@@ -438,6 +438,15 @@ scrape.
 prediction run to the store once the season is underway; a no-op in the
 offseason.
 
+**Every 30 minutes on Lambda** (the `propJobs` function in
+`backend/serverless.yml`, an EventBridge schedule): `backend/src/jobs/propJobs.ts`
+runs the prop pick refresh, which prices stored prop odds against the latest
+production run and writes `model_prop_picks`, then the settle, which grades
+finished picks and fills closing lines. A failure in one does not skip the
+other, and each logs one JSON line to CloudWatch. Admins can also trigger
+either on demand with `POST /api/betting/props/refresh` and
+`POST /api/betting/props/settle`.
+
 The historical season backfill is **not** part of that cron. `stats.nba.com`
 blocks CI IP ranges and throttles hard, so it is a one-time job run locally from
 a residential connection: `python run_scraper.py --backfill-history`. It is

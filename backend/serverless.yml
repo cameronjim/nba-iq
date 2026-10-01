@@ -45,6 +45,13 @@ functions:
       - httpApi:
           path: /
           method: any
+  propJobs:
+    handler: dist/jobs/propJobs.handler
+    timeout: 120
+    events:
+      - schedule:
+          rate: rate(30 minutes)
+          enabled: true
 
 package:
   patterns:
