@@ -507,6 +507,29 @@ CREATE TABLE IF NOT EXISTS espn_event_map (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- player prop odds history (migration 019), append-only like odds_snapshots.
+-- one row per bookmaker, market, player and line; a one-sided line keeps the
+-- missing price NULL.
+CREATE TABLE IF NOT EXISTS prop_odds_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_event_id TEXT NOT NULL,
+    nba_game_id TEXT,
+    game_date DATE NOT NULL,
+    bookmaker TEXT NOT NULL,
+    market TEXT NOT NULL CHECK (market IN ('pts', 'reb', 'ast', 'fg3m', 'pra', 'stl', 'blk', 'tov')),
+    player_name TEXT NOT NULL,
+    nba_player_id TEXT,
+    line NUMERIC NOT NULL,
+    over_price INTEGER,
+    under_price INTEGER,
+    provider_updated_at TIMESTAMPTZ,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source TEXT NOT NULL,
+    ingestion_run_id INTEGER REFERENCES ingestion_runs (id) ON DELETE SET NULL,
+    CHECK (over_price IS NOT NULL OR under_price IS NOT NULL)
+);
+
 -- prediction store (migrations 014, 015), append-only: a run writes new rows,
 -- never edits old ones, so a backtest measures foresight not hindsight.
 -- forecast_cutoff_at is the latest instant any input was allowed to see:
@@ -586,6 +609,8 @@ CREATE INDEX IF NOT EXISTS idx_player_injury_reports_game_as_of
   ON player_injury_reports(nba_game_id, report_as_of DESC) WHERE nba_game_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_odds_snapshots_game_captured ON odds_snapshots(nba_game_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_odds_snapshots_event_captured ON odds_snapshots(espn_event_id, captured_at);
+CREATE INDEX IF NOT EXISTS idx_prop_odds_snapshots_player_market ON prop_odds_snapshots(nba_player_id, game_date, market, captured_at);
+CREATE INDEX IF NOT EXISTS idx_prop_odds_snapshots_game_captured ON prop_odds_snapshots(nba_game_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_predicted_at ON prediction_runs(status, predicted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_channel_served ON prediction_runs(channel, status, predicted_at DESC);
 -- the UNIQUE constraint above does not bite for expected values: Postgres treats

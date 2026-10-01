@@ -174,3 +174,28 @@ ESPN_RETRY_DELAY_SECONDS = 2.0
 ODDS_WINDOW_DAYS = 2
 ODDS_SNAPSHOT_SOURCE = "espn_scoreboard"
 ODDS_INGESTION_KIND = "odds_snapshot"
+
+# player prop odds. the odds api bills an event-odds call per market per
+# region, so eight markets cost eight of the free tier's 500 monthly credits.
+PROPS_API_KEY_ENV = "ODDS_API_KEY"
+PROPS_PROVIDER_THE_ODDS_API = "the_odds_api"
+PROPS_INGESTION_KIND = "prop_odds_snapshot"
+THE_ODDS_API_SPORT_URL = "https://api.the-odds-api.com/v4/sports/basketball_nba"
+THE_ODDS_API_REGIONS = "us"
+THE_ODDS_API_TIMEOUT_SECONDS = 20
+THE_ODDS_API_MAX_ATTEMPTS = 3
+THE_ODDS_API_RETRY_DELAY_SECONDS = 2.0
+PROPS_MARKET_MAP = {
+    "player_points": "pts",
+    "player_rebounds": "reb",
+    "player_assists": "ast",
+    "player_threes": "fg3m",
+    "player_points_rebounds_assists": "pra",
+    "player_steals": "stl",
+    "player_blocks": "blk",
+    "player_turnovers": "tov",
+}
+PROPS_WINDOW_DAYS = ODDS_WINDOW_DAYS
+# the odds lane fires every 30 minutes; without this gap one day of it would
+# spend the whole monthly quota.
+PROPS_MIN_HOURS_BETWEEN_RUNS = 20
