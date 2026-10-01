@@ -1,4 +1,5 @@
 import { formatStat, toStatNumber, STAT_PLACEHOLDER } from '../../utils/stats';
+import { reasonEvidenceLines } from '../../utils/vsUsual';
 import { ReasonBadge } from './ReasonBadge';
 import { WatchlistGameBreakdown } from './WatchlistGameBreakdown';
 import { windowOption } from './WatchlistFilters';
@@ -32,29 +33,7 @@ function evidenceLines(
       `Window: ${player.games_count} game${player.games_count === 1 ? '' : 's'} projected, ${formatStat(player.score, 2)} total at ${formatStat(player.score_per_game, 2)} a game`
     );
   }
-  if (evidence.fga_delta !== undefined) {
-    lines.push(
-      `Shots: ${formatStat(evidence.fga_projected)} projected, usually ${formatStat(evidence.fga_usual)} (+${formatStat(evidence.fga_delta)})`
-    );
-  }
-  if (evidence.days_since_played !== undefined) {
-    const last = evidence.last_played_date ? `, last played ${evidence.last_played_date}` : '';
-    lines.push(`Absence: ${formatStat(evidence.days_since_played, 0)} days without a game${last}`);
-  }
-  if (evidence.pts_recent_delta !== undefined) {
-    lines.push(
-      `Recent form: ${formatStat(evidence.pts_recent)} points over his last 5, usually ${formatStat(player.points.usual)}`
-    );
-  }
-  if (evidence.teammate_out !== undefined) {
-    const chance =
-      evidence.teammate_out_prob_active === undefined
-        ? ''
-        : `, ${Math.round((toStatNumber(evidence.teammate_out_prob_active) ?? 0) * 100)}% to play`;
-    lines.push(
-      `Usage freed: ${evidence.teammate_out} usually plays ${formatStat(evidence.teammate_out_minutes)} minutes${chance}`
-    );
-  }
+  lines.push(...reasonEvidenceLines(evidence, player.points.usual));
 
   const impact = toStatNumber(player.impact);
   if (impact !== null) {

@@ -1,13 +1,7 @@
 import { SlatePlayerRow } from './SlatePlayerRow';
 import type { SlateGame } from '../../types';
 
-export const SlateGameCard = ({
-  game,
-  notableMinDelta,
-}: {
-  game: SlateGame;
-  notableMinDelta: number;
-}): JSX.Element => (
+export const SlateGameCard = ({ game }: { game: SlateGame }): JSX.Element => (
   <section className="card bg-base-200 border border-base-300">
     <div className="card-body p-4 sm:p-5 gap-2">
       <div className="flex items-baseline justify-between gap-2">
@@ -25,11 +19,7 @@ export const SlateGameCard = ({
       ) : (
         <ul className="flex flex-col gap-0.5">
           {game.players.map((player) => (
-            <SlatePlayerRow
-              key={player.nba_player_id}
-              player={player}
-              notableMinDelta={notableMinDelta}
-            />
+            <SlatePlayerRow key={player.nba_player_id} player={player} />
           ))}
         </ul>
       )}

@@ -1,5 +1,28 @@
 import type { NumericLike } from './core';
 import type { BaselineDescriptor, PredictionRun, SlatePool } from './predictions';
+import type { VsUsual, WatchlistEvidence, WatchlistReason } from './watchlist';
+
+export type SlateSort = 'impact' | 'edge';
+
+export type VsUsualCategory = 'reb' | 'ast' | 'stl' | 'blk' | 'fg3m';
+
+export interface CategoryVsUsual {
+  stat: VsUsualCategory;
+  usual: NumericLike;
+  projected: NumericLike;
+  delta: NumericLike;
+}
+
+// both sides are "if he plays", so a game-time decision never reads as a lost role.
+export interface PlayerVsUsual {
+  minutes: VsUsual;
+  points: VsUsual;
+}
+
+export interface SlateVsUsual extends PlayerVsUsual {
+  // the two categories that moved furthest from his usual, biggest first.
+  categories: CategoryVsUsual[];
+}
 
 export interface SlateProjectedCategories {
   reb: NumericLike | null;
@@ -30,6 +53,11 @@ export interface SlatePlayer {
   baseline_games: number;
   // summed z-scores across the nine categories; 0 is an average night on the slate.
   impact: NumericLike | null;
+  // how far tonight departs from his usual in either direction; null without a usual.
+  edge: NumericLike | null;
+  vs_usual: SlateVsUsual | null;
+  reasons: WatchlistReason[];
+  evidence: WatchlistEvidence;
   spotlight: boolean;
   slate_spotlight: boolean;
   // the current injury report, which can be newer than the projection.
@@ -48,11 +76,13 @@ export interface SlateGame {
   away_team_id: string | null;
   away_team_abbr: string | null;
   top_impact: NumericLike | null;
+  top_edge: NumericLike | null;
   players: SlatePlayer[];
 }
 
 export interface SlateResponse {
   date: string;
+  sort: SlateSort;
   run: PredictionRun | null;
   pool: SlatePool;
   baseline: BaselineDescriptor;

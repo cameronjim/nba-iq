@@ -9,9 +9,36 @@ import {
   type BaselineDescriptor,
   type PlayerBaseline,
 } from './baselines.js';
+import {
+  deviationScales,
+  evidenceFor,
+  groupTeammates,
+  reasonInputFor,
+  reasonsFor,
+  teammatesOf,
+  upsideOf,
+  type ConditionalLine,
+  type DeviationStat,
+  type ProjectionEvidence,
+  type ReasonCode,
+  type ReasonInput,
+  type VsUsual,
+} from './projectionReasons.js';
 
 
 export const TOP_PLAYERS_PER_GAME = 8;
+
+export const SLATE_SORTS = ['impact', 'edge'] as const;
+
+export type SlateSort = (typeof SLATE_SORTS)[number];
+
+export const DEFAULT_SLATE_SORT: SlateSort = 'impact';
+
+export const VS_USUAL_CATEGORIES = ['reb', 'ast', 'stl', 'blk', 'fg3m'] as const;
+
+export type VsUsualCategory = (typeof VS_USUAL_CATEGORIES)[number];
+
+export const VS_USUAL_CATEGORIES_SHOWN = 2;
 
 export const COMPLETE_RUN_STATUS = 'complete';
 
@@ -46,6 +73,10 @@ export const PROJECTED_STATS = [
 ] as const;
 
 export type ProjectedStat = (typeof PROJECTED_STATS)[number];
+
+export const CONDITIONAL_STATS = ['pts', 'reb', 'ast', 'stl', 'blk', 'fg3m', 'fga'] as const;
+
+export type ConditionalStat = (typeof CONDITIONAL_STATS)[number];
 
 export const DISPLAY_CATEGORIES = ['reb', 'ast', 'stl', 'blk', 'tov', 'fg3m'] as const;
 
@@ -93,6 +124,22 @@ export interface SlatePool {
 
 export type SlateProjectedCategories = Record<DisplayCategory, number | null>;
 
+export interface CategoryVsUsual {
+  stat: VsUsualCategory;
+  usual: number;
+  projected: number;
+  delta: number;
+}
+
+export interface PlayerVsUsual {
+  minutes: VsUsual;
+  points: VsUsual;
+}
+
+export interface SlateVsUsual extends PlayerVsUsual {
+  categories: CategoryVsUsual[];
+}
+
 export interface SlatePlayer {
   nba_player_id: string;
   name: string;
@@ -108,6 +155,10 @@ export interface SlatePlayer {
   pts_vs_usual: number | null;
   baseline_games: number;
   impact: number | null;
+  edge: number | null;
+  vs_usual: SlateVsUsual | null;
+  reasons: ReasonCode[];
+  evidence: ProjectionEvidence;
   spotlight: boolean;
   slate_spotlight: boolean;
   injury_status: string | null;
@@ -125,11 +176,13 @@ export interface SlateGame {
   away_team_id: string | null;
   away_team_abbr: string | null;
   top_impact: number | null;
+  top_edge: number | null;
   players: SlatePlayer[];
 }
 
 export interface SlateResponse {
   date: string;
+  sort: SlateSort;
   run: SlateRun | null;
   pool: SlatePool;
   baseline: BaselineDescriptor;
@@ -172,6 +225,13 @@ export function toIsoDay(value: unknown): string | null {
     return match ? match[1] : null;
   }
   return null;
+}
+
+export function parseSlateSort(raw: unknown): SlateSort | null {
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_SLATE_SORT;
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim().toLowerCase();
+  return (SLATE_SORTS as readonly string[]).includes(value) ? (value as SlateSort) : null;
 }
 
 function text(value: unknown): string | null {
@@ -356,9 +416,18 @@ type PredictionRow = {
   team_abbr: unknown;
   prob_active: unknown;
   proj_min_p50: unknown;
-} & { [K in ProjectedStat]: unknown };
+} & { [K in ProjectedStat]: unknown } & { [K in ConditionalStat as `c_${K}`]: unknown };
 
 const PROJECTED_STAT_PARAM_OFFSET = 6;
+const CONDITIONAL_STAT_PARAM_OFFSET = PROJECTED_STAT_PARAM_OFFSET + PROJECTED_STATS.length;
+const PLAYER_FILTER_PARAM = CONDITIONAL_STAT_PARAM_OFFSET + CONDITIONAL_STATS.length;
+
+// the bare stat names are the conditional ("if he plays") twins a vs-usual delta compares
+const CONDITIONAL_PIVOT_SQL = CONDITIONAL_STATS.map(
+  (stat, i) =>
+    `MAX(CASE WHEN pgp.stat = $${CONDITIONAL_STAT_PARAM_OFFSET + i} AND pgp.quantile IS NULL
+                       THEN pgp.value END)::float AS c_${stat}`
+).join(',\n              ');
 
 const PROJECTED_PIVOT_SQL = PROJECTED_STATS.map(
   (stat, i) =>
@@ -366,7 +435,13 @@ const PROJECTED_PIVOT_SQL = PROJECTED_STATS.map(
                        THEN pgp.value END)::float AS ${stat}`
 ).join(',\n              ');
 
-async function fetchPredictions(runId: number, date: string): Promise<PredictionRow[]> {
+async function fetchPredictions(
+  runId: number,
+  date: string,
+  nbaPlayerId: string | null = null
+): Promise<PredictionRow[]> {
+  const playerFilter =
+    nbaPlayerId === null ? '' : `\n         AND pgp.nba_player_id = $${PLAYER_FILTER_PARAM}`;
   return rowsOrEmpty<PredictionRow>(() =>
     query(
       `SELECT pgp.nba_game_id,
@@ -377,11 +452,12 @@ async function fetchPredictions(runId: number, date: string): Promise<Prediction
                        THEN pgp.value END)::float AS prob_active,
               MAX(CASE WHEN pgp.stat = $4 AND pgp.quantile = $5
                        THEN pgp.value END)::float AS proj_min_p50,
-              ${PROJECTED_PIVOT_SQL}
+              ${PROJECTED_PIVOT_SQL},
+              ${CONDITIONAL_PIVOT_SQL}
        FROM player_game_predictions pgp
        LEFT JOIN players p ON p.nba_id = pgp.nba_player_id
        WHERE pgp.prediction_run_id = $1
-         AND pgp.game_date = $2
+         AND pgp.game_date = $2${playerFilter}
        GROUP BY pgp.nba_game_id, pgp.nba_player_id`,
       [
         runId,
@@ -390,6 +466,8 @@ async function fetchPredictions(runId: number, date: string): Promise<Prediction
         MINUTES_STAT,
         MINUTES_QUANTILE,
         ...PROJECTED_STATS.map(uncondStat),
+        ...CONDITIONAL_STATS,
+        ...(nbaPlayerId === null ? [] : [nbaPlayerId]),
       ]
     )
   );
@@ -520,14 +598,105 @@ export function poolDescriptor(sampleSize: number): SlatePool {
   };
 }
 
-export async function getSlate(date: string): Promise<SlateResponse> {
+function roundedVsUsual(value: VsUsual): VsUsual {
+  return {
+    usual: round(value.usual, 1),
+    projected: round(value.projected, 1),
+    delta: round(value.delta, 1),
+  };
+}
+
+export function playerVsUsualOf(input: ReasonInput): PlayerVsUsual {
+  return { minutes: roundedVsUsual(input.minutes), points: roundedVsUsual(input.points) };
+}
+
+// ranked in units of the slate's spread so a block and a rebound compare fairly
+export function topCategoryDeltas(
+  conditional: ConditionalLine,
+  usual: PlayerBaseline['avg'],
+  scales: Map<DeviationStat, number>,
+  count: number = VS_USUAL_CATEGORIES_SHOWN
+): CategoryVsUsual[] {
+  const ranked: Array<{ category: CategoryVsUsual; weight: number }> = [];
+  for (const stat of VS_USUAL_CATEGORIES) {
+    const projected = conditional[stat];
+    const base = usual[stat];
+    const delta = deltaOf(projected, base);
+    if (delta === null || projected === null || base === null) continue;
+    const rounded = round(delta, 1) as number;
+    if (rounded === 0) continue;
+    const sd = scales.get(stat) ?? 0;
+    ranked.push({
+      category: {
+        stat,
+        usual: round(base, 1) as number,
+        projected: round(projected, 1) as number,
+        delta: rounded,
+      },
+      weight: sd > 0 ? Math.abs(delta) / sd : Math.abs(delta),
+    });
+  }
+  return ranked
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, count)
+    .map((entry) => entry.category);
+}
+
+// both directions count: a projected minutes cut is as much an edge as a bump
+export function edgeOf(
+  deltas: ReasonInput['deltas'],
+  scales: Map<DeviationStat, number>
+): number | null {
+  const { upside } = upsideOf(deltas, scales);
+  return upside === null ? null : round(Math.abs(upside), 3);
+}
+
+function byIdentity(a: SlatePlayer, b: SlatePlayer): number {
+  if (a.name_is_placeholder !== b.name_is_placeholder) return a.name_is_placeholder ? 1 : -1;
+  return a.name.localeCompare(b.name) || a.nba_player_id.localeCompare(b.nba_player_id);
+}
+
+export function rankSlatePlayersByEdge(
+  players: SlatePlayer[],
+  limit: number = TOP_PLAYERS_PER_GAME
+): SlatePlayer[] {
+  return [...players]
+    .sort(
+      (a, b) => byValueDesc(a.edge, b.edge) || byValueDesc(a.impact, b.impact) || byIdentity(a, b)
+    )
+    .slice(0, limit);
+}
+
+export function sortSlateGames(games: SlateGame[], sort: SlateSort): SlateGame[] {
+  const key = (game: SlateGame): number | null =>
+    sort === 'edge' ? game.top_edge : game.top_impact;
+  return [...games].sort(
+    (a, b) => byValueDesc(key(a), key(b)) || a.nba_game_id.localeCompare(b.nba_game_id)
+  );
+}
+
+function conditionalLineOf(row: PredictionRow): ConditionalLine {
+  const line = {} as ConditionalLine;
+  for (const stat of CONDITIONAL_STATS) line[stat] = num(row[`c_${stat}`]);
+  return line;
+}
+
+function maxOf(values: Array<number | null>): number | null {
+  const present = values.filter((v): v is number => v !== null);
+  return present.length === 0 ? null : Math.max(...present);
+}
+
+export async function getSlate(
+  date: string,
+  sort: SlateSort = DEFAULT_SLATE_SORT
+): Promise<SlateResponse> {
   const schedule = await fetchSchedule(date);
   const run = await getLatestCompleteRun();
   const runSummary = run ? { model_version: run.model_version, predicted_at: run.predicted_at } : null;
   const baseline = baselineDescriptor();
 
   if (schedule.length === 0) {
-    return { date, run: runSummary, pool: poolDescriptor(0), baseline, games: [] };
+    return { date, sort, run: runSummary, pool: poolDescriptor(0), baseline, games: [] };
   }
 
   const teamAbbrs = await fetchTeamAbbrs();
@@ -549,6 +718,41 @@ export async function getSlate(date: string): Promise<SlateResponse> {
   });
   const impacts = impactScores(inputs);
 
+  const groups = groupTeammates(
+    predictions.map((row) => {
+      const id = String(row.nba_player_id);
+      return {
+        id,
+        game_id: String(row.nba_game_id),
+        team_abbr: text(row.team_abbr),
+        name: resolvePlayerName(row.name, id).name,
+        usual_minutes: baselines.get(id)?.avg.minutes ?? null,
+        prob_active: num(row.prob_active),
+      };
+    })
+  );
+
+  const conditionals = predictions.map(conditionalLineOf);
+  const reasonInputs: Array<ReasonInput | null> = predictions.map((row, i) => {
+    const id = String(row.nba_player_id);
+    const own = baselines.get(id);
+    if (!hasUsableBaseline(own)) return null;
+    return reasonInputFor({
+      gameDate: date,
+      probActive: num(row.prob_active),
+      minutes: num(row.proj_min_p50),
+      conditional: conditionals[i],
+      baseline: own as PlayerBaseline,
+      teammates: teammatesOf(
+        { id, game_id: String(row.nba_game_id), team_abbr: text(row.team_abbr) },
+        groups
+      ),
+    });
+  });
+  const scales = deviationScales(
+    reasonInputs.filter((r): r is ReasonInput => r !== null).map((r) => r.deltas)
+  );
+
   const players: SlatePlayer[] = predictions.map((row, i) => {
     const nbaPlayerId = String(row.nba_player_id);
     const { name, placeholder } = resolvePlayerName(row.name, nbaPlayerId);
@@ -559,6 +763,8 @@ export async function getSlate(date: string): Promise<SlateResponse> {
     const usable = hasUsableBaseline(own) ? (own as PlayerBaseline) : null;
     const projMin = num(row.proj_min_p50);
     const projPts = inputs[i].pts;
+    const reasonInput = reasonInputs[i];
+    const reasons = reasonInput ? reasonsFor(reasonInput) : [];
 
     return {
       nba_player_id: nbaPlayerId,
@@ -575,6 +781,16 @@ export async function getSlate(date: string): Promise<SlateResponse> {
       pts_vs_usual: round(deltaOf(projPts, usable?.avg.pts ?? null), 1),
       baseline_games: usable?.games ?? 0,
       impact: impacts[i],
+      edge: reasonInput ? edgeOf(reasonInput.deltas, scales) : null,
+      vs_usual:
+        reasonInput && usable
+          ? {
+              ...playerVsUsualOf(reasonInput),
+              categories: topCategoryDeltas(conditionals[i], usable.avg, scales),
+            }
+          : null,
+      reasons,
+      evidence: reasonInput ? evidenceFor(reasonInput, reasons) : {},
       spotlight: false,
       slate_spotlight: false,
       ...injuryOverlayFields(injuries.get(nbaPlayerId), runSummary?.predicted_at ?? null),
@@ -603,7 +819,7 @@ export async function getSlate(date: string): Promise<SlateResponse> {
     const gameSpotlight = topImpactIds(inGame, SPOTLIGHT_PER_GAME);
     for (const player of inGame) player.spotlight = gameSpotlight.has(player.nba_player_id);
 
-    const ranked = rankSlatePlayers(inGame);
+    const ranked = sort === 'edge' ? rankSlatePlayersByEdge(inGame) : rankSlatePlayers(inGame);
 
     return {
       nba_game_id: gameId,
@@ -612,14 +828,42 @@ export async function getSlate(date: string): Promise<SlateResponse> {
       home_team_abbr: homeId ? teamAbbrs.get(homeId) ?? null : null,
       away_team_id: awayId,
       away_team_abbr: awayId ? teamAbbrs.get(awayId) ?? null : null,
-      top_impact: ranked[0]?.impact ?? null,
+      top_impact: maxOf(ranked.map((p) => p.impact)),
+      top_edge: maxOf(ranked.map((p) => p.edge)),
       players: ranked,
     };
   });
 
-  games.sort(
-    (a, b) => byValueDesc(a.top_impact, b.top_impact) || a.nba_game_id.localeCompare(b.nba_game_id)
-  );
+  return {
+    date,
+    sort,
+    run: runSummary,
+    pool: poolDescriptor(players.length),
+    baseline,
+    games: sortSlateGames(games, sort),
+  };
+}
 
-  return { date, run: runSummary, pool: poolDescriptor(players.length), baseline, games };
+// the same minutes and points comparison his slate row carries, without building the whole slate
+export async function getPlayerVsUsual(
+  nbaPlayerId: string,
+  date: string
+): Promise<PlayerVsUsual | null> {
+  const run = await getLatestCompleteRun();
+  if (!run) return null;
+  const [row] = await fetchPredictions(run.id, date, nbaPlayerId);
+  if (!row) return null;
+  const own = (await fetchBaselines(date, [nbaPlayerId])).get(nbaPlayerId);
+  if (!hasUsableBaseline(own)) return null;
+
+  return playerVsUsualOf(
+    reasonInputFor({
+      gameDate: date,
+      probActive: num(row.prob_active),
+      minutes: num(row.proj_min_p50),
+      conditional: conditionalLineOf(row),
+      baseline: own as PlayerBaseline,
+      teammates: [],
+    })
+  );
 }

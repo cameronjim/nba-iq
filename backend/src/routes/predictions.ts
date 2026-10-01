@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { query } from '../db.js';
-import { getSlate, parsePredictionDate } from '../services/slate.js';
+import { SLATE_SORTS, getSlate, parsePredictionDate, parseSlateSort } from '../services/slate.js';
 import {
   MAX_WINDOW_DAYS,
   POSITION_FILTERS,
@@ -22,6 +22,7 @@ const INVALID_FROM = 'from must be a calendar day formatted YYYY-MM-DD';
 const INVALID_LIMIT = `limit must be a whole number between 1 and ${MAX_UPCOMING_LIMIT}`;
 const INVALID_PLAYER_ID = 'A numeric player id is required';
 const INVALID_DAYS = `days must be a whole number between 1 and ${MAX_WINDOW_DAYS}`;
+const INVALID_SORT = `sort must be one of ${SLATE_SORTS.join(', ')}`;
 const INVALID_POSITION = `position must be one of ${POSITION_FILTERS.join(', ')}, or any`;
 
 const predictionsRouter = Router();
@@ -33,8 +34,14 @@ predictionsRouter.get('/slate', async (req: Request, res: Response): Promise<voi
     return;
   }
 
+  const sort = parseSlateSort(req.query.sort);
+  if (sort === null) {
+    res.status(400).json({ error: INVALID_SORT });
+    return;
+  }
+
   try {
-    res.json(await getSlate(date));
+    res.json(await getSlate(date, sort));
   } catch {
     res.status(500).json({ error: 'Failed to fetch slate' });
   }

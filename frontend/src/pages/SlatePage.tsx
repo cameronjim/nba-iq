@@ -1,30 +1,26 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CalendarDays } from 'lucide-react';
-import { getSlate } from '../api/client';
-import { useCachedResource } from '../hooks/useCachedResource';
+import { useSlate } from '../hooks/useSlate';
 import { formatTimestamp } from '../utils/analytics';
-import { formatSlateDate, todayInEastern } from '../utils/dates';
+import { formatSlateDate } from '../utils/dates';
 import { SlateGameCard } from '../components/slate/SlateGameCard';
 import { SlateLegend } from '../components/slate/SlateLegend';
-import type { SlateResponse } from '../types';
+import { SlateSortPicker } from '../components/slate/SlateSortPicker';
+import type { SlateSort } from '../types';
 
 const NO_RUN_NOTICE = 'No prediction run yet. Check back after the next model run.';
 
-export const SlatePage = (): JSX.Element => {
-  const [date, setDate] = useState(todayInEastern);
+const ORDER_NOTE: Record<SlateSort, string> = {
+  impact:
+    'Players and games are ordered by projected impact across all nine categories. 0 is an average night.',
+  edge:
+    "Players and games are ordered by how far tonight's projection moves from each player's own usual, up or down, weighted toward minutes and points.",
+};
 
-  const { data, loading, error, reload } = useCachedResource<SlateResponse>(
-    `slate:${date}`,
-    () => getSlate(date),
-    { errorMessage: 'Failed to load the slate' }
-  );
+export const SlatePage = (): JSX.Element => {
+  const { date, setDate, sort, setSort, data, loading, error, reload } = useSlate();
 
   const predictedAt = formatTimestamp(data?.run?.predicted_at ?? null);
-  const baseline = data?.baseline ?? null;
-  // 0 disables the chips, which is what a server sending no baseline descriptor
-  // (an older one, or one caught mid-deploy) should produce.
-  const notableMinDelta = baseline?.definition ? baseline.notable_min_delta : 0;
 
   return (
     <div className="max-w-[900px] mx-auto px-4 py-6 pb-20">
@@ -46,16 +42,19 @@ export const SlatePage = (): JSX.Element => {
           </p>
         </div>
 
-        <label className="form-control">
-          <span className="sr-only">Game date</span>
-          <input
-            type="date"
-            className="input input-bordered input-sm"
-            value={date}
-            aria-label="Game date"
-            onChange={(e) => setDate(e.target.value || todayInEastern())}
-          />
-        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <SlateSortPicker sort={sort} onChange={setSort} />
+          <label className="form-control">
+            <span className="sr-only">Game date</span>
+            <input
+              type="date"
+              className="input input-bordered input-sm"
+              value={date}
+              aria-label="Game date"
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </label>
+        </div>
       </header>
 
       {loading && !data ? (
@@ -98,11 +97,7 @@ export const SlatePage = (): JSX.Element => {
               {data.run && <SlateLegend />}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {data.games.map((game) => (
-                  <SlateGameCard
-                    key={game.nba_game_id}
-                    game={game}
-                    notableMinDelta={notableMinDelta}
-                  />
+                  <SlateGameCard key={game.nba_game_id} game={game} />
                 ))}
               </div>
             </>
@@ -111,10 +106,7 @@ export const SlatePage = (): JSX.Element => {
       )}
 
       <footer className="text-[11px] opacity-40 mt-6 pt-3 border-t border-base-300 flex flex-col gap-1">
-        <span>
-          Players and games are ordered by projected impact across all nine categories. 0 is an
-          average night.
-        </span>
+        <span data-testid="slate-order-note">{ORDER_NOTE[sort]}</span>
         <span>
           Every projection already accounts for the chance he sits, as of when it was
           published. The injury chip is the report right now.

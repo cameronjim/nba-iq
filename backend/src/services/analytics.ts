@@ -1,5 +1,6 @@
 import { query } from '../db.js';
 import { getLatestPredictionForPlayer, type PlayerPrediction } from './predictions.js';
+import { getPlayerVsUsual, type PlayerVsUsual } from './slate.js';
 
 
 export const ANALYTICS_STATS = [
@@ -121,7 +122,12 @@ export interface PlayerAnalytics {
     rolling: RollingPoint[];
     last10_vs_season: Last10Comparison[];
   };
-  prediction: PlayerPrediction | null;
+  prediction: AnalyticsPrediction | null;
+}
+
+// vs_usual is optional so a missing baseline or an older server leaves the card unchanged
+export interface AnalyticsPrediction extends PlayerPrediction {
+  vs_usual?: PlayerVsUsual;
 }
 
 export interface LeagueDistribution {
@@ -492,6 +498,20 @@ async function fetchPlayerLogs(nbaPlayerId: string | null): Promise<GameLogRow[]
   }));
 }
 
+async function withVsUsual(
+  nbaId: string | null,
+  prediction: PlayerPrediction | null
+): Promise<AnalyticsPrediction | null> {
+  if (!nbaId || !prediction) return prediction;
+  try {
+    const vsUsual = await getPlayerVsUsual(nbaId, prediction.game_date);
+    return vsUsual ? { ...prediction, vs_usual: vsUsual } : prediction;
+  } catch {
+    // the comparison is garnish; the projection itself still renders without it.
+    return prediction;
+  }
+}
+
 export async function getPlayerAnalytics(playerId: number): Promise<PlayerAnalytics | null> {
   const playerResult = await query(
     `SELECT id, nba_id, name, team, position, headshot_url,
@@ -515,7 +535,7 @@ export async function getPlayerAnalytics(playerId: number): Promise<PlayerAnalyt
   const nbaId = row.nba_id === null || row.nba_id === undefined ? null : String(row.nba_id);
   const snapshot = await getPoolSnapshot();
   const logs = await fetchPlayerLogs(nbaId);
-  const prediction = await getLatestPredictionForPlayer(nbaId);
+  const prediction = await withVsUsual(nbaId, await getLatestPredictionForPlayer(nbaId));
 
   let fgm = 0;
   let fga = 0;

@@ -1,4 +1,5 @@
 import type { NumericLike } from './core';
+import type { PlayerVsUsual } from './slate';
 
 // fg_impact / ft_impact are attempt-weighted excess makes, not raw percentages.
 export type AnalyticsStat =
@@ -113,6 +114,8 @@ export interface PlayerPrediction {
   prob_active?: NumericLike | null;
   conditional?: boolean;
   unconditional_pts?: NumericLike | null;
+  // his next game against his usual; absent without enough history or from an older server.
+  vs_usual?: PlayerVsUsual;
 }
 
 export interface PlayerAnalytics {
