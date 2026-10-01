@@ -28,6 +28,7 @@ from parsing import (
     canonical_player_name,
     cbs_team_abbr,
     cleared_player_ids,
+    clearances_for_report,
     extract_next_data,
     in_season,
     normalize_injury_status,
@@ -1389,7 +1390,7 @@ class InjuryCursor:
     def execute(self, sql, params=None):
         self.statements.append((sql, params))
         if "injury_status IS NOT NULL" in sql:
-            self._result = [(i,) for i in self.previously_listed]
+            self._result = [(i, f"Player {i}") for i in self.previously_listed]
         elif "SELECT nba_id, name, team" in sql:
             self._result = list(INJURY_PLAYERS)
         else:
@@ -2836,3 +2837,50 @@ class TestInjuryPhases:
     def test_the_official_only_flag_is_parsed(self):
         # act + assert
         assert _parse_args(["--official-injuries-only"]).official_injuries_only is True
+
+
+class TestClearancesForReport:
+    def test_a_complete_report_clears_the_dropped_player(self):
+        # arrange
+        previous = [("1", "A One"), ("2", "B Two")]
+
+        # act
+        cleared = clearances_for_report(previous, ["1"])
+
+        # assert
+        assert cleared == ["2"]
+
+    def test_an_incomplete_report_clears_nobody(self):
+        # arrange
+        previous = [("1", "A One"), ("2", "B Two")]
+
+        # act
+        cleared = clearances_for_report(previous, ["1"], complete=False)
+
+        # assert
+        assert cleared == []
+
+    def test_a_listed_but_unmatched_name_is_not_cleared(self):
+        # arrange: B Two is on the page but could not be matched to an id
+        previous = [("1", "A One"), ("2", "B Two"), ("3", "C Three")]
+
+        # act
+        cleared = clearances_for_report(previous, ["1"], unmatched_names=["B. Two"])
+
+        # assert
+        assert cleared == ["3"]
+
+
+class TestPartialPageWritesNoClearances:
+    def test_a_skipped_table_blocks_clearances(self, monkeypatch):
+        # arrange: one good five-column table and one table whose status header is gone
+        row = _cbs_row("Zed Good", ["SF", "Thu, Oct 1", "Knee", "Out for the season"])
+        good = _cbs_table("GS", CBS_FIVE_HEADERS, [row])
+        bad = _cbs_table("LAC", ["Player", "Position", "Updated", "Injury", "Status Note"], [row])
+        html = good + bad
+        rows, skipped = scrapes._parse_cbs_injury_tables(html)
+
+        # act + assert
+        assert skipped == 1
+        assert len(rows) == 1
+        assert clearances_for_report([("9", "Old Listed")], ["1"], complete=skipped == 0) == []

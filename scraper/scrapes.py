@@ -29,6 +29,7 @@ from parsing import (
     canonical_player_name,
     cbs_team_abbr,
     cleared_player_ids,
+    clearances_for_report,
     normalize_injury_status,
     resolve_positions,
 )
@@ -375,8 +376,14 @@ def _cell_text(cells: Sequence[Tag], columns: Mapping[str, int], key: str) -> st
 
 
 def _parse_cbs_injury_rows(html: str) -> list[CbsInjuryRow]:
+    return _parse_cbs_injury_tables(html)[0]
+
+
+def _parse_cbs_injury_tables(html: str) -> tuple[list[CbsInjuryRow], int]:
+    """every row the page yields, plus the number of tables skipped for a bad header."""
     soup = BeautifulSoup(html, "html.parser")
     parsed: list[CbsInjuryRow] = []
+    skipped_tables = 0
     for table in soup.select("div.TableBase"):
         headers = [th.get_text(" ", strip=True) for th in table.select("th")]
         if headers:
@@ -390,6 +397,7 @@ def _parse_cbs_injury_rows(html: str) -> list[CbsInjuryRow]:
                     ", ".join(missing),
                     headers,
                 )
+                skipped_tables += 1
                 continue
             min_cells = max(columns.values()) + 1
         else:
@@ -417,7 +425,7 @@ def _parse_cbs_injury_rows(html: str) -> list[CbsInjuryRow]:
                     team_abbr=team_abbr,
                 )
             )
-    return parsed
+    return parsed, skipped_tables
 
 
 def index_players_by_canonical_name(
@@ -469,15 +477,16 @@ def scrape_injuries(
         logger.warning("error fetching injuries, leaving statuses untouched: %s", e)
         return
 
-    parsed = _parse_cbs_injury_rows(html)
+    parsed, skipped_tables = _parse_cbs_injury_tables(html)
     # a failed or empty scrape must never read as "everyone is healthy".
     if not parsed:
         logger.warning("injury page parsed to zero rows, leaving statuses untouched")
         return
 
     cur = maybe_write_cursor(conn.cursor(), dry_run)
-    cur.execute("SELECT nba_id FROM players WHERE injury_status IS NOT NULL")
-    previously_listed = [str(nba_id) for (nba_id,) in cur.fetchall() if nba_id]
+    cur.execute("SELECT nba_id, name FROM players WHERE injury_status IS NOT NULL")
+    previous_rows = [(str(nba_id), str(name or "")) for nba_id, name in cur.fetchall() if nba_id]
+    previously_listed = [nba_id for nba_id, _ in previous_rows]
     # cbs publishes names only, so they are resolved to ids here with a read,
     # which also lets a dry run report the same clearances production writes.
     cur.execute("SELECT nba_id, name, team FROM players WHERE nba_id IS NOT NULL")
@@ -529,8 +538,19 @@ def scrape_injuries(
     count = logged = len(match.matched)
 
     # a recovered player just disappears from the page, so his clearance has to be
-    # written explicitly or his last 'out' row stands forever.
-    cleared = cleared_player_ids(previously_listed, currently_listed)
+    # written explicitly or his last 'out' row stands forever. a partial page is
+    # not a recovery: a skipped table or an unmatched name means absence from the
+    # matched set says nothing about the player.
+    cleared = clearances_for_report(
+        previous_rows, currently_listed,
+        unmatched_names=[r.player_name for r in match.unmatched],
+        complete=skipped_tables == 0,
+    )
+    if skipped_tables:
+        logger.warning(
+            "cbs injuries: %d table(s) skipped, so no clearances were written this run",
+            skipped_tables,
+        )
     for nba_id in cleared:
         cur.execute(
             """
