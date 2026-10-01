@@ -214,9 +214,10 @@ CUTOFF_CLAUSE = " AND {col} < %(cutoff)s"
 #      nothing, and an IS NULL filter would throw away the official game-specific
 #      reports. overrides.resolve_statuses decides which applies to which game.
 #
-#   4. a 7-day lower bound so the database does not ship the whole history. it is
-#      wider than overrides.REPORT_MAX_AGE_HOURS on purpose: the python-side
-#      expiry is the rule that decides, this only trims what cannot matter. with
+#   4. a 90-day lower bound so the database does not ship the whole history. far
+#      wider than overrides.REPORT_MAX_AGE_HOURS on purpose: once out-class
+#      designations stop expiring, a long-term out must survive a scraper stall,
+#      and the python-side rules are the ones that decide. with
 #      overrides.EXPIRE_UNAVAILABLE_STATUSES off this bound is the only age limit
 #      an out designation has.
 LATEST_INJURY_STATUS_SQL = """
@@ -230,7 +231,7 @@ SELECT DISTINCT ON (r.nba_player_id, r.nba_game_id, r.source)
     r.source           AS "source"
 FROM player_injury_reports r
 WHERE r.captured_at < %(as_of)s
-  AND r.captured_at >= %(as_of)s - INTERVAL '7 days'
+  AND r.captured_at >= %(as_of)s - INTERVAL '90 days'
 ORDER BY r.nba_player_id, r.nba_game_id, r.source, r.captured_at DESC
 """
 
