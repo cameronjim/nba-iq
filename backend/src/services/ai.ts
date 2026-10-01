@@ -2,7 +2,9 @@ import { query } from '../db.js';
 import { activeProviderKind, getNarrator } from './aiProvider.js';
 import {
   CATEGORY_LABELS,
+  WAIVER_BAND_WIDTH,
   rankTradeTargets,
+  rankingPools,
   rankWaiverCandidates,
   type RankedCandidate,
   type RankingPlayer,
@@ -377,22 +379,11 @@ export async function buildWaiverContext(userId: number, leagueSize?: number): P
   const rosterIds = new Set<number>(rosterResult.rows.map((r: { id: number }) => r.id));
   const players = rosterResult.rows;
 
-  const ROSTER_DEPTH = 13;
-  const teams = leagueSize && leagueSize >= 4 ? leagueSize : 10;
-  const rosteredCutoff = teams * ROSTER_DEPTH;
-
-  const tradePool = ranked.filter(
-    (p) => p.fantasy_rank != null && p.fantasy_rank <= rosteredCutoff && !rosterIds.has(p.id)
-  );
-
-  const waiverBandWidth = 250;
-  const waiverPool = ranked.filter(
-    (p) =>
-      p.fantasy_rank != null &&
-      p.fantasy_rank > rosteredCutoff &&
-      p.fantasy_rank <= rosteredCutoff + waiverBandWidth &&
-      !rosterIds.has(p.id)
-  );
+  const pools = rankingPools(ranked, rosterIds, leagueSize);
+  const teams = pools.teams;
+  const rosteredCutoff = pools.rostered_cutoff;
+  const tradePool = pools.trade_pool;
+  const waiverPool = pools.waiver_pool;
 
   const avg = (key: string): string => {
     const vals = players.map((p: PlayerRow) => Number(p[key]) || 0);
@@ -426,7 +417,7 @@ export async function buildWaiverContext(userId: number, leagueSize?: number): P
 
   context += `\n${RANKED_LIST_INSTRUCTIONS}\n`;
 
-  context += `\nWAIVER CANDIDATES (top ${waiverPickups.length} by score from fantasy rank ${rosteredCutoff + 1} to ${rosteredCutoff + waiverBandWidth}, presumed unrostered in a ${teams}-team league):\n`;
+  context += `\nWAIVER CANDIDATES (top ${waiverPickups.length} by score from fantasy rank ${rosteredCutoff + 1} to ${rosteredCutoff + WAIVER_BAND_WIDTH}, presumed unrostered in a ${teams}-team league):\n`;
   waiverPickups.forEach((c, i) => {
     context += formatRankedLine(i + 1, c, byId.get(c.id)) + '\n';
   });

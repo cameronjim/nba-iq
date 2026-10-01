@@ -82,13 +82,13 @@ export function parseOutlookDays(raw: unknown): number | null {
   return value;
 }
 
-interface RosterRow {
+export interface RosterRow {
   player_id: unknown;
   nba_id: unknown;
   name: unknown;
 }
 
-async function fetchRoster(userId: number): Promise<RosterRow[]> {
+export async function fetchRoster(userId: number): Promise<RosterRow[]> {
   return rowsOrEmpty<RosterRow>(() =>
     query(
       `SELECT mr.player_id, p.nba_id, p.name
@@ -101,11 +101,11 @@ async function fetchRoster(userId: number): Promise<RosterRow[]> {
   );
 }
 
-type RosterPredictionRow = UpcomingPredictionRow & { nba_player_id: unknown };
+export type RosterPredictionRow = UpcomingPredictionRow & { nba_player_id: unknown };
 
 const ROSTER_STATS = [PROB_ACTIVE_STAT, ...SIM_STATS];
 
-async function fetchRosterPredictions(
+export async function fetchRosterPredictions(
   runId: number,
   nbaIds: string[],
   window: WatchlistWindow
@@ -136,7 +136,7 @@ async function fetchRosterPredictions(
   );
 }
 
-type PoolRow = { nba_player_id: unknown } & { [K in SimStat]: unknown };
+export type PoolRow = { nba_player_id: unknown } & { [K in SimStat]: unknown };
 
 const POOL_PARAM_OFFSET = 5;
 
@@ -146,7 +146,7 @@ const POOL_PIVOT_SQL = SIM_STATS.map(
 ).join(',\n              ');
 
 // unconditional expectations already price availability in, so they sum straight into a week.
-async function fetchPoolWeeklyTotals(runId: number, window: WatchlistWindow): Promise<PoolRow[]> {
+export async function fetchPoolWeeklyTotals(runId: number, window: WatchlistWindow): Promise<PoolRow[]> {
   return rowsOrEmpty<PoolRow>(() =>
     query(
       `SELECT pgp.nba_player_id,
@@ -182,7 +182,7 @@ export function toSimPlayer(nbaPlayerId: string, rows: UpcomingPredictionRow[]):
   return { nba_player_id: nbaPlayerId, games };
 }
 
-function toImpactInput(row: PoolRow): ImpactInput {
+export function toImpactInput(row: PoolRow): ImpactInput {
   return {
     pts: num(row.pts),
     reb: num(row.reb),

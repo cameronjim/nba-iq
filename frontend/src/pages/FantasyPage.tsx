@@ -1,6 +1,8 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { getMyRoster, getPlayers, addToRoster, dropFromRoster, getTeamAnalysis } from '../api/client';
-import type { Player, RosterPlayer, TeamAnalysis } from '../types';
+import {
+  getMyRoster, getPlayers, addToRoster, dropFromRoster, getTeamAnalysis, getStartSit, getStreamers,
+} from '../api/client';
+import type { Player, RosterPlayer, Streamer, TeamAnalysis } from '../types';
 import { getTeamLogoUrl } from '../utils/teamLogos';
 import { IconSearch, IconPlus, IconTrash, IconRefresh, IconChevronUp, IconChevronDown } from '../components/icons';
 import { SkeletonLines, SkeletonTable } from '../components/Skeleton';
@@ -15,6 +17,11 @@ import {
 import { getCached, setCached, CACHE_KEYS } from '../api/resourceCache';
 import { WeeklyOutlookCard } from '../components/fantasy/WeeklyOutlookCard';
 import { useWeeklyOutlook } from '../hooks/useWeeklyOutlook';
+import { LineupCard } from '../components/fantasy/LineupCard';
+import { StreamingPickupsCard } from '../components/fantasy/StreamingPickupsCard';
+import { TradeCheckCard } from '../components/fantasy/TradeCheckCard';
+import { useRosterResource } from '../hooks/useRosterResource';
+import { useTradeCheck } from '../hooks/useTradeCheck';
 
 const CAT_COLORS: Record<string, string> = {
   strong: 'text-success',
@@ -62,6 +69,7 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
   const [toast, setToast] = useState<{ message: string; variant: ToastVariant } | null>(null);
   const [sortKey, setSortKey] = useState<keyof RosterPlayer>('points_per_game');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [addingStreamerId, setAddingStreamerId] = useState<number | null>(null);
   // each loadAnalysis captures this id and commits only while it is still the latest.
   const analysisRequestIdRef = useRef(0);
 
@@ -162,6 +170,22 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
       });
   };
 
+  const handleAddStreamer = (streamer: Streamer): void => {
+    setAddingStreamerId(streamer.id);
+    void addToRoster(streamer.id)
+      .then(() => {
+        analysisRequestIdRef.current++;
+        setAnalysis(null);
+        invalidateAIClientCaches();
+        setToast({ message: `Added ${streamer.name} to your team`, variant: 'success' });
+        return loadRoster();
+      })
+      .catch(() => {
+        setToast({ message: `Couldn't add ${streamer.name}`, variant: 'error' });
+      })
+      .finally(() => setAddingStreamerId(null));
+  };
+
   const handleDrop = (playerId: number, playerName: string): void => {
     const previousRoster = roster;
     setRoster((prev) => prev.filter((p) => (p.player_id || p.id) !== playerId));
@@ -195,9 +219,18 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
     () => roster.map((p) => p.player_id || p.id).sort((a, b) => a - b).join(','),
     [roster]
   );
-  const { state: outlookState, reload: reloadOutlook } = useWeeklyOutlook(
-    isLoggedIn && !rosterLoading && roster.length > 0,
-    rosterKey
+  const decisionsEnabled = isLoggedIn && !rosterLoading && roster.length > 0;
+  const { state: outlookState, reload: reloadOutlook } = useWeeklyOutlook(decisionsEnabled, rosterKey);
+  const { state: lineupState, reload: reloadLineup } = useRosterResource(
+    getStartSit, decisionsEnabled, rosterKey, "Could not load this week's lineup."
+  );
+  const { state: streamersState, reload: reloadStreamers } = useRosterResource(
+    getStreamers, decisionsEnabled, rosterKey, 'Could not load streaming pickups.'
+  );
+  const { state: tradeState, check: checkTrade } = useTradeCheck();
+  const tradeRoster = useMemo(
+    () => roster.map((p) => ({ id: p.player_id || p.id, name: p.name })),
+    [roster]
   );
 
   const sortedRoster = useMemo(() => {
@@ -397,6 +430,23 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
 
       {isLoggedIn && roster.length > 0 && (
         <WeeklyOutlookCard state={outlookState} onReload={reloadOutlook} />
+      )}
+
+      {isLoggedIn && roster.length > 0 && (
+        <LineupCard state={lineupState} onReload={reloadLineup} />
+      )}
+
+      {isLoggedIn && roster.length > 0 && (
+        <StreamingPickupsCard
+          state={streamersState}
+          onReload={reloadStreamers}
+          onAdd={handleAddStreamer}
+          addingId={addingStreamerId}
+        />
+      )}
+
+      {isLoggedIn && roster.length > 0 && (
+        <TradeCheckCard roster={tradeRoster} state={tradeState} onCheck={checkTrade} />
       )}
 
       {isLoggedIn && roster.length > 0 && (

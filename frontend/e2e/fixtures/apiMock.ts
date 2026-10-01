@@ -6,6 +6,7 @@ import type {
   Team, Game, TeamAnalysis,
   BettingGame, PropPicksResponse, Bet, LedgerSummary,
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, WatchlistResponse,
+  RosterPlayer, StartSitResponse, StreamersResponse, TradeCheckResponse,
 } from '../../src/types';
 
 export interface WaiverSuggestionsResponse {
@@ -24,6 +25,10 @@ export interface MockOptions {
   playerAnalytics?: PlayerAnalytics;
   playerPredictions?: PlayerPredictionsResponse;
   rosterRequiresAuth?: boolean;
+  roster?: RosterPlayer[];
+  startSit?: StartSitResponse;
+  streamers?: StreamersResponse;
+  tradeCheck?: TradeCheckResponse;
   teamAnalysis?: TeamAnalysis;
   waiverSuggestions?: WaiverSuggestionsResponse;
   bettingOdds?: BettingGame[];
@@ -99,6 +104,23 @@ export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void>
   await page.route('**/api/fantasy/**', (route) => {
     if (opts.rosterRequiresAuth) {
       route.fulfill({ status: 401, json: { error: 'Unauthorized' } });
+      return;
+    }
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/fantasy/roster') && opts.roster) {
+      route.fulfill({ json: opts.roster });
+      return;
+    }
+    if (path.endsWith('/fantasy/start-sit') && opts.startSit) {
+      route.fulfill({ json: opts.startSit });
+      return;
+    }
+    if (path.endsWith('/fantasy/streamers') && opts.streamers) {
+      route.fulfill({ json: opts.streamers });
+      return;
+    }
+    if (path.endsWith('/fantasy/trade-check') && opts.tradeCheck) {
+      route.fulfill({ json: opts.tradeCheck });
       return;
     }
     route.fulfill({ json: [] });
