@@ -138,6 +138,8 @@ class EndpointDecision:
     n_rows: int
     n_dates: int
     is_gate: bool
+    # the P3 bracket passes its own floor; the default is P2's, unchanged.
+    floor: float = P2_PROMOTION_FLOOR
 
     @property
     def ci_excludes_zero(self) -> bool:
@@ -153,7 +155,7 @@ class EndpointDecision:
         """
         if not self.is_gate:
             return False
-        return self.ci_excludes_zero and self.relative >= P2_PROMOTION_FLOOR
+        return self.ci_excludes_zero and self.relative >= self.floor
 
 
 def paired_endpoint_bootstrap(
@@ -161,6 +163,8 @@ def paired_endpoint_bootstrap(
     candidate: pd.DataFrame,
     endpoint: str,
     loss_col: str = "loss",
+    gates: tuple[str, ...] = P2_PROMOTION_ENDPOINTS,
+    floor: float = P2_PROMOTION_FLOOR,
 ) -> EndpointDecision:
     """paired 7-day moving-block bootstrap on one endpoint's per-row losses.
 
@@ -210,7 +214,8 @@ def paired_endpoint_bootstrap(
         p_value=float(result.p_value),
         n_rows=int(result.n_rows),
         n_dates=int(result.n_dates),
-        is_gate=endpoint in P2_PROMOTION_ENDPOINTS,
+        is_gate=endpoint in gates,
+        floor=float(floor),
     )
 
 
@@ -272,6 +277,8 @@ class PromotionVerdict:
 def decide(
     decisions: list[EndpointDecision] | tuple[EndpointDecision, ...],
     regressions: pd.DataFrame,
+    floor: float = P2_PROMOTION_FLOOR,
+    tolerance: float = P2_COHORT_REGRESSION_TOLERANCE,
 ) -> PromotionVerdict:
     """apply the pre-registered rule. NO JUDGEMENT IS EXERCISED HERE.
 
@@ -295,7 +302,7 @@ def decide(
             decisions=tuple(decisions), regressions=regressions, promoted=False,
             reason=(
                 f"NOT PROMOTED: no gated endpoint cleared both halves of the bar "
-                f"(95% CI excluding zero AND >= {P2_PROMOTION_FLOOR:.0%} relative "
+                f"(95% CI excluding zero AND >= {floor:.0%} relative "
                 f"improvement). {detail}"
             ),
         )
@@ -306,7 +313,7 @@ def decide(
             reason=(
                 f"NOT PROMOTED: {', '.join(d.endpoint for d in cleared)} cleared the "
                 f"bar, but {len(regressed)} cohort(s) regress past the "
-                f"{P2_COHORT_REGRESSION_TOLERANCE:.0%} tolerance - worst is "
+                f"{tolerance:.0%} tolerance - worst is "
                 f"'{worst['cohort']}' at {worst['delta_pct']:+.2%} on "
                 f"{int(worst['n']):,} rows"
             ),
@@ -315,8 +322,8 @@ def decide(
         decisions=tuple(decisions), regressions=regressions, promoted=True,
         reason=(
             f"PROMOTED: {', '.join(d.endpoint for d in cleared)} cleared the bar "
-            f"(95% CI excluding zero and >= {P2_PROMOTION_FLOOR:.0%}) with no cohort "
-            f"regressing past {P2_COHORT_REGRESSION_TOLERANCE:.0%}"
+            f"(95% CI excluding zero and >= {floor:.0%}) with no cohort "
+            f"regressing past {tolerance:.0%}"
         ),
     )
 

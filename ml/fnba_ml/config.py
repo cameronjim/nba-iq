@@ -423,6 +423,22 @@ FEATURE_COLS: list[str] = BASE_FEATURE_COLS + TEAMMATE_FEATURE_COLS
 # readable. nothing in the serving path reads this.
 FEATURE_COLS_V4: list[str] = FEATURE_COLS + V4_FEATURE_COLS
 
+# ---- the P3 candidate contract (feature_version v5), not served ----
+# the stakes family alone, per MODEL.md 15.11: no late_season and no
+# stakes_lockedness column (only their interactions), no blowout, no pace.
+V5_STAKES_FEATURE_COLS: list[str] = [
+    "team_games_remaining",
+    "team_win_pct",
+    "team_games_over_500",
+    "stakes_late_x_over500",
+    "stakes_x_minutes_share",
+    "stakes_x_veteran",
+    "minutes_share",
+]
+FEATURE_COLS_V5_STAKES: list[str] = FEATURE_COLS + V5_STAKES_FEATURE_COLS
+CANDIDATE_FEATURE_VERSION_V5 = "v5"
+CANDIDATE_FEATURE_SET_V5 = "v5-stakes"
+
 # ---- the evaluation bracket: feature sets over identical rows ----
 # v1 is the no-teammate-context floor, v2-oracle is what perfect pre-tipoff
 # lineup information buys, v3-honest is what ships.
@@ -431,6 +447,7 @@ FEATURE_SETS: dict[str, list[str]] = {
     "v3-honest": list(FEATURE_COLS),
     "v2-oracle": BASE_FEATURE_COLS + ["usg_ewma"] + TEAMMATE_ORACLE_COLS,
     "v4": list(FEATURE_COLS_V4),
+    "v5-stakes": list(FEATURE_COLS_V5_STAKES),
 }
 SERVED_FEATURE_SET = "v3-honest"
 ORACLE_FEATURE_SET = "v2-oracle"
@@ -592,6 +609,56 @@ LGBM_PARAMS: dict[str, object] = {
     "verbosity": -1,
     "n_jobs": -1,
 }
+
+# ---------------------------------------------------------------------------
+# P3: the contextual residual rate challenger. nothing below is served.
+# ---------------------------------------------------------------------------
+# small on purpose: four stats means four chances to fit noise.
+RATE_MODEL_TARGETS: tuple[str, ...] = ("PTS", "AST", "REB", "FGA")
+
+# the shared context columns. the model also reads the row's served rate for
+# the stat, a minutes column and a one-hot POS_GROUP, which rate_model adds
+# because their names depend on the stat or the scoring stage.
+RATE_CONTEXT_COLS: list[str] = [
+    "usg_ewma",
+    "exp_vacated_usg",
+    "p_star_out",
+    "exp_top3_usage_out",
+    "exp_depth_rank",
+    "IS_HOME",
+    "TEAM_REST_DAYS",
+    "IS_B2B",
+    "OPP_DEF_FORM",
+    "own_pace",
+    "opp_pace",
+    "opp_def_rating",
+    "opp_fg3a_allowed_per100",
+    "opp_fta_allowed_per100",
+    "minutes_share",
+]
+
+# LGBM_PARAMS overfit the P2 blowout frame badly, and a residual target is
+# mostly noise, so this is deliberately shallow and heavily regularised.
+RATE_MODEL_PARAMS: dict[str, object] = {
+    "n_estimators": 200,
+    "learning_rate": 0.05,
+    "num_leaves": 15,
+    "min_child_samples": 200,
+    "subsample": 0.8,
+    "subsample_freq": 1,
+    "colsample_bytree": 0.8,
+    "random_state": RANDOM_STATE,
+    "verbosity": -1,
+    "n_jobs": -1,
+}
+
+RATE_MODEL_CUTOFF = "RATE_MODEL_CUTOFF"
+
+# ---- P3's pre-registered promotion rule, written before any result ----
+P3_PROMOTION_FLOOR: float = 0.01
+P3_COHORT_REGRESSION_TOLERANCE: float = 0.01
+P3_V5_GATED_ENDPOINTS: tuple[str, ...] = ("availability_brier", "minutes_mae")
+P3_RATE_GATED_ENDPOINTS: tuple[str, ...] = ("cond_pts_mae", "uncond_pts_mae")
 
 
 def season_tag(season: str) -> str:
