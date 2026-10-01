@@ -39,6 +39,7 @@ from .config import (
     START_RATE_WINDOW,
     STAKES_LOCKED_RATIO,
 )
+from .data.schema import training_rows
 
 log = logging.getLogger(__name__)
 
@@ -203,7 +204,8 @@ def team_game_context(
     optional (GAME_ID, TEAM_ID, IS_HOME) frame; absent, bo_is_home is null. the
     returned frame carries OUTCOME_COLS alongside the features.
     """
-    paired = _per_game_rates(_pair_team_games(team_logs))
+    # season-scoped windows over regular-season games, as the universe is.
+    paired = _per_game_rates(_pair_team_games(training_rows(team_logs)))
     paired = paired.sort_values(["TEAM_ID", "SEASON", "GAME_DATE", "GAME_ID"])
     paired = paired.reset_index(drop=True)
 

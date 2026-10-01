@@ -5,6 +5,9 @@ from config import (
     ABBR_TO_TEAM_ID,
     TEAM_ID_TO_ABBR,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
+    POSTSEASON_EARLIEST_MONTH,
+    SEASON_TYPE_REGULAR,
+    SEASON_TYPES_INGESTED,
 )
 from parsing import (
     _opt_int,
@@ -15,6 +18,7 @@ from parsing import (
     parse_minutes,
     resolve_positions,
     season_start_date,
+    season_start_year,
     season_type_from_game_id,
 )
 
@@ -35,6 +39,29 @@ def game_log_fetch_from(
     if latest_logged_date is None:
         return floor
     return max(floor, latest_logged_date - timedelta(days=correction_window_days))
+
+
+def season_types_to_fetch(
+    season: str,
+    today: date,
+    season_types: Sequence[str] = SEASON_TYPES_INGESTED,
+) -> tuple[str, ...]:
+    # the regular season is always fetched; a postseason type only once its
+    # games can exist, so an october run does not spend two empty requests each.
+    postseason_from = date(season_start_year(season) + 1, POSTSEASON_EARLIEST_MONTH, 1)
+    return tuple(
+        season_type
+        for season_type in season_types
+        if season_type == SEASON_TYPE_REGULAR or today >= postseason_from
+    )
+
+
+def ingested_schedule_rows(
+    rows: Sequence[Mapping], season_types: Collection[str] = SEASON_TYPES_INGESTED
+) -> list[Mapping]:
+    # preseason and all-star rows have no logs or status rows behind them, so
+    # storing them from a backfill would only light up the validation report.
+    return [row for row in rows if row["season_type"] in season_types]
 
 
 def split_rows_on_season_boundary(

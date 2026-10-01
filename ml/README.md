@@ -101,6 +101,8 @@ python score_runs.py --look dec1                      # + the 13.5 falsification
 
 # 6. the daily publisher, as predictions.yml runs it (run A, the v1 shadow, run B)
 python daily_run.py --shadow-feature-set v1 --dry-run
+# 6b. the injury rescore lane: the same run, only if a slate player's status class moved
+python daily_run.py --if-status-changed --shadow-feature-set v1 --dry-run
 
 # 7. challengers and serving options, all off by default (see the section below).
 #    one look per candidate: the reports are the record, not a draft.
@@ -140,6 +142,23 @@ passes) publishes, right after the prospective run A, one more run of
 from the pinned artifact's, or its registry checksums do not verify. A missing
 artifact is a warning and a skip; a failed shadow is logged, run B still
 publishes, and the job exits 1. The extended run B never gets a shadow.
+
+**The injury rescore lane.** `predictions.yml` has a second cron,
+`45 15,19,20,21,22,23,0,1,2 * * *`, which is `scraper.yml`'s injuries-only lane
+plus 15 minutes so the fresh report rows exist. It runs
+`daily_run.py --if-status-changed --shadow-feature-set v1`. Before the dataset
+rebuild it reads the newest complete production run's `information_as_of`,
+resolves each player's designation at that boundary and now (both through
+`overrides.latest_statuses`), and keeps the players on teams with an untipped game
+in the extended window whose class moved: available (passthrough), questionable
+(the policy blends: questionable, probable) or out (the policy replaces: out,
+suspended, g_league, doubtful). No change is exit 0 with `no status change since
+<boundary>; nothing to publish` and nothing written. A change is a normal run (A if
+its window has a Regular Season game, the shadow, then B) whose notes end with
+`rescore=status_change; changed_players=N` and whose registry entries carry
+`trigger: status_change` (`trigger: schedule` for the 16:00 lane). The schedule
+string picks the lane through a `case`, and an unknown string fails the job.
+MODEL.md 20.3.
 
 `--write-db` **refuses the approximation universe** unless
 `--allow-biased-universe` is passed, and stamps the reason into the run's notes
@@ -611,6 +630,18 @@ The single most important number in section 13: the teammate-context availabilit
 claim is **−1.9%** and the minimum detectable effect for it at **season end** is
 **2.0%**. One full season is barely enough to test this document's headline. The
 protocol says so up front rather than discovering it in April.
+
+---
+
+## Experiments
+
+One folder each under `experiments/`, with its own script, tests and `REPORT.md`.
+Nothing in them is served.
+
+| Folder | Question | Run |
+|---|---|---|
+| `experiments/pbp_validation/` | do play-by-play lineups reconstruct box-score minutes? | `python experiments/pbp_validation/validate.py` (extra deps in its `requirements.txt`) |
+| `experiments/season_start/` | do offseason-shaped inputs (`days_since_last_app` ~170, no season appearances, NaN rest) push the minutes model down at season start and in preseason? | ML Evaluate with `season_start: true`, or `python experiments/season_start/analyze.py --dataset data/dataset_v4.parquet --out experiments/season_start/REPORT.md`; tests: `python -m pytest experiments/season_start/tests -q` |
 
 ---
 

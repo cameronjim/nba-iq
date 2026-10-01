@@ -28,6 +28,7 @@ from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
     build_prospective_features,
     history_from_dataset,
+    load_postseason_sidecar,
     prospective_universe,
 )
 
@@ -142,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
 
     dataset = load_dataset(args.dataset)
     history = history_from_dataset(dataset)
+    postseason = load_postseason_sidecar(args.dataset)
     log.info(
         "history: %d played-universe rows, %s .. %s",
         len(history), history["GAME_DATE"].min().date(), history["GAME_DATE"].max().date(),
@@ -150,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     future = prospective_universe(
         schedule, rosters, args.start, args.end, positions=positions
     )
-    features = build_prospective_features(history, future)
+    features = build_prospective_features(history, future, postseason)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     features.to_parquet(args.out, index=False)

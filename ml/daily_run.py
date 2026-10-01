@@ -3,9 +3,10 @@
     python daily_run.py                          # the scheduled run
     python daily_run.py --dry-run                # everything except the insert
     python daily_run.py --window-start 2026-10-20 --dry-run   # a named window
+    python daily_run.py --if-status-changed      # the injury rescore lane
 
-WHAT THIS IS. ``.github/workflows/predictions.yml`` runs this once a day and nothing
-else. Every step it performs already existed as a separate script - build_dataset.py,
+WHAT THIS IS. ``.github/workflows/predictions.yml`` runs this at 16:00 UTC and on the
+rescore lane below, and nothing else. Every step it performs already existed as a separate script - build_dataset.py,
 project_preseason.py, predict.py - and running them by hand in the right order with
 the right flags was the whole operational risk: a rebuild skipped means features that
 are three days stale, a forgotten ``--horizon`` means a run that cannot be pooled with
@@ -33,6 +34,14 @@ SHADOWS RIDE ON RUN A. Each ``--shadow-feature-set`` adds one ``channel='shadow'
 of ``models/<pinned>-<set>/`` scored from run A's frame at run A's boundary (13.4 rung
 (c), MODEL.md 17.7). An absent shadow artifact is a warning, a failed shadow is
 recorded, and neither stops run B.
+
+THE RESCORE LANE. ``--if-status-changed`` gates the same pipeline on news: before any
+heavy phase it compares each slate player's resolved designation class (available,
+questionable-class, out-class) at the newest complete production run's boundary with
+the class now, and exits 0 having written nothing when no player on a team with an
+untipped game in the extended window moved. Otherwise it is a normal run whose notes
+carry ``rescore=status_change; changed_players=N`` and whose registry entries carry
+``trigger: status_change`` (MODEL.md 20.3).
 
 THE OFFSEASON NO-OP IS THE NORMAL CASE FOR MOST OF THE YEAR. No games in the extended
 window means exit 0 having written nothing: not a failure, not an empty run row, nothing. A
@@ -98,11 +107,19 @@ from fnba_ml.config import (  # noqa: E402
     SEASONS,
     SERVED_FEATURE_SET,
 )
+from fnba_ml.overrides import (  # noqa: E402
+    DEFAULT_POLICY,
+    OPTIONAL_STATUS_COLUMNS,
+    UNAVAILABLE_STATUSES,
+    latest_statuses,
+    normalise_status,
+)
 from fnba_ml.store import PRODUCTION_CHANNEL, SHADOW_CHANNEL  # noqa: E402
 from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
     build_prospective_features,
     history_from_dataset,
+    load_postseason_sidecar,
     prospective_universe,
 )
 
@@ -134,6 +151,14 @@ SLATE_SEASON_TYPES: tuple[str, ...] = ("Pre Season", "Regular Season")
 # the only season type the frozen prospective run may contain (13.8.4).
 PROSPECTIVE_SEASON_TYPE = "Regular Season"
 
+# the three designation classes the rescore gate compares. derived from the override
+# policy in ``designation_class``, never from a second status list.
+CLASS_AVAILABLE = "available"
+CLASS_QUESTIONABLE = "questionable"
+CLASS_OUT = "out"
+
+RESCORE_TOKEN = "rescore=status_change"
+
 # the phases, in order, for the banner and for the failure message. A failure has to
 # name one of these: "daily_run failed" sends an operator to read this file, "daily_run
 # failed in phase 'schedule'" sends them to the database.
@@ -141,6 +166,7 @@ PHASES: tuple[str, ...] = (
     "preflight",
     "window",
     "schedule",
+    "rescore",
     "dataset",
     "prospective",
     "statuses",
@@ -205,6 +231,17 @@ SELECT DISTINCT ON (nba_player_id)
        nba_player_id, team_id
   FROM player_team_stints
  ORDER BY nba_player_id, valid_to DESC NULLS FIRST
+"""
+
+# the rescore gate's boundary: what the newest served run knew. same selection and
+# same fallback as the slate's own run summary (backend/src/services/slate.ts).
+LAST_PRODUCTION_BOUNDARY_SQL = """
+SELECT COALESCE(r.information_as_of, r.forecast_cutoff_at) AS information_as_of
+  FROM prediction_runs r
+ WHERE r.status = 'complete'
+   AND r.channel = %(channel)s
+ ORDER BY r.predicted_at DESC, r.id DESC
+ LIMIT 1
 """
 
 POSITIONS_SQL = """
@@ -378,6 +415,7 @@ def run_notes(
     stale: str | None = None,
     feature_set: str = SERVED_FEATURE_SET,
     channel: str = PRODUCTION_CHANNEL,
+    rescore: str | None = None,
 ) -> str:
     """``prediction_runs.notes`` for this run.
 
@@ -393,31 +431,42 @@ def run_notes(
     tail = f"feature_set={feature_set}; channel={channel}"
     if reasons:
         note = f"NOT PROSPECTIVE ({'; '.join(reasons)}); {tail}"
-        if PROSPECTIVE_RUN_NOTE_LABEL in note:
-            raise AssertionError(
-                f"a non-prospective run note must not contain "
-                f"{PROSPECTIVE_RUN_NOTE_LABEL!r}; got {note!r}"
-            )
     else:
         note = f"{PROSPECTIVE_RUN_NOTE_LABEL}; {tail}"
+    if rescore:
+        note = f"{note}; {rescore}"
     if stale:
         note = f"{note}; {stale}"
+    if reasons and PROSPECTIVE_RUN_NOTE_LABEL in note:
+        raise AssertionError(
+            f"a non-prospective run note must not contain "
+            f"{PROSPECTIVE_RUN_NOTE_LABEL!r}; got {note!r}"
+        )
     return note
 
 
 def extended_notes(
-    extended_days: int, conditions: list[str], stale: str | None = None
+    extended_days: int,
+    conditions: list[str],
+    stale: str | None = None,
+    rescore: str | None = None,
 ) -> str:
     """``prediction_runs.notes`` for the extended run: never the prospective label.
 
     Goes through ``run_notes`` with a non-empty reason list, so the assertion that a
     non-qualifying note cannot contain the label applies to this run too.
     """
-    return run_notes([f"extended {extended_days}-day serving window", *conditions], stale)
+    return run_notes(
+        [f"extended {extended_days}-day serving window", *conditions], stale,
+        rescore=rescore,
+    )
 
 
 def shadow_notes(
-    reasons: list[str], feature_set: str, stale: str | None = None
+    reasons: list[str],
+    feature_set: str,
+    stale: str | None = None,
+    rescore: str | None = None,
 ) -> str:
     """``prediction_runs.notes`` for a shadow: run A's form, on the shadow channel.
 
@@ -425,7 +474,9 @@ def shadow_notes(
     carries the label exactly when ``reasons`` is empty and goes through the same
     assertion when it is not.
     """
-    return run_notes(reasons, stale, feature_set=feature_set, channel=SHADOW_CHANNEL)
+    return run_notes(
+        reasons, stale, feature_set=feature_set, channel=SHADOW_CHANNEL, rescore=rescore
+    )
 
 
 def shadow_version(feature_set: str) -> str:
@@ -545,6 +596,88 @@ def drop_tipped_off(
     return frame[upcoming].copy(), frame[~upcoming].copy()
 
 
+def designation_class(status: object) -> str:
+    """available, questionable-class or out-class, read off the override policy.
+
+    Out-class is every status the policy REPLACES with a constant (out, suspended,
+    g_league, doubtful); questionable-class is every status it BLENDS with the model
+    (questionable, probable); available is every passthrough or unlisted status.
+    """
+    normalised = normalise_status(status)
+    if normalised in UNAVAILABLE_STATUSES:
+        return CLASS_OUT
+    low = DEFAULT_POLICY.probability(normalised, 0.0)
+    if low is None:
+        return CLASS_AVAILABLE
+    if low == DEFAULT_POLICY.probability(normalised, 1.0):
+        return CLASS_OUT
+    return CLASS_QUESTIONABLE
+
+
+def _ids(values: pd.Series) -> pd.Series:
+    """ids as strings, whether the source handed back ints, floats or text."""
+    return values.astype(str).str.strip().str.removesuffix(".0")
+
+
+def slate_rosters(
+    rosters: pd.DataFrame, schedule: pd.DataFrame, now: datetime | pd.Timestamp
+) -> pd.DataFrame:
+    """the roster rows of teams that still have an untipped game in the schedule."""
+    upcoming, _ = drop_tipped_off(schedule, now)
+    teams = set(_ids(upcoming["HOME_TEAM_ID"])) | set(_ids(upcoming["AWAY_TEAM_ID"]))
+    frame = pd.DataFrame({
+        "nba_player_id": _ids(rosters["nba_player_id"]),
+        "team_id": _ids(rosters["team_id"]),
+    })
+    return frame[frame["team_id"].isin(teams)].reset_index(drop=True)
+
+
+def _classes(statuses: pd.DataFrame) -> pd.DataFrame:
+    if statuses.empty:
+        return pd.DataFrame({"nba_player_id": pd.Series(dtype=str),
+                             "status": pd.Series(dtype=str)})
+    return pd.DataFrame({
+        "nba_player_id": _ids(statuses["nba_player_id"]),
+        "status": statuses["status_normalized"].map(normalise_status),
+    }).drop_duplicates("nba_player_id", keep="last")
+
+
+def status_changes(
+    previous_statuses: pd.DataFrame,
+    current_statuses: pd.DataFrame,
+    roster_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """the rostered players whose designation class moved between two boundaries.
+
+    Both status frames are one row per player as ``overrides.latest_statuses``
+    resolves them; a player absent from a frame is available in it. Only players in
+    ``roster_frame`` (``slate_rosters``) can count.
+    """
+    roster = pd.DataFrame({
+        "nba_player_id": _ids(roster_frame["nba_player_id"]),
+        "team_id": _ids(roster_frame["team_id"]),
+    }).drop_duplicates("nba_player_id")
+    merged = (
+        roster
+        .merge(_classes(previous_statuses).rename(columns={"status": "previous_status"}),
+               on="nba_player_id", how="left")
+        .merge(_classes(current_statuses).rename(columns={"status": "current_status"}),
+               on="nba_player_id", how="left")
+    )
+    merged[["previous_status", "current_status"]] = merged[
+        ["previous_status", "current_status"]
+    ].fillna("")
+    merged["previous_class"] = merged["previous_status"].map(designation_class)
+    merged["current_class"] = merged["current_status"].map(designation_class)
+    changed = merged["previous_class"] != merged["current_class"]
+    return merged[changed].reset_index(drop=True)
+
+
+def rescore_note(changed_players: int) -> str:
+    """the notes token a status-change run carries."""
+    return f"{RESCORE_TOKEN}; changed_players={changed_players}"
+
+
 def verify_pinned_artifact(models_dir: Path = MODELS_DIR) -> list[str]:
     """re-hash the frozen serving artifact. returns the mismatching filenames.
 
@@ -658,6 +791,25 @@ def load_rosters(snapshot: Path | None = None) -> tuple[pd.DataFrame, str]:
     return frame, f"LAST-KNOWN player_team_stints ({len(frame)} assignments, degraded)"
 
 
+def load_previous_boundary() -> pd.Timestamp | None:
+    """information_as_of of the newest complete production run, or None."""
+    frame = _read_sql(LAST_PRODUCTION_BOUNDARY_SQL, {"channel": PRODUCTION_CHANNEL})
+    if frame.empty or pd.isna(frame["information_as_of"].iloc[0]):
+        return None
+    boundary = pd.Timestamp(frame["information_as_of"].iloc[0])
+    if boundary.tzinfo is None:
+        return boundary.tz_localize("UTC")
+    return boundary.tz_convert("UTC")
+
+
+def resolved_statuses(as_of: pd.Timestamp) -> pd.DataFrame:
+    """the designations a run with this boundary would have applied."""
+    statuses = load_statuses(as_of)
+    if statuses.empty:
+        return statuses
+    return latest_statuses(statuses, as_of=as_of)
+
+
 def load_positions() -> pd.DataFrame | None:
     try:
         frame = _read_sql(POSITIONS_SQL)
@@ -668,7 +820,7 @@ def load_positions() -> pd.DataFrame | None:
 
 
 def load_statuses(as_of: pd.Timestamp) -> pd.DataFrame:
-    """the newest injury designation per player, as known at ``as_of``.
+    """the newest injury designation per player, game and source, as known at ``as_of``.
 
     An EMPTY frame is a supported outcome and not an error. ``player_injury_reports``
     held zero rows when the override layer shipped (MODEL.md 13.9, F10) and may still;
@@ -677,7 +829,19 @@ def load_statuses(as_of: pd.Timestamp) -> pd.DataFrame:
     """
     from fnba_ml.data.postgres_source import PostgresSource  # noqa: PLC0415
 
-    return PostgresSource(seasons=list(SEASONS)).load_latest_injury_statuses(as_of)
+    return with_status_scope_columns(
+        PostgresSource(seasons=list(SEASONS)).load_latest_injury_statuses(as_of)
+    )
+
+
+def with_status_scope_columns(statuses: pd.DataFrame) -> pd.DataFrame:
+    """the statuses frame with nba_game_id and source present, so the parquet
+    predict.py reads always carries the columns game-scoped resolution needs."""
+    out = statuses.copy()
+    for column in OPTIONAL_STATUS_COLUMNS:
+        if column not in out.columns:
+            out[column] = pd.Series([None] * len(out), index=out.index, dtype=object)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +902,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="after run A, also publish a shadow run (channel 'shadow', never served) "
              "of models/<pinned>-<set>/ on the same frame and boundary (MODEL.md 13.4c). "
              "repeatable; skipped with a warning when the artifact is absent",
+    )
+    parser.add_argument(
+        "--if-status-changed", action="store_true",
+        help="the rescore lane: publish only when a slate player's designation class "
+             "changed since the newest production run's information boundary; "
+             "otherwise exit 0 having written nothing",
     )
     args = parser.parse_args(argv)
     if args.extended_days < args.window_days:
@@ -849,6 +1019,38 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             ", ".join(sorted(schedule["SEASON"].astype(str).unique())),
         )
 
+    # ---- rescore --------------------------------------------------------
+    rosters: pd.DataFrame | None = None
+    roster_source = ""
+    rescore: str | None = None
+    with phase("rescore"):
+        if not args.if_status_changed:
+            log.info("trigger         : %s (no status gate)",
+                     predict_script.TRIGGER_SCHEDULE)
+        else:
+            boundary = load_previous_boundary()
+            if boundary is None:
+                raise NothingToDo(
+                    "no complete production run to rescore; the scheduled lane "
+                    "publishes the first one"
+                )
+            now = pd.Timestamp.now("UTC")
+            rosters, roster_source = load_rosters(args.rosters)
+            changes = status_changes(
+                resolved_statuses(boundary), resolved_statuses(now),
+                slate_rosters(rosters, schedule, now),
+            )
+            if changes.empty:
+                raise NothingToDo(
+                    f"no status change since {boundary.isoformat()}; nothing to publish"
+                )
+            for row in changes.itertuples(index=False):
+                log.info("    player %s (team %s): %s -> %s", row.nba_player_id,
+                         row.team_id, row.previous_class, row.current_class)
+            rescore = rescore_note(len(changes))
+            log.info("trigger         : %s, %d player(s) changed class since %s",
+                     predict_script.TRIGGER_STATUS_CHANGE, len(changes), boundary)
+
     # ---- dataset --------------------------------------------------------
     with phase("dataset"):
         logs_through, schedule_through = load_freshness(window_start)
@@ -890,6 +1092,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
                 raise PhaseFailure("dataset", f"build_dataset exited {code}")
 
         history = history_from_dataset(load_dataset(dataset_path))
+        postseason = load_postseason_sidecar(dataset_path)
         # the prospective frames carry no played rows, so predict.py is told this.
         history_through = history["GAME_DATE"].max().date()
         log.info(
@@ -900,13 +1103,14 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
 
     # ---- prospective ----------------------------------------------------
     with phase("prospective"):
-        rosters, roster_source = load_rosters(args.rosters)
+        if rosters is None:
+            rosters, roster_source = load_rosters(args.rosters)
         log.info("rosters         : %s", roster_source)
         positions = load_positions()
         future = prospective_universe(
             schedule, rosters, window_start, extended_end, positions=positions
         )
-        features = build_prospective_features(history, future)
+        features = build_prospective_features(history, future, postseason)
         extended_path = args.out_dir / "prospective_extended.parquet"
         features.to_parquet(extended_path, index=False)
         log.info(
@@ -984,7 +1188,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
                 universe_source=universe_source,
                 artifact_verified=artifact_verified,
             )
-            notes = run_notes(reasons, stale)
+            notes = run_notes(reasons, stale, rescore=rescore)
             if reasons:
                 log.warning(
                     "run A does NOT qualify for the frozen prospective label: %s",
@@ -1003,7 +1207,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             # the shadows score run A's own frame at run A's boundary; run B gets none.
             runs.extend(publish_shadows(
                 args, reasons, stale, prospective_path, window_start,
-                statuses_as_of, statuses_path, history_through,
+                statuses_as_of, statuses_path, history_through, rescore,
             ))
 
         # RUN B, everything servable in the extended window, AFTER A so it is the
@@ -1018,7 +1222,9 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             universe_source=universe_source,
             artifact_verified=artifact_verified,
         )
-        extended = extended_notes(args.extended_days, extended_conditions, stale)
+        extended = extended_notes(
+            args.extended_days, extended_conditions, stale, rescore
+        )
         run_b = _publish_run(
             args, "extended", extended_path,
             args.out_dir / "predictions_extended.parquet", extended,
@@ -1036,6 +1242,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
           f"(feature_version {PROSPECTIVE_FEATURE_VERSION}, "
           f"horizon {PROSPECTIVE_SERVING_HORIZON})")
     print(f"rosters   : {roster_source}")
+    print(f"trigger   : {_trigger(args)}" + (f" ({rescore})" if rescore else ""))
     print(f"truth     : game logs through {logs_through}"
           + ("   <-- STALE" if stale else ""))
     print(f"tipped    : {len(tipped):,} already tipped, "
@@ -1094,6 +1301,7 @@ def predict_argv(
     write_db: bool,
     version: str = PROSPECTIVE_MODEL_VERSION,
     channel: str = PRODUCTION_CHANNEL,
+    trigger: str = predict_script.TRIGGER_SCHEDULE,
 ) -> list[str]:
     """the predict.py argv for one daily run; production unless it is a shadow."""
     argv = [
@@ -1106,6 +1314,7 @@ def predict_argv(
         "--notes", notes,
         "--statuses-as-of", statuses_as_of.isoformat(),
         "--channel", channel,
+        "--trigger", trigger,
     ]
     if history_through is not None:
         argv += ["--history-through", str(history_through)]
@@ -1114,6 +1323,12 @@ def predict_argv(
     if write_db:
         argv.append("--write-db")
     return argv
+
+
+def _trigger(args: argparse.Namespace) -> str:
+    if args.if_status_changed:
+        return predict_script.TRIGGER_STATUS_CHANGE
+    return predict_script.TRIGGER_SCHEDULE
 
 
 def _publish_run(
@@ -1139,7 +1354,7 @@ def _publish_run(
     predict_args = predict_argv(
         dataset_path, args.models_dir, out_path, notes, horizon, window_start,
         statuses_as_of, statuses_path, history_through, write_db=not args.dry_run,
-        version=version, channel=channel,
+        version=version, channel=channel, trigger=_trigger(args),
     )
     if args.dry_run:
         log.warning("--dry-run: predict.py will NOT be given --write-db")
@@ -1176,6 +1391,7 @@ def publish_shadows(
     statuses_as_of: pd.Timestamp,
     statuses_path: Path | None,
     history_through: date | None,
+    rescore: str | None = None,
 ) -> list[dict[str, object]]:
     """one shadow run per ``--shadow-feature-set``, on run A's frame and boundary.
 
@@ -1200,7 +1416,7 @@ def publish_shadows(
             })
             continue
         shadow_reasons = [*reasons, *artifact_reasons]
-        notes = shadow_notes(shadow_reasons, feature_set, stale)
+        notes = shadow_notes(shadow_reasons, feature_set, stale, rescore)
         try:
             run = _publish_run(
                 args, name, prospective_path,

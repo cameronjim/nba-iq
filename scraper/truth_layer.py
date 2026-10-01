@@ -14,6 +14,7 @@ from config import (
     NBA_WEB_SCHEDULE_DAYS_AHEAD,
     NBA_WEB_SCHEDULE_DAYS_BACK,
     SEASON,
+    SEASON_TYPES_INGESTED,
 )
 from database import (
     _batch_update,
@@ -47,6 +48,7 @@ from rows import (
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
+    season_types_to_fetch,
     split_rows_on_season_boundary,
     stint_is_newer_than_game_log,
     supplement_player_log_rows,
@@ -249,12 +251,16 @@ def _upsert_game_status_rows(
 
 
 def _latest_logged_game_date(
-    conn: psycopg2.extensions.connection, season: str
+    conn: psycopg2.extensions.connection, season: str, season_type: str
 ) -> date | None:
+    # one watermark per season type, so a type ingested for the first time
+    # starts from the season boundary rather than from another type's games.
     cur = conn.cursor()
     try:
         cur.execute(
-            "SELECT MAX(game_date) FROM player_game_logs WHERE season = %s", (season,)
+            "SELECT MAX(game_date) FROM player_game_logs "
+            "WHERE season = %s AND season_type = %s",
+            (season, season_type),
         )
         row = cur.fetchone()
         return row[0] if row else None
@@ -516,7 +522,7 @@ def backfill_box_details(
     logger.info(
         "box details: %s%s", notes, " (dry run: nothing written)" if dry_run else ""
     )
-    return written
+    return len(games) - failed
 
 
 NBA_WEB_MAX_CONSECUTIVE_FAILURES = 3
@@ -548,6 +554,19 @@ def fetch_nba_web_schedule_rows(
             rows.extend(schedule_rows_from_nba_web(page, game_date, season))
         if index < len(days) - 1:
             time.sleep(delay_seconds)
+    return rows
+
+
+def fetch_all_season_type_team_logs(
+    season: str,
+    date_from: date | None = None,
+    delay_seconds: float = BACKFILL_REQUEST_DELAY_SECONDS,
+) -> list[dict]:
+    rows: list[dict] = []
+    for index, season_type in enumerate(SEASON_TYPES_INGESTED):
+        if index:
+            time.sleep(delay_seconds)
+        rows.extend(_fetch_team_game_logs(season, date_from, season_type))
     return rows
 
 
@@ -587,7 +606,7 @@ def scrape_schedule(
                 "games from the team game log, so upcoming games will be missing"
             )
             try:
-                team_rows = _fetch_team_game_logs(season, None)
+                team_rows = fetch_all_season_type_team_logs(season)
                 rows = schedule_rows_from_team_logs(team_rows, season)
                 logger.info("schedule: %d completed game(s) from leaguegamelog", len(rows))
             except Exception as fallback_error:  # noqa: BLE001
@@ -612,65 +631,102 @@ def scrape_schedule(
     return True
 
 
+def _fetch_season_type_logs(
+    season: str,
+    season_type: str,
+    date_from: date,
+    delay_seconds: float = BACKFILL_REQUEST_DELAY_SECONDS,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    # (player, team, league player supplement). the supplement failing is not
+    # fatal; either primary log failing raises for the caller to count.
+    player_raw = _fetch_player_game_logs(season, date_from, season_type)
+    time.sleep(delay_seconds)
+    team_raw = _fetch_team_game_logs(season, date_from, season_type)
+
+    league_player_raw: list[dict] = []
+    try:
+        time.sleep(delay_seconds)
+        league_player_raw = _fetch_league_player_game_logs(season, date_from, season_type)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "game logs: %s leaguegamelog player supplement failed (%s), "
+            "zero-minute appearances may be missed this run", season_type, e,
+        )
+    return player_raw, team_raw, league_player_raw
+
+
 def scrape_game_logs(
     conn: psycopg2.extensions.connection,
     season: str = SEASON,
     dry_run: bool = False,
+    today: date | None = None,
+    delay_seconds: float = BACKFILL_REQUEST_DELAY_SECONDS,
 ) -> None:
     # an empty season is a normal outcome, not an error: between the schedule
     # landing and opening night every phase here no-ops cleanly.
-    latest = _latest_logged_game_date(conn, season)
-    date_from = game_log_fetch_from(latest, season)
-    logger.info(
-        "truth layer: syncing %s game logs from %s (watermark %s)",
-        season,
-        date_from.isoformat(),
-        latest.isoformat() if latest else "none",
-    )
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    windows: list[tuple[str, date, date | None]] = []
+    for season_type in season_types_to_fetch(season, today):
+        latest = _latest_logged_game_date(conn, season, season_type)
+        date_from = game_log_fetch_from(latest, season)
+        windows.append((season_type, date_from, latest))
+        logger.info(
+            "truth layer: syncing %s %s game logs from %s (watermark %s)",
+            season, season_type, date_from.isoformat(),
+            latest.isoformat() if latest else "none",
+        )
 
     run_id = _start_ingestion_run(
         conn,
         "game_logs_incremental",
-        watermark_from=date_from.isoformat(),
+        watermark_from=min(window[1] for window in windows).isoformat(),
         dry_run=dry_run,
     )
 
-    try:
-        player_raw = _fetch_player_game_logs(season, date_from)
-        time.sleep(BACKFILL_REQUEST_DELAY_SECONDS)
-        team_raw = _fetch_team_game_logs(season, date_from)
-    except Exception as e:  # noqa: BLE001 - one phase failing must not end the run
-        logger.error("game logs: fetch failed (%s)", e)
-        _finish_ingestion_run(conn, run_id, "failed", 0, notes=str(e)[:500])
+    player_rows: list[tuple] = []
+    team_rows: list[tuple] = []
+    failed: list[str] = []
+    for index, (season_type, date_from, _) in enumerate(windows):
+        if index:
+            time.sleep(delay_seconds)
+        try:
+            player_raw, team_raw, league_player_raw = _fetch_season_type_logs(
+                season, season_type, date_from, delay_seconds
+            )
+        except Exception as e:  # noqa: BLE001 - one season type must not end the run
+            failed.append(season_type)
+            logger.error("game logs: %s fetch failed (%s)", season_type, e)
+            continue
+
+        type_player_rows = [
+            row
+            for row in (
+                build_player_game_log_row(raw, season, run_id) for raw in player_raw
+            )
+            if row is not None
+        ]
+        supplements = supplement_player_log_rows(
+            type_player_rows, league_player_raw, season, run_id
+        )
+        if supplements:
+            logger.info(
+                "game logs: %d %s appearance(s) only leaguegamelog reported "
+                "(zero-minute games playergamelogs omits)", len(supplements), season_type,
+            )
+            type_player_rows.extend(supplements)
+        player_rows.extend(type_player_rows)
+        team_rows.extend(
+            row
+            for row in (build_team_game_log_row(raw, season, run_id) for raw in team_raw)
+            if row is not None
+        )
+
+    if len(failed) == len(windows):
+        _finish_ingestion_run(
+            conn, run_id, "failed", 0,
+            notes=f"every season type failed: {', '.join(failed)}",
+        )
         return
-
-    league_player_raw: list[dict] = []
-    try:
-        time.sleep(BACKFILL_REQUEST_DELAY_SECONDS)
-        league_player_raw = _fetch_league_player_game_logs(season, date_from)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "game logs: leaguegamelog player supplement failed (%s) — "
-            "zero-minute appearances may be missed this run", e,
-        )
-
-    player_rows = [
-        row
-        for row in (build_player_game_log_row(raw, season, run_id) for raw in player_raw)
-        if row is not None
-    ]
-    supplements = supplement_player_log_rows(player_rows, league_player_raw, season, run_id)
-    if supplements:
-        logger.info(
-            "game logs: %d appearance(s) only leaguegamelog reported "
-            "(zero-minute games playergamelogs omits)", len(supplements),
-        )
-        player_rows.extend(supplements)
-    team_rows = [
-        row
-        for row in (build_team_game_log_row(raw, season, run_id) for raw in team_raw)
-        if row is not None
-    ]
 
     player_rows, player_stray = split_rows_on_season_boundary(
         player_rows, season, PLAYER_LOG_DATE_INDEX
@@ -681,7 +737,7 @@ def scrape_game_logs(
     if player_stray or team_stray:
         logger.warning(
             "game logs: %d player and %d team row(s) fell outside the %s window "
-            "(%s..%s) and were DROPPED — the endpoint returned games from another "
+            "(%s..%s) and were DROPPED: the endpoint returned games from another "
             "season",
             len(player_stray), len(team_stray), season,
             season_start_date(season).isoformat(),
@@ -689,10 +745,7 @@ def scrape_game_logs(
         )
 
     if not player_rows and not team_rows:
-        logger.info(
-            "game logs: %s has no game logs at or after %s yet — nothing to write",
-            season, date_from.isoformat(),
-        )
+        logger.info("game logs: %s has no new game logs yet, nothing to write", season)
 
     cur = maybe_write_cursor(conn.cursor(), dry_run)
     try:
@@ -701,13 +754,15 @@ def scrape_game_logs(
     finally:
         cur.close()
 
-    newest = max((row[PLAYER_LOG_DATE_INDEX] for row in player_rows), default=latest)
+    previous = max((w[2] for w in windows if w[2] is not None), default=None)
+    newest = max((row[PLAYER_LOG_DATE_INDEX] for row in player_rows), default=previous)
     _finish_ingestion_run(
         conn,
         run_id,
-        "succeeded",
+        "partial" if failed else "succeeded",
         written,
         watermark_to=newest.isoformat() if newest else None,
+        notes=f"failed season types: {', '.join(failed)}" if failed else None,
     )
     logger.info(
         "game logs: %d player row(s), %d team row(s) upserted%s",

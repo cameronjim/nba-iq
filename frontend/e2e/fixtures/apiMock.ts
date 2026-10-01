@@ -4,8 +4,9 @@ import { slateFixture } from './slate';
 import { watchlistFixture } from './watchlist';
 import type {
   Team, Game, TeamAnalysis,
-  BettingGame, BettingPicksResponse, Bet, LedgerSummary,
+  BettingGame, PropPicksResponse, Bet, LedgerSummary,
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, WatchlistResponse,
+  RosterPlayer, StartSitResponse, StreamersResponse, TradeCheckResponse,
 } from '../../src/types';
 
 export interface WaiverSuggestionsResponse {
@@ -24,10 +25,14 @@ export interface MockOptions {
   playerAnalytics?: PlayerAnalytics;
   playerPredictions?: PlayerPredictionsResponse;
   rosterRequiresAuth?: boolean;
+  roster?: RosterPlayer[];
+  startSit?: StartSitResponse;
+  streamers?: StreamersResponse;
+  tradeCheck?: TradeCheckResponse;
   teamAnalysis?: TeamAnalysis;
   waiverSuggestions?: WaiverSuggestionsResponse;
   bettingOdds?: BettingGame[];
-  bettingPicks?: BettingPicksResponse;
+  propPicks?: PropPicksResponse;
   bets?: { bets: Bet[]; summary: LedgerSummary };
   watchlist?: WatchlistResponse | ((params: URLSearchParams) => WatchlistResponse);
   slate?: SlateResponse | ((params: URLSearchParams) => SlateResponse);
@@ -101,6 +106,23 @@ export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void>
       route.fulfill({ status: 401, json: { error: 'Unauthorized' } });
       return;
     }
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/fantasy/roster') && opts.roster) {
+      route.fulfill({ json: opts.roster });
+      return;
+    }
+    if (path.endsWith('/fantasy/start-sit') && opts.startSit) {
+      route.fulfill({ json: opts.startSit });
+      return;
+    }
+    if (path.endsWith('/fantasy/streamers') && opts.streamers) {
+      route.fulfill({ json: opts.streamers });
+      return;
+    }
+    if (path.endsWith('/fantasy/trade-check') && opts.tradeCheck) {
+      route.fulfill({ json: opts.tradeCheck });
+      return;
+    }
     route.fulfill({ json: [] });
   });
 
@@ -152,10 +174,9 @@ export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void>
     route.fulfill({ json: { games: opts.bettingOdds ?? [], fetched_at: '2026-05-24T12:00:00Z' } }),
   );
 
-  await page.route('**/api/betting/picks*', (route) => {
-    const fallback: BettingPicksResponse = { picks: [], parlay: null, summary: '', no_games: true };
-    route.fulfill({ json: opts.bettingPicks ?? fallback });
-  });
+  await page.route('**/api/betting/props', (route) =>
+    route.fulfill({ json: opts.propPicks ?? { run: null, picks: [] } }),
+  );
 
   await page.route('**/api/betting/bets**', (route) => {
     const method = route.request().method();

@@ -8,6 +8,7 @@ from config import (
     BACKFILL_REQUEST_DELAY_SECONDS,
     NAME_TO_ABBR,
     SEASON_TYPE_REGULAR,
+    SEASON_TYPES_INGESTED,
     TRUTH_LAYER_TABLES,
     VALIDATION_MAX_EXAMPLES,
     VALIDATION_POINTS_TOLERANCE,
@@ -42,6 +43,7 @@ from rows import (
     TEAM_LOG_DATE_INDEX,
     build_player_game_log_row,
     build_team_game_log_row,
+    ingested_schedule_rows,
     schedule_rows_from_league_schedule,
     schedule_rows_from_team_logs,
     split_rows_on_season_boundary,
@@ -263,37 +265,41 @@ def backfill_game_logs_season(
     # ordered cheapest-first: the league-wide calls cost one request each, only
     # the inactive lists cost one per game, and by then the schedule is already
     # banked. A killed run resumes because games with status rows are skipped.
-    logger.info("%s: fetching team game logs...", season)
-    team_raw = _fetch_team_game_logs(season, None)
-    time.sleep(delay_seconds)
-    logger.info("%s: fetching player game logs...", season)
-    player_raw = _fetch_player_game_logs(season, None)
-
+    team_raw: list[dict] = []
+    player_raw: list[dict] = []
     league_player_raw: list[dict] = []
-    try:
+    for index, season_type in enumerate(SEASON_TYPES_INGESTED):
+        if index:
+            time.sleep(delay_seconds)
+        logger.info("%s: fetching %s team game logs...", season, season_type)
+        team_raw.extend(_fetch_team_game_logs(season, None, season_type))
         time.sleep(delay_seconds)
-        logger.info("%s: fetching league player game logs (supplement)...", season)
-        league_player_raw = _fetch_league_player_game_logs(season, None)
-    except Exception as e:  # noqa: BLE001
-        logger.warning(
-            "%s: leaguegamelog player supplement failed (%s) — zero-minute "
-            "appearances may be missed", season, e,
-        )
+        logger.info("%s: fetching %s player game logs...", season, season_type)
+        player_raw.extend(_fetch_player_game_logs(season, None, season_type))
+
+        try:
+            time.sleep(delay_seconds)
+            logger.info(
+                "%s: fetching %s league player game logs (supplement)...",
+                season, season_type,
+            )
+            league_player_raw.extend(
+                _fetch_league_player_game_logs(season, None, season_type)
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "%s: %s leaguegamelog player supplement failed (%s), zero-minute "
+                "appearances may be missed", season, season_type, e,
+            )
 
     # scheduleleaguev2 serves historical seasons too and, unlike the team game
     # log, knows the real home/away designation of neutral-site games.
     schedule_rows: list[dict] = []
     try:
         time.sleep(delay_seconds)
-        schedule_rows = [
-            r
-            for r in schedule_rows_from_league_schedule(
-                _fetch_league_schedule(season), season
-            )
-            # regular season only: the backfill's logs and status rows go no
-            # further, and other rows would light up the validation report.
-            if r["season_type"] == SEASON_TYPE_REGULAR
-        ]
+        schedule_rows = ingested_schedule_rows(
+            schedule_rows_from_league_schedule(_fetch_league_schedule(season), season)
+        )
         logger.info("%s: %d schedule row(s) from scheduleleaguev2", season, len(schedule_rows))
     except Exception as e:  # noqa: BLE001 - falling back is the handling
         logger.warning(
@@ -447,6 +453,17 @@ def validate_game_logs(
             "SELECT COUNT(DISTINCT nba_game_id) FROM team_game_logs WHERE season = %s",
             (season,),
         )
+        games_by_type = _rows(
+            conn,
+            """
+            SELECT season_type, COUNT(DISTINCT nba_game_id)
+              FROM team_game_logs
+             WHERE season = %s
+             GROUP BY season_type
+             ORDER BY season_type
+            """,
+            (season,),
+        )
         player_logs = _scalar(
             conn, "SELECT COUNT(*) FROM player_game_logs WHERE season = %s", (season,)
         )
@@ -468,6 +485,10 @@ def validate_game_logs(
         if not games:
             logger.info("    (nothing stored for this season)")
             continue
+        logger.info(
+            "    games by season type: %s",
+            ", ".join(f"{season_type} {count}" for season_type, count in games_by_type),
+        )
 
         _report_examples(
             "team rows per game == 2",
@@ -586,21 +607,24 @@ def validate_game_logs(
                 (season, season, VALIDATION_POINTS_TOLERANCE),
             ),
         )
+        # regular season only: a scheduled "if necessary" playoff game that was
+        # never played is not a missing log.
         _report_examples(
-            "completed schedule games have logs",
+            "completed regular-season schedule games have logs",
             _rows(
                 conn,
                 f"""
                 SELECT s.nba_game_id, s.game_date, s.home_team_abbr, s.away_team_abbr
                   FROM nba_schedule s
                  WHERE s.season = %s
+                   AND s.season_type = %s
                    AND s.game_date < CURRENT_DATE
                    AND {NOT_POSTPONED_PREDICATE}
                    AND NOT EXISTS (SELECT 1 FROM team_game_logs t
                                     WHERE t.nba_game_id = s.nba_game_id)
                  ORDER BY s.game_date
                 """,
-                (season,),
+                (season, SEASON_TYPE_REGULAR),
             ),
         )
         _report_examples(

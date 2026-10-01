@@ -16,7 +16,6 @@ vi.mock('../../src/api/client', async (importOriginal) => {
     getSlate: vi.fn(),
     getTeamAnalysis: vi.fn(),
     getWaiverSuggestions: vi.fn(),
-    getBettingPicks: vi.fn(),
     chatWithAI: vi.fn(),
   };
 });
@@ -112,7 +111,6 @@ describe('HomePage', () => {
     const sections: Array<[string, string]> = [
       ['Stats', '/stats'],
       ['Projections', '/projections'],
-      ['Watchlist', '/watchlist'],
       ['History', '/history'],
       ['2K Ratings', '/ratings'],
       ['My Team', '/fantasy'],
@@ -210,7 +208,6 @@ describe('HomePage', () => {
     // assert
     expect(client.getTeamAnalysis).not.toHaveBeenCalled();
     expect(client.getWaiverSuggestions).not.toHaveBeenCalled();
-    expect(client.getBettingPicks).not.toHaveBeenCalled();
     expect(client.chatWithAI).not.toHaveBeenCalled();
   });
 

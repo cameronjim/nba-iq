@@ -4150,3 +4150,276 @@ and `test_scoring_baselines.py`.
 - **The betting picks remain Claude estimates**, labelled as such (17.2 item 7).
 - **Nothing here changes a served prediction number.** The ranking, outlook and
   explanations read the production run; the scoring tool only reads the store.
+
+## 20. v3 candidates (2026-10-02)
+
+**Nothing in this section changes a served number.** `prospective_2026_27_v2` is
+untouched and sections 13, 17, 18 and 19 are not edited. Each candidate below lands
+behind a config switch whose default is the current behaviour, so
+`tests/test_prospective_freeze.py` and every emitted column stay as they were. A later
+package flips the switches it adopts and re-freezes as `prospective_2026_27_v3`.
+
+### 20.1 Postseason appearances in the rate history
+
+**The gap.** Only Regular Season games were scraped, and only Regular Season rows
+reached the model, so a player's play-in and playoff games were invisible. Those are
+the most recent and highest-leverage games before a new season, and every career-scoped
+EWMA served in October is anchored on them being absent. Scottie Barnes is served a
+0.51 points-per-minute rate from his last regular-season games while his playoff rate
+was far higher.
+
+**What changed, all of it inert until the switch flips:**
+
+- **Scraper.** `config.SEASON_TYPES_INGESTED = ("Regular Season", "PlayIn",
+  "Playoffs")`. The incremental game-log phase loops the per-season-type fetchers
+  (`playergamelogs`, the `leaguegamelog` team log and player supplement) over it with
+  the existing request delays and **one watermark per season type**;
+  `rows.season_types_to_fetch` skips the two postseason types before April 1 of the
+  season's second year, so an October run pays no extra requests. `--backfill-game-logs`
+  covers all three types and keeps play-in and playoff rows from `scheduleleaguev2`
+  (`rows.ingested_schedule_rows`); the schedule's team-log fallback reads all three.
+  The status and box-score path needed no change: it selects games from
+  `team_game_logs` by season, so a playoff game gets status rows once its logs land.
+  `season_type` is written from the game id prefix (`004` Playoffs, `005` PlayIn), as
+  it always was. The validation gate "completed schedule games have logs" is scoped to
+  the Regular Season, because a scheduled "if necessary" playoff game that was never
+  played is not a missing log; the other gates hold for every type.
+- **Sources.** `config.HISTORY_SEASON_TYPES` is what both sources load; the postgres
+  source's default moved from `SEASON_TYPES` to it. Every frame carries
+  `COMPETITION` (`regular` / `playin` / `playoffs`). The parquet source reads a file's
+  own `COMPETITION` column and defaults to `regular`, which is what the nba_api exports
+  are.
+- **Training frames.** `config.TRAINING_SEASON_TYPES = ("Regular Season",)`, and
+  `config.SEASON_TYPES` keeps its value as that same training set. The universe builders
+  (status and approximation), `coverage_report`, the matchup team context and
+  `backfill_dataset.py` keep training rows only (`data.schema.training_rows`), and
+  `build_features` **refuses** a universe holding a non-regular row: postseason rows
+  enter only through `build_features(postseason=...)`, never as modelled rows.
+  `universe.postseason_appearances` builds them in the universe shape (a log row with a
+  dnp reason is a dressed DNP, as the status universe treats it), and
+  `build_dataset.py` writes them beside the dataset as `<stem>_postseason.parquet` so
+  `daily_run.py` and `project_preseason.py` serve from the same history the dataset was
+  built from. The dataset itself stays a training frame.
+- **Features.** `config.RATE_HISTORY_INCLUDES_POSTSEASON = False`. On, the postseason
+  appearances join the **career-scoped** as-of joins: `roll{3,5,10}_*`, `ewma_*`,
+  `n_appearances`, `LAST_APP_DATE` (so `days_since_last_app`), both per-minute rate
+  families, `usg_ewma` and the teammate magnitudes. The **season-scoped** columns
+  (`std_*`, `season_appearances`) and every scheduled-row window (`avail_rate_*`,
+  `avail_rate_std`, `uncond_std_*`, `games_since_last_app`) stay regular season only,
+  either way. A playoff game carries the same season label as the regular season before
+  it, so the season-to-date frame is computed from the universe alone rather than
+  filtered by label; and a playoff game is not a scheduled row a player could have
+  missed, so availability never reads it.
+- **Scoring tool.** `scoring.build_baselines` and `seeded_rate_baselines` scope the
+  history the same way when it carries `season_type` (which `score_runs.py` now
+  selects): `avail_rate_10` reads Regular Season scheduled rows, the appearance
+  baselines (`roll10_MIN`, `ewma_MIN`, `ewma_total_*`, the F7/F8 rate families) follow
+  the switch. The look report's header names the history it used, so a report scored
+  with the switch on is never compared with one scored with it off.
+- **Backend.** `BASELINE_INCLUDES_POSTSEASON` (env, default off) widens the "usual"
+  form baseline from Regular Season to Regular Season, PlayIn and Playoffs, and the
+  baseline descriptor carries `season_types`, `includes_postseason` and a definition
+  that names which. It is flipped together with the model switch, so "usual" and the
+  forecast read the same games.
+
+**Why training stays regular season.** A playoff row as a *modelled* row would put a
+second regime into every availability and minutes fit: rotations shorten, starters
+play 40 minutes, nobody rests on a back-to-back, and DNP-CD means something different
+in a seven-game series. The season types also sit in different calendar blocks, so
+`ORIGINS` validation months would be trained on rows unlike anything they score. What
+the gap costs is *history*, not training rows: the October forecast reads a stale rate.
+So the postseason enters only where it is information about the player (career form),
+and the served models are fitted on exactly the rows they were before.
+
+**The re-freeze trigger.** Flipping `RATE_HISTORY_INCLUDES_POSTSEASON` changes emitted
+feature values for every player with a postseason game, which 13.2's last paragraph
+classes as a change to the artifact (item 7: the training window rule and a refit). It
+is therefore the trigger for `prospective_2026_27_v3`, not a footnote, and it must land
+before opening night or wait for the next season.
+
+**The measurement plan, written before any number exists.**
+
+1. Backfill the postseason from the home PC: `run_scraper.py --backfill-game-logs
+   --from 2022-23` (all three types), then `--validate-game-logs` and check the
+   per-season-type game counts it now prints.
+2. Build both datasets from one database state:
+   `build_dataset.py --source postgres --out data/dataset.parquet --no-v4-candidate`
+   and the same with `--out data/dataset_postseason.parquet --postseason-history`.
+3. `run_postseason_bracket.py`: the served `v3-honest` incumbent with unchanged
+   champions, fitted on each dataset over the five `ORIGINS`, identical validation rows,
+   cohorts taken from the switch-off dataset for both passes (a tier is assigned from
+   `roll10_MIN`, which the switch moves). The bar is the P3 bar: paired 7-day
+   moving-block bootstrap, 95% CI excluding zero and at least 1% relative improvement on
+   a gated endpoint, `minutes_mae`, `uncond_pts_mae` or `cond_pts_mae`, and no gated
+   cohort regressing by more than 1%. Everything else is reported only.
+4. The October origins are where the effect should live and `ORIGINS` has none (O1 is
+   December). The per-origin table is read for direction, and the 14.3 October replay
+   gate is rerun with the switch on before the re-freeze is signed.
+
+**Known limit.** `parsing.season_end_date` closes a season on June 30, so the July
+playoff games of 2020-21 (and the 2019-20 bubble) would be dropped by the stray-row
+guard. Every season from the 2022-23 backfill default on finishes in June, so this
+costs nothing now and is recorded rather than fixed.
+
+### 20.2 Injury-report resolution: scope, source and which statuses expire
+
+Section 7.1 resolves each player to his newest admissible report and drops any
+report older than `REPORT_MAX_AGE_HOURS = 72.0`. Since migration 017 the table holds
+two feeds with different shapes: the league's official report (`source =
+'nba_official'`), filed per team per game and carrying `nba_game_id`, and the CBS page
+(`source = 'cbssports'`), which is general (`nba_game_id` NULL) and now writes
+`cleared` rows when a player leaves it. Three semantics were wrong for that table.
+
+**(a) Expiry dropped OUT designations.** If the scraper stalled for three days, a
+long-term injured player fell back to the history-only model, about 0.90 to play.
+With clearance rows carrying the recovery signal, age is only a good proxy for
+staleness on the game-specific designations that decay within days. With
+`config.EXPIRE_UNAVAILABLE_STATUSES = False` only `questionable`, `doubtful` and
+`probable` (`overrides.FAST_DECAY_STATUSES`) expire; `out`, `suspended` and
+`g_league` stand until a newer row (a clearance or a new designation) replaces them.
+Expiry is applied to the newest report, not before choosing it, so an expired
+questionable cannot let an older out resurface. The SQL's 7-day lower bound is then
+the only age limit an out has.
+
+**(b) Resolution ignored the game.** An official OUT for tonight also zeroed the
+player's game two days later in a multi-day window. With
+`config.GAME_SCOPED_STATUS_RESOLUTION = True`, `overrides.resolve_statuses` resolves
+per (player, game) against the scored row's `GAME_ID`:
+
+1. Reports at or after `as_of` are dropped in every scope, as before.
+2. Per player, scope (that game, or general) and feed, keep the newest report, then
+   apply expiry.
+3. Within a scope, the newer of the official and the non-official report wins, except
+   that a disagreeing non-official report must be newer by more than
+   `overrides.OFFICIAL_PRECEDENCE_HOURS = 6.0` to beat the official one.
+4. Across scopes, the report for this game wins over the general one, except that a
+   disagreeing non-official general report newer than an official game report by more
+   than 6 hours wins. Without this clause the precedence rule would never fire in
+   production, because CBS rows are always general and official rows always carry a
+   game.
+5. A report for a different game is ignored for this row.
+
+**(c) Provenance reaches the resolver.** `LATEST_INJURY_STATUS_SQL` now selects
+`nba_game_id` and uses `DISTINCT ON (nba_player_id, nba_game_id, source)`. The newest
+row per player is still in that set, so the default resolver picks the same report it
+did before. `daily_run.with_status_scope_columns` guarantees both columns in the
+statuses parquet, `overrides.OPTIONAL_STATUS_COLUMNS` names them (an absent column
+reads as a general report from source `unknown`), and predict.py passes `GAME_ID` to
+both override applications (the base probabilities before the teammate sums, and the
+served `P(play)`).
+
+**Audit.** Every overridden row carries `STATUS_SCOPE` (`game` or `general`) and
+`STATUS_SOURCE`, which are descriptive under the defaults too. predict.py prints the
+override counts by scope and by source, and the registry's per-run entry stores them
+as `status_override_provenance`.
+
+**Unchanged.** `StatusPolicy`, `UNAVAILABLE_STATUSES`, `PASSTHROUGH_STATUSES`,
+`REPORT_MAX_AGE_HOURS`, and the per-player `latest_statuses` that the horizon facts
+and the scenario layer's pivotal-player selection read. Tested in `test_overrides.py`
+(a verbatim copy of the old algorithm pins the default resolver, the switch cases,
+precedence at 6 and 7 hours, the audit columns, absent columns, and the as-of
+boundary in both scopes), `test_serving_context.py` and `test_daily_run.py`.
+
+### 20.3 Injury-triggered rescoring
+
+**The defect.** Predictions publish once a day at 16:00 UTC. A player ruled out at
+18:00 UTC shows the new injury chip ("changed after run") beside a projection that
+still assumes he plays, and his teammates' projections, which the override layer
+moves through the base probabilities (7.1), never move at all.
+
+**The trigger.** `predictions.yml` gains a second cron, `45 15,19,20,21,22,23,0,1,2
+* * *`: the scraper's injuries-only lane shifted by 15 minutes so the fresh rows exist.
+It runs `daily_run.py --if-status-changed`. Before any heavy phase the new `rescore`
+phase reads the newest complete production run's `information_as_of` (the slate's own
+selection, `COALESCE(information_as_of, forecast_cutoff_at)`), resolves every
+player's designation as of that boundary and as of now through the same
+`overrides.latest_statuses` a run applies (strict `captured_at < as_of`, 72-hour
+expiry), and maps each to one of three classes read off the `StatusPolicy`: **out**
+where the policy replaces the model with a constant (out, suspended, g_league,
+doubtful), **questionable** where it blends (questionable, probable), **available**
+where it passes through or the player is not listed. A player counts when his class
+moved and he is rostered on a team with a game in the extended window that has not
+tipped. No player counts: exit 0, `no status change since <boundary>; nothing to
+publish`, nothing written. Otherwise the normal pipeline runs unchanged (run A if
+its window holds a Regular Season game, the shadow, run B) with
+`rescore=status_change; changed_players=N` appended to every note through
+`run_notes`, so the assertion that a non-qualifying note cannot carry the label still
+applies, and with `trigger: status_change` on each registry entry (`trigger:
+schedule` on the 16:00 lane's). No previous production run means no boundary and no
+rescore: the scheduled lane publishes the first one.
+
+**Why it is protocol-neutral.** A run is a run. The rescore computes exactly what the
+16:00 run computes: same artifact, same features, same policy, same label logic, its
+own `statuses_as_of` as its boundary, its own measured horizon facts (13.8.5). 13.8 is
+unaffected: (2) both `drop_tipped_off` passes still run, so a game that has tipped is
+never published and the gate never counts its players; (3) the store stays
+append-only, a rescore supersedes by being newest and the earlier run stays on the
+record; (4) the label is still decided by `prospective_conditions` alone, and the
+`rescore=` token makes every rescored run identifiable from the notes. Nothing frozen
+moved: no constant, no cron of the 16:00 lane, no label, no horizon bucket.
+
+**What a look report has to know.** A slate can now carry more than one labelled run.
+`scoring.py`'s pools already keep the newest run per player-game, so the rescored
+forecast is the one scored, and that is the right forecast to score: it is what was
+served. A run A rescored late in the evening is still labelled `gameday` (the label is
+part of the freeze) while its measured offset may sit in `lock`; the horizon facts on
+the registry entry record the measured bucket, and 13.8.5 already obliges a look report
+that pools across them to say so. The 15:45 slot will usually rescore against the
+previous day's 16:00 boundary 15 minutes before the scheduled run; the `predictions`
+concurrency group (`cancel-in-progress: false`) queues the 16:00 run behind it rather
+than overlapping.
+
+### 20.4 The player-prop layer: priced, paper-traded, not staked (`propProbability.ts`, `propPicks.ts`)
+
+**Verdict first: the model now prices player props against the book and records every
+pick it would make, with the market at the time, so closing-line value and calibration
+can be measured. Nothing is staked.** This closes the 19.6 gap ("no props odds source
+exists to price them against") on the numeric side; the odds come from
+`prop_odds_snapshots` (a separate package). No served prediction number moved.
+
+- **One distribution.** The piecewise-linear quantile function through the stored
+  **conditional** p10 / p50 / p90 (linear tails, floored at 0) moved into
+  `quantileDistribution.ts`; the weekly simulation draws from it and the prop layer
+  inverts it (`cdfAt`), so both read the same three anchors the same way.
+- **Discrete lines.** The stat is a count, so `P(X = k)` is the continuous mass on
+  `[k - 0.5, k + 0.5]`. A .5 line is `P(over) = 1 - F(L)`; an integer line has
+  `P(over) = 1 - F(L + 0.5)`, `P(under) = F(L - 0.5)` and the remainder as push.
+- **PRA is approximated.** The sum's anchors are centred on the summed expectations
+  with each half-width the quadrature sum of the components', i.e. **independent**
+  PTS, REB and AST. They are positively correlated in a real game, so the PRA spread
+  is understated and its tail probabilities are too confident by an unmeasured amount.
+- **DNP.** Most books void a prop when the player does not play, so under `dnp_void`
+  the stored `model_prob` is `P(win | plays)` and `prob_active` is reported beside it.
+  A `dnp_loss` variant multiplies by `prob_active` for books that grade a DNP as a
+  loss. Every pick records its `void_rule`; the default is `dnp_void`.
+- **Price.** EV is per $1 at the offered American price (a push returns the stake),
+  conditional on action under `dnp_void`. The edge shown is `model_prob` minus the
+  no-vig implied probability of the two posted sides. Kelly is a quarter of full
+  Kelly with pushes removed, capped at 2% of bankroll.
+- **Selection.** For the latest production run, the newest snapshot per player, game,
+  market, book and line inside the run's covered dates, before tipoff, with lines the
+  book stopped re-posting dropped. A pick needs EV above 0.02, a stored `prob_active`
+  above 0.6 and stored quantiles for every stat it needs; there is no fallback spread.
+- **The ledger.** `model_prop_picks` records each pick once per run (on conflict do
+  nothing). Settlement grades a pick once its game has box-score rows (no row or zero
+  minutes is a DNP) and fills the last snapshot before tipoff as the close. CLV is the
+  closing implied minus the surfaced implied in percentage points, counted only when
+  the closing line equals the surfaced line. The summary reports hit rate over picks
+  with action, mean `model_prob` beside it, realized ROI, mean EV and mean CLV, by
+  market. Refresh and settle are admin endpoints for now; a workflow step can call
+  them later.
+
+**The paper-trading rule.** No real staking until at least **300 settled picks** show
+**positive mean CLV** and calibration within **3 points** (hit rate minus mean
+`model_prob`, overall and in each market with enough picks). EV above the threshold
+on the model's own numbers is not evidence; CLV is the market's verdict and arrives
+long before win rates are informative.
+
+**What a proper distribution model would change.** Three quantiles pin the middle of
+the distribution and extrapolate the tails linearly, which is where alt lines and
+low-count markets (STL, BLK, FG3M at 0.5 or 1.5) live. A count model per stat
+(negative binomial or a minutes-times-rate mixture with a zero-minute mass) would give
+exact integer probabilities and push mass, a real tail instead of a linear one, and a
+joint draw (shared minutes and pace) that prices PRA and same-game combinations
+without the independence assumption. Until then the low-count and PRA markets should
+be read with the most suspicion in the summary.

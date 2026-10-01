@@ -31,15 +31,18 @@ from sklearn.linear_model import LogisticRegression
 
 from .config import (
     EVENT_COHORTS,
+    HISTORY_SEASON_TYPES,
     PROSPECTIVE_FALSIFICATION,
     PROSPECTIVE_LOOKS,
     PROSPECTIVE_RATE_HALFLIVES,
     PROSPECTIVE_RATE_TARGETS,
     PROSPECTIVE_RUN_NOTE_LABEL,
     RATE_HALFLIFE_DEFAULT,
+    RATE_HISTORY_INCLUDES_POSTSEASON,
     RATE_MINUTES_FLOOR,
     TIER_BASIS,
     TIER_ORDER,
+    TRAINING_SEASON_TYPES,
     is_cold_start,
 )
 from .features import assign_minutes_tier
@@ -601,6 +604,24 @@ def _asof(
     return joined
 
 
+def appearance_season_types(include_postseason: bool | None = None) -> tuple[str, ...]:
+    """the season types a baseline's appearance history reads, following the model's switch."""
+    if include_postseason is None:
+        include_postseason = RATE_HISTORY_INCLUDES_POSTSEASON
+    return HISTORY_SEASON_TYPES if include_postseason else TRAINING_SEASON_TYPES
+
+
+def baseline_history_label(include_postseason: bool | None = None) -> str:
+    return ", ".join(appearance_season_types(include_postseason))
+
+
+def _of_season_types(frame: pd.DataFrame, season_types: tuple[str, ...]) -> pd.DataFrame:
+    """rows of those season types; a frame with no season_type column is kept whole."""
+    if "season_type" not in frame.columns:
+        return frame
+    return frame[frame["season_type"].isin(season_types)]
+
+
 def _targets(targets: pd.DataFrame) -> pd.DataFrame:
     out = targets[[*KEY, "game_date"]].copy()
     out["nba_player_id"] = out["nba_player_id"].astype(str)
@@ -631,6 +652,7 @@ def build_baselines(
     targets: pd.DataFrame,
     history: pd.DataFrame,
     allow_exact_matches: bool = False,
+    include_postseason: bool | None = None,
 ) -> pd.DataFrame:
     """the free comparators for every scored (player, game), as of the game's date.
 
@@ -643,6 +665,10 @@ def build_baselines(
     and vacated_minutes. only rows dated strictly before the game are read, except
     that vacated_minutes reads WHO sat out the game itself: it is the oracle
     cohort selector of 13.3, never a feature.
+
+    with a ``season_type`` column the history is scoped as features.py scopes it:
+    scheduled rows are regular season only, appearances follow
+    ``include_postseason`` (default config.RATE_HISTORY_INCLUDES_POSTSEASON).
     """
     out = _targets(targets)
     if history.empty:
@@ -650,13 +676,16 @@ def build_baselines(
     h = _normalise_history(history)
 
     # features.py's avail_rate_10: the player's own last ten scheduled rows.
-    sched = h[["nba_player_id", "game_date", "played"]].copy()
+    sched = _of_season_types(h, TRAINING_SEASON_TYPES)[
+        ["nba_player_id", "game_date", "played"]
+    ].copy()
     sched[AVAIL_RATE] = sched.groupby("nba_player_id")["played"].transform(
         lambda s: s.rolling(AVAIL_WINDOW, min_periods=1).mean()
     )
     out = _asof(out, sched, [AVAIL_RATE], allow_exact_matches)
 
-    app = h[h["played"] == 1.0].copy()
+    played = _of_season_types(h, appearance_season_types(include_postseason))
+    app = played[played["played"] == 1.0].copy()
     minutes = app.groupby("nba_player_id")["minutes"]
     app[ROLL10_MIN] = minutes.transform(lambda s: s.rolling(TIER_WINDOW, min_periods=1).mean())
     app[EWMA_MIN] = minutes.transform(
@@ -722,6 +751,7 @@ def seeded_rate_baselines(
     halflives: dict[str, float] = PROSPECTIVE_RATE_HALFLIVES,
     floor: float = RATE_MINUTES_FLOOR,
     allow_exact_matches: bool = False,
+    include_postseason: bool | None = None,
 ) -> pd.DataFrame:
     """both per-minute rate families per (player, game), seeded from ewma_state.
 
@@ -732,12 +762,13 @@ def seeded_rate_baselines(
     exactly. a player the snapshot does not hold is replayed from
     ``training_start``.
 
-    ``appearances``: nba_player_id, game_date, minutes and the stats (db names).
+    ``appearances``: nba_player_id, game_date, minutes and the stats (db names),
+    plus ``season_type`` when the caller has it, scoped as in :func:`build_baselines`.
     """
     out = _targets(targets)
     columns = [rate_family_column(s, f) for s in stats for f in RATE_FAMILIES]
     start = pd.Timestamp(training_start).normalize()
-    app = appearances.copy()
+    app = _of_season_types(appearances, appearance_season_types(include_postseason)).copy()
     app["nba_player_id"] = app["nba_player_id"].astype(str)
     app["game_date"] = _dates(app["game_date"])
     app["minutes"] = pd.to_numeric(app["minutes"], errors="coerce").astype(float)

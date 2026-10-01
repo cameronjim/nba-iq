@@ -4,25 +4,30 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 import requests
 
+import backfill
 import database
 import fetching
 import injury_report
 import run_scraper
 import odds
+import props
 import scrapes
 import truth_layer
 from backfill import NOT_POSTPONED_PREDICATE
 from config import (
     current_season,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
+    PROPS_MARKET_MAP,
     ROSTER_SNAPSHOT_SOURCE,
     SEASON,
+    SEASON_TYPES_INGESTED,
     STATS_HEADERS,
     STATS_PROBE_TIMEOUT_SECONDS,
     V2_INACTIVE_UNRELIABLE_FROM,
 )
 from database import DryRunCursor, is_write_statement
 from odds import map_event_to_nba_game, parse_event_odds, plan_odds_snapshot
+from props import map_prop_event, match_prop_player, parse_event_props
 from parsing import (
     box_score_violations,
     canonical_player_name,
@@ -30,11 +35,13 @@ from parsing import (
     cleared_player_ids,
     clearances_for_report,
     extract_next_data,
+    format_processed_line,
     in_season,
     normalize_injury_status,
     parse_game_date,
     parse_matchup,
     parse_minutes,
+    parse_processed_line,
     season_end_date,
     season_start_date,
     season_type_from_game_id,
@@ -50,6 +57,7 @@ from rows import (
     build_team_game_log_row,
     derive_game_status_rows,
     game_log_fetch_from,
+    ingested_schedule_rows,
     merge_dnp_reason,
     normalize_inactive_rows,
     plan_roster_snapshot,
@@ -60,6 +68,7 @@ from rows import (
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
+    season_types_to_fetch,
     split_rows_on_season_boundary,
     stint_is_newer_than_game_log,
     supplement_player_log_rows,
@@ -2884,3 +2893,764 @@ class TestPartialPageWritesNoClearances:
         assert skipped == 1
         assert len(rows) == 1
         assert clearances_for_report([("9", "Old Listed")], ["1"], complete=skipped == 0) == []
+
+
+def test_processed_line_round_trips():
+    # act + assert
+    assert format_processed_line(0) == "box_details_processed=0"
+    assert parse_processed_line(format_processed_line(287)) == 287
+
+
+def test_processed_line_found_among_log_output():
+    # arrange
+    text = "INFO box details: 2 game(s)\nbox_details_processed=2\n"
+
+    # act + assert
+    assert parse_processed_line(text) == 2
+
+
+def test_processed_line_missing_or_malformed_is_none():
+    # act + assert
+    assert parse_processed_line("INFO nothing\n") is None
+    assert parse_processed_line("box_details_processed=abc") is None
+    assert parse_processed_line("see box_details_processed=5 here") is None
+
+
+# the odds api's documented event-odds example, moved to basketball markets.
+PROP_EVENT = {
+    "id": "a512a48a58c4329048174217b2cc7ce0",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-10-21T23:30:00Z",
+    "home_team": "New York Knicks",
+    "away_team": "Golden State Warriors",
+}
+
+PROP_PAYLOAD = {
+    **PROP_EVENT,
+    "bookmakers": [
+        {
+            "key": "draftkings",
+            "title": "DraftKings",
+            "last_update": "2026-10-21T15:00:00Z",
+            "markets": [
+                {
+                    "key": "player_points",
+                    "last_update": "2026-10-21T15:31:29Z",
+                    "outcomes": [
+                        {"name": "Over", "description": "Jalen Brunson", "price": -115, "point": 26.5},
+                        {"name": "Under", "description": "Jalen Brunson", "price": -105, "point": 26.5},
+                        {"name": "Over", "description": "Stephen Curry", "price": 110, "point": 27.5},
+                    ],
+                },
+                {
+                    "key": "player_double_double",
+                    "outcomes": [{"name": "Yes", "description": "Jalen Brunson", "price": 400}],
+                },
+            ],
+        },
+        {
+            "key": "fanduel",
+            "title": "FanDuel",
+            "last_update": "2026-10-21T15:10:00Z",
+            "markets": [
+                {
+                    "key": "player_threes",
+                    "outcomes": [
+                        {"name": "Over", "description": "Stephen Curry", "price": -130, "point": 4.5},
+                        {"name": "Under", "description": "Stephen Curry", "price": 100, "point": 4.5},
+                    ],
+                },
+                {
+                    "key": "player_points",
+                    "last_update": "2026-10-21T15:20:00Z",
+                    "outcomes": [
+                        {"name": "Over", "description": "Jalen Brunson", "price": -110, "point": 25.5},
+                        {"name": "Under", "description": "Jalen Brunson", "price": -110, "point": 25.5},
+                    ],
+                },
+            ],
+        },
+    ],
+}
+
+PROP_PLAYERS = props.index_players_by_canonical_name([
+    ("1628973", "Jalen Brunson", "NYK"),
+    ("201939", "Stephen Curry", "GSW"),
+    ("1630228", "Jaren Jackson Jr.", "MEM"),
+    ("900001", "Jalen Williams", "OKC"),
+    ("900002", "Jalen Williams", "GSW"),
+])
+
+
+def _props_by_key(rows):
+    return {(r["bookmaker"], r["market"], r["player_name"], r["line"]): r for r in rows}
+
+
+class TestParseEventProps:
+    def test_two_bookmakers_give_one_row_per_book_market_player_and_line(self):
+        rows = _props_by_key(parse_event_props(PROP_PAYLOAD, PROPS_MARKET_MAP))
+
+        assert set(rows) == {
+            ("draftkings", "pts", "Jalen Brunson", 26.5),
+            ("draftkings", "pts", "Stephen Curry", 27.5),
+            ("fanduel", "fg3m", "Stephen Curry", 4.5),
+            ("fanduel", "pts", "Jalen Brunson", 25.5),
+        }
+
+    def test_over_and_under_on_the_same_line_pair_into_one_row(self):
+        row = _props_by_key(parse_event_props(PROP_PAYLOAD, PROPS_MARKET_MAP))[
+            ("draftkings", "pts", "Jalen Brunson", 26.5)
+        ]
+
+        assert row["over_price"] == -115
+        assert row["under_price"] == -105
+        assert row["provider_updated_at"] == datetime(2026, 10, 21, 15, 31, 29, tzinfo=timezone.utc)
+
+    def test_a_one_sided_line_keeps_the_missing_price_null(self):
+        row = _props_by_key(parse_event_props(PROP_PAYLOAD, PROPS_MARKET_MAP))[
+            ("draftkings", "pts", "Stephen Curry", 27.5)
+        ]
+
+        assert row["over_price"] == 110
+        assert row["under_price"] is None
+
+    def test_the_bookmaker_update_time_backs_a_market_without_one(self):
+        row = _props_by_key(parse_event_props(PROP_PAYLOAD, PROPS_MARKET_MAP))[
+            ("fanduel", "fg3m", "Stephen Curry", 4.5)
+        ]
+
+        assert row["provider_updated_at"] == datetime(2026, 10, 21, 15, 10, tzinfo=timezone.utc)
+
+    def test_an_unknown_market_key_is_skipped_with_a_warning(self, caplog):
+        with caplog.at_level("WARNING", logger="props"):
+            rows = parse_event_props(PROP_PAYLOAD, PROPS_MARKET_MAP)
+
+        assert {r["market"] for r in rows} == {"pts", "fg3m"}
+        assert "player_double_double" in caplog.text
+
+    def test_every_requested_market_normalises_to_a_nine_cat_key(self):
+        assert sorted(PROPS_MARKET_MAP.values()) == sorted(
+            ["pts", "reb", "ast", "fg3m", "pra", "stl", "blk", "tov"]
+        )
+
+    def test_a_payload_with_no_bookmakers_gives_no_rows(self):
+        assert parse_event_props({"id": "x"}, PROPS_MARKET_MAP) == []
+
+
+class TestMatchPropPlayer:
+    def test_a_generational_suffix_difference_still_matches(self):
+        assert match_prop_player("Jaren Jackson", ("MEM", "LAL"), PROP_PLAYERS) == "1630228"
+
+    def test_the_event_teams_disambiguate_a_shared_name(self):
+        assert match_prop_player("Jalen Williams", ("NYK", "GSW"), PROP_PLAYERS) == "900002"
+
+    def test_a_shared_name_on_neither_team_matches_no_one(self):
+        assert match_prop_player("Jalen Williams", ("BOS", "MIA"), PROP_PLAYERS) is None
+
+    def test_an_unknown_name_matches_no_one(self):
+        assert match_prop_player("Nobody Atall", ("NYK", "GSW"), PROP_PLAYERS) is None
+
+
+class TestMapPropEvent:
+    def test_full_team_names_and_the_eastern_date_map_to_the_game(self):
+        assert map_prop_event(PROP_EVENT, SCHEDULE_ROWS) == (date(2026, 10, 21), "0022600012")
+
+    def test_a_late_tip_uses_the_eastern_date_not_utc(self):
+        event = {**PROP_EVENT, "commence_time": "2026-10-24T01:00:00Z"}
+
+        assert map_prop_event(event, SCHEDULE_ROWS) == (date(2026, 10, 23), "0022600031")
+
+    def test_the_la_clippers_spelling_resolves(self):
+        assert props.team_abbr_from_name("LA Clippers") == "LAC"
+        assert props.team_abbr_from_name("Los Angeles Clippers") == "LAC"
+
+    def test_an_unknown_team_name_maps_to_no_game(self):
+        event = {**PROP_EVENT, "home_team": "Seattle SuperSonics"}
+
+        assert map_prop_event(event, SCHEDULE_ROWS) == (date(2026, 10, 21), None)
+
+
+PROPS_NOW = datetime(2026, 10, 21, 16, 0, tzinfo=timezone.utc)
+
+
+class TestPropsWindow:
+    def test_the_window_runs_to_the_end_of_the_eastern_day_two_days_out(self):
+        start, end = props.props_window(PROPS_NOW)
+
+        assert start == PROPS_NOW
+        assert end.astimezone(odds.EASTERN).date() == date(2026, 10, 23)
+        assert (end + timedelta(seconds=1)).astimezone(odds.EASTERN).hour == 0
+
+    def test_events_already_tipped_or_past_the_window_are_dropped(self):
+        start, end = props.props_window(PROPS_NOW)
+        events = [
+            {**PROP_EVENT, "id": "tipped", "commence_time": "2026-10-21T15:00:00Z"},
+            {**PROP_EVENT, "id": "tonight"},
+            {**PROP_EVENT, "id": "late", "commence_time": "2026-10-24T02:00:00Z"},
+            {**PROP_EVENT, "id": "far", "commence_time": "2026-10-25T23:00:00Z"},
+        ]
+
+        kept = props.events_in_window(events, start, end)
+
+        assert [e["id"] for e in kept] == ["tonight", "late"]
+
+    def test_a_run_is_due_only_after_the_minimum_gap(self):
+        assert props.props_run_due(None, PROPS_NOW, 20) is True
+        assert props.props_run_due(PROPS_NOW - timedelta(hours=19), PROPS_NOW, 20) is False
+        assert props.props_run_due(PROPS_NOW - timedelta(hours=20), PROPS_NOW, 20) is True
+        assert props.props_run_due(PROPS_NOW, PROPS_NOW, 0) is True
+
+
+class FakePropsProvider:
+    name = "the_odds_api"
+
+    def __init__(self, events, payloads, remaining=480, cost=8):
+        self.events = events
+        self.payloads = payloads
+        self.requests_remaining = None
+        self._remaining = remaining
+        self._cost = cost
+        self.odds_calls: list[str] = []
+
+    def fetch_events(self, start, end):
+        self.requests_remaining = self._remaining
+        return self.events
+
+    def fetch_event_props(self, event_id):
+        self.odds_calls.append(event_id)
+        self._remaining -= self._cost
+        self.requests_remaining = self._remaining
+        return self.payloads.get(event_id, {})
+
+    def event_props_cost(self):
+        return self._cost
+
+
+class PropsCursor(OddsCursor):
+    def __init__(self, last_started=None):
+        super().__init__()
+        self.last_started = last_started
+
+    def fetchall(self):
+        if "FROM players" in self.statements[-1]:
+            return [("1628973", "Jalen Brunson", "NYK"), ("201939", "Stephen Curry", "GSW")]
+        return super().fetchall()
+
+    def fetchone(self):
+        if "MAX(started_at)" in self.statements[-1]:
+            return (self.last_started,)
+        return super().fetchone()
+
+
+class PropsConn(OddsConn):
+    def __init__(self, last_started=None):
+        self.cursor_ = PropsCursor(last_started)
+
+
+class TestScrapePropOdds:
+    @pytest.fixture
+    def written(self, monkeypatch):
+        batches: list[tuple[str, list]] = []
+        monkeypatch.setattr(
+            database, "execute_values",
+            lambda cur, sql, rows, page_size, template=None: batches.append((sql, list(rows))),
+        )
+        return batches
+
+    def test_rows_are_written_with_game_and_player_ids_and_the_quota_noted(
+        self, monkeypatch, written
+    ):
+        provider = FakePropsProvider([PROP_EVENT], {PROP_EVENT["id"]: PROP_PAYLOAD})
+        finished: list[tuple] = []
+        monkeypatch.setattr(
+            props, "_finish_ingestion_run",
+            lambda conn, run_id, status, rows, notes=None: finished.append(
+                (run_id, status, rows, notes)
+            ),
+        )
+
+        ok = props.scrape_prop_odds(PropsConn(), provider=provider, now=PROPS_NOW)
+
+        inserts = [rows for sql, rows in written if "INSERT INTO prop_odds_snapshots" in sql]
+        assert ok is True
+        assert len(inserts[0]) == 4
+        assert {row[2] for row in inserts[0]} == {"0022600012"}
+        assert {(row[6], row[7]) for row in inserts[0]} == {
+            ("Jalen Brunson", "1628973"), ("Stephen Curry", "201939"),
+        }
+        assert {row[12:] for row in inserts[0]} == {("the_odds_api", 7)}
+        assert finished == [(7, "succeeded", 4, "requests remaining 472")]
+
+    def test_no_odds_call_for_an_event_outside_the_window(self, written):
+        far = {**PROP_EVENT, "id": "far", "commence_time": "2026-10-26T23:00:00Z"}
+        tipped = {**PROP_EVENT, "id": "tipped", "commence_time": "2026-10-21T12:00:00Z"}
+        provider = FakePropsProvider([PROP_EVENT, far, tipped], {PROP_EVENT["id"]: PROP_PAYLOAD})
+
+        props.scrape_prop_odds(PropsConn(), dry_run=True, provider=provider, now=PROPS_NOW)
+
+        assert provider.odds_calls == [PROP_EVENT["id"]]
+
+    def test_a_recent_run_skips_every_provider_call(self, written):
+        provider = FakePropsProvider([PROP_EVENT], {PROP_EVENT["id"]: PROP_PAYLOAD})
+        conn = PropsConn(last_started=PROPS_NOW - timedelta(hours=2))
+
+        ok = props.scrape_prop_odds(conn, provider=provider, now=PROPS_NOW)
+
+        assert ok is True
+        assert provider.requests_remaining is None
+        assert provider.odds_calls == []
+        assert written == []
+
+    def test_a_low_quota_stops_the_odds_calls(self, written):
+        second = {**PROP_EVENT, "id": "second"}
+        provider = FakePropsProvider([PROP_EVENT, second], {}, remaining=10, cost=8)
+
+        props.scrape_prop_odds(PropsConn(), dry_run=True, provider=provider, now=PROPS_NOW)
+
+        assert provider.odds_calls == [PROP_EVENT["id"]]
+
+    def test_dry_run_reads_but_writes_nothing(self, written):
+        provider = FakePropsProvider([PROP_EVENT], {PROP_EVENT["id"]: PROP_PAYLOAD})
+        conn = PropsConn()
+
+        ok = props.scrape_prop_odds(conn, dry_run=True, provider=provider, now=PROPS_NOW)
+
+        assert ok is True
+        assert written == []
+        assert conn.cursor_.statements
+        assert all(not is_write_statement(sql) for sql in conn.cursor_.statements)
+
+    def test_no_key_skips_without_touching_the_database(self, monkeypatch, caplog):
+        monkeypatch.delenv("ODDS_API_KEY", raising=False)
+        conn = PropsConn()
+
+        with caplog.at_level("INFO", logger="props"):
+            ok = props.scrape_prop_odds(conn)
+
+        assert ok is True
+        assert conn.cursor_.statements == []
+        assert "props provider not configured" in caplog.text
+
+    def test_a_failed_events_fetch_reports_failure(self, written):
+        class Down(FakePropsProvider):
+            def fetch_events(self, start, end):
+                raise requests.ConnectionError("down")
+
+        ok = props.scrape_prop_odds(PropsConn(), provider=Down([], {}), now=PROPS_NOW)
+
+        assert ok is False
+        assert written == []
+
+
+class _FakeResponse:
+    def __init__(self, payload, headers):
+        self._payload = payload
+        self.headers = headers
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._payload
+
+
+class TestTheOddsApiProvider:
+    def test_the_event_odds_request_names_the_markets_and_records_the_quota(self):
+        calls: list[tuple[str, dict]] = []
+
+        def get(url, params, timeout):
+            calls.append((url, params))
+            return _FakeResponse(PROP_PAYLOAD, {"x-requests-remaining": "492"})
+
+        provider = props.TheOddsApiProvider("k", get=get)
+
+        payload = provider.fetch_event_props("abc")
+
+        url, params = calls[0]
+        assert url.endswith("/v4/sports/basketball_nba/events/abc/odds")
+        assert params["markets"].split(",") == list(PROPS_MARKET_MAP)
+        assert params["regions"] == "us"
+        assert params["oddsFormat"] == "american"
+        assert params["apiKey"] == "k"
+        assert payload["id"] == PROP_EVENT["id"]
+        assert provider.requests_remaining == 492
+        assert provider.event_props_cost() == 8
+
+    def test_the_events_request_sends_whole_second_utc_bounds(self):
+        calls: list[dict] = []
+
+        def get(url, params, timeout):
+            calls.append(params)
+            return _FakeResponse([PROP_EVENT], {})
+
+        provider = props.TheOddsApiProvider("k", get=get)
+
+        events = provider.fetch_events(*props.props_window(PROPS_NOW))
+
+        assert events == [PROP_EVENT]
+        assert calls[0]["commenceTimeFrom"] == "2026-10-21T16:00:00Z"
+        assert calls[0]["commenceTimeTo"] == "2026-10-24T03:59:59Z"
+        assert provider.requests_remaining is None
+
+    def test_an_env_key_builds_the_provider_and_a_blank_key_builds_none(self, monkeypatch):
+        monkeypatch.setenv("ODDS_API_KEY", "  ")
+        assert props.provider_from_env() is None
+        monkeypatch.setenv("ODDS_API_KEY", "abc")
+        assert isinstance(props.provider_from_env(), props.TheOddsApiProvider)
+
+
+class TestPropsCli:
+    def test_props_only_is_off_by_default(self):
+        assert _parse_args([]).props_only is False
+
+    def test_the_odds_lane_runs_props_after_the_espn_snapshot(self, monkeypatch):
+        order: list[str] = []
+        monkeypatch.setattr(
+            run_scraper, "scrape_odds_snapshots", lambda conn, dry_run: order.append("espn")
+        )
+        monkeypatch.setattr(
+            run_scraper, "scrape_prop_odds", lambda conn, dry_run: order.append("props")
+        )
+
+        run_scraper._odds_lane(object(), dry_run=True)
+
+        assert order == ["espn", "props"]
+
+    def test_a_props_failure_does_not_escape_the_odds_lane(self, monkeypatch):
+        def boom(conn, dry_run):
+            raise RuntimeError("provider down")
+
+        monkeypatch.setattr(run_scraper, "scrape_odds_snapshots", lambda conn, dry_run: True)
+        monkeypatch.setattr(run_scraper, "scrape_prop_odds", boom)
+
+        run_scraper._odds_lane(object(), dry_run=True)
+
+
+PLAYOFF_GAME_ID = "0042400101"
+PLAYIN_GAME_ID = "0052400111"
+
+
+def _log_row(game_id, game_date, player_id=1628369):
+    return {
+        **PLAYER_GAME_LOG_ROW,
+        "PLAYER_ID": player_id,
+        "GAME_ID": game_id,
+        "GAME_DATE": f"{game_date}T00:00:00",
+    }
+
+
+def _team_rows(game_id, game_date):
+    return [{**row, "GAME_ID": game_id, "GAME_DATE": game_date} for row in TEAM_GAME_LOG_ROWS]
+
+
+class TestSeasonTypesIngested:
+    def test_every_competition_a_player_logs_minutes_in_is_ingested(self):
+        # act + assert
+        assert SEASON_TYPES_INGESTED == ("Regular Season", "PlayIn", "Playoffs")
+
+    def test_the_stored_labels_match_what_the_game_id_says(self):
+        # arrange
+        derived = {
+            season_type_from_game_id("0022400061"),
+            season_type_from_game_id(PLAYIN_GAME_ID),
+            season_type_from_game_id(PLAYOFF_GAME_ID),
+        }
+
+        # act + assert
+        assert derived == set(SEASON_TYPES_INGESTED)
+
+
+class TestSeasonTypesToFetch:
+    def test_an_october_run_fetches_the_regular_season_only(self):
+        # act
+        result = season_types_to_fetch("2026-27", date(2026, 10, 25))
+
+        # assert
+        assert result == ("Regular Season",)
+
+    def test_from_april_every_ingested_type_is_fetched_in_order(self):
+        # act
+        result = season_types_to_fetch("2025-26", date(2026, 4, 1))
+
+        # assert
+        assert result == ("Regular Season", "PlayIn", "Playoffs")
+
+    def test_a_past_season_fetches_its_postseason(self):
+        # act
+        result = season_types_to_fetch("2024-25", date(2026, 10, 1))
+
+        # assert
+        assert result == ("Regular Season", "PlayIn", "Playoffs")
+
+    def test_the_last_day_of_march_is_still_regular_season_only(self):
+        # act
+        result = season_types_to_fetch("2025-26", date(2026, 3, 31))
+
+        # assert
+        assert result == ("Regular Season",)
+
+
+class TestPostseasonRowsAreLabelledFaithfully:
+    def test_a_playoff_player_row_is_stored_as_playoffs(self):
+        # arrange
+        raw = _log_row(PLAYOFF_GAME_ID, "2025-04-20")
+
+        # act
+        row = build_player_game_log_row(raw, "2024-25", run_id=1)
+
+        # assert
+        assert row[3] == "Playoffs"
+
+    def test_a_play_in_team_row_is_stored_as_play_in(self):
+        # arrange
+        raw = _team_rows(PLAYIN_GAME_ID, "2025-04-15")[0]
+
+        # act
+        row = build_team_game_log_row(raw, "2024-25", run_id=1)
+
+        # assert
+        assert row[3] == "PlayIn"
+
+    def test_a_playoff_game_rebuilt_from_team_logs_keeps_its_type(self):
+        # arrange
+        team_rows = _team_rows(PLAYOFF_GAME_ID, "2025-04-20")
+
+        # act
+        games = schedule_rows_from_team_logs(team_rows, "2024-25")
+
+        # assert
+        assert [g["season_type"] for g in games] == ["Playoffs"]
+
+
+class TestIngestedScheduleRows:
+    def test_preseason_and_all_star_rows_are_dropped(self):
+        # arrange
+        rows = [
+            {"nba_game_id": "0012400002", "season_type": "Pre Season"},
+            {"nba_game_id": "0022400061", "season_type": "Regular Season"},
+            {"nba_game_id": "0032400001", "season_type": "All Star"},
+            {"nba_game_id": PLAYIN_GAME_ID, "season_type": "PlayIn"},
+            {"nba_game_id": PLAYOFF_GAME_ID, "season_type": "Playoffs"},
+        ]
+
+        # act
+        kept = ingested_schedule_rows(rows)
+
+        # assert
+        assert [r["nba_game_id"] for r in kept] == [
+            "0022400061", PLAYIN_GAME_ID, PLAYOFF_GAME_ID,
+        ]
+
+
+def _stub_ingestion(monkeypatch, module, finished):
+    monkeypatch.setattr(module, "_start_ingestion_run", lambda *a, **k: 7)
+    monkeypatch.setattr(
+        module,
+        "_finish_ingestion_run",
+        lambda conn, run_id, status, written, **kwargs: finished.append(
+            {"status": status, "written": written, **kwargs}
+        ),
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+
+
+class TestScrapeGameLogsSeasonTypeLoop:
+    def _wire(self, monkeypatch, failing=()):
+        calls = []
+        upserts = []
+        finished = []
+        watermarks = {"Regular Season": date(2025, 4, 13), "PlayIn": None, "Playoffs": None}
+        games = {
+            "Regular Season": ("0022401200", "2025-04-13"),
+            "PlayIn": (PLAYIN_GAME_ID, "2025-04-15"),
+            "Playoffs": (PLAYOFF_GAME_ID, "2025-04-20"),
+        }
+
+        def player_logs(season, date_from, season_type):
+            calls.append(("player", season_type, date_from))
+            if season_type in failing:
+                raise ConnectionError("tarpit")
+            return [_log_row(*games[season_type])]
+
+        def team_logs(season, date_from, season_type):
+            calls.append(("team", season_type, date_from))
+            return _team_rows(*games[season_type])
+
+        def league_logs(season, date_from, season_type):
+            calls.append(("league", season_type, date_from))
+            return []
+
+        _stub_ingestion(monkeypatch, truth_layer, finished)
+        monkeypatch.setattr(truth_layer, "_fetch_player_game_logs", player_logs)
+        monkeypatch.setattr(truth_layer, "_fetch_team_game_logs", team_logs)
+        monkeypatch.setattr(truth_layer, "_fetch_league_player_game_logs", league_logs)
+        monkeypatch.setattr(
+            truth_layer,
+            "_latest_logged_game_date",
+            lambda conn, season, season_type: watermarks[season_type],
+        )
+        monkeypatch.setattr(
+            truth_layer,
+            "_batch_upsert",
+            lambda cur, sql, rows: upserts.extend(rows) or len(rows),
+        )
+        monkeypatch.setattr(truth_layer, "_sync_player_team_stints", lambda *a, **k: None)
+        return calls, upserts, finished
+
+    def test_every_season_type_is_fetched_with_its_own_watermark(self, monkeypatch):
+        # arrange
+        calls, _, _ = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        player_calls = [(kind, t, d) for kind, t, d in calls if kind == "player"]
+        assert player_calls == [
+            ("player", "Regular Season",
+             date(2025, 4, 13) - timedelta(days=GAME_LOG_CORRECTION_WINDOW_DAYS)),
+            ("player", "PlayIn", season_start_date("2024-25")),
+            ("player", "Playoffs", season_start_date("2024-25")),
+        ]
+        assert {t for kind, t, _ in calls if kind == "team"} == set(SEASON_TYPES_INGESTED)
+
+    def test_postseason_rows_are_written_with_their_season_type(self, monkeypatch):
+        # arrange
+        _, upserts, finished = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        stored = {(row[1], row[3]) for row in upserts}
+        assert (PLAYOFF_GAME_ID, "Playoffs") in stored
+        assert (PLAYIN_GAME_ID, "PlayIn") in stored
+        assert ("0022401200", "Regular Season") in stored
+        assert finished[-1]["status"] == "succeeded"
+
+    def test_one_failing_season_type_still_writes_the_others(self, monkeypatch):
+        # arrange
+        _, upserts, finished = self._wire(monkeypatch, failing=("Playoffs",))
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        assert PLAYOFF_GAME_ID not in {row[1] for row in upserts}
+        assert PLAYIN_GAME_ID in {row[1] for row in upserts}
+        assert finished[-1]["status"] == "partial"
+        assert "Playoffs" in finished[-1]["notes"]
+
+    def test_every_season_type_failing_fails_the_run(self, monkeypatch):
+        # arrange
+        _, upserts, finished = self._wire(monkeypatch, failing=SEASON_TYPES_INGESTED)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        assert upserts == []
+        assert finished[-1]["status"] == "failed"
+
+    def test_an_october_run_makes_no_postseason_requests(self, monkeypatch):
+        # arrange
+        calls, _, _ = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2024, 10, 30))
+
+        # assert
+        assert {t for _, t, _ in calls} == {"Regular Season"}
+
+
+class TestScheduleTeamLogFallback:
+    def test_the_fallback_reads_every_season_type(self, monkeypatch):
+        # arrange
+        seen = []
+        monkeypatch.setattr(truth_layer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(
+            truth_layer,
+            "_fetch_team_game_logs",
+            lambda season, date_from, season_type: seen.append(season_type) or [],
+        )
+
+        # act
+        truth_layer.fetch_all_season_type_team_logs("2024-25")
+
+        # assert
+        assert seen == list(SEASON_TYPES_INGESTED)
+
+
+class TestBackfillGameLogsSeasonTypeLoop:
+    def test_logs_for_every_season_type_and_postseason_schedule_rows_are_written(
+        self, monkeypatch
+    ):
+        # arrange
+        fetched = []
+        upserts = []
+        schedules = []
+        finished = []
+        games = {
+            "Regular Season": ("0022401200", "2025-04-13"),
+            "PlayIn": (PLAYIN_GAME_ID, "2025-04-15"),
+            "Playoffs": (PLAYOFF_GAME_ID, "2025-04-20"),
+        }
+        _stub_ingestion(monkeypatch, backfill, finished)
+        monkeypatch.setattr(
+            backfill, "_fetch_team_game_logs",
+            lambda season, date_from, season_type: fetched.append(("team", season_type))
+            or _team_rows(*games[season_type]),
+        )
+        monkeypatch.setattr(
+            backfill, "_fetch_player_game_logs",
+            lambda season, date_from, season_type: fetched.append(("player", season_type))
+            or [_log_row(*games[season_type])],
+        )
+        monkeypatch.setattr(
+            backfill, "_fetch_league_player_game_logs",
+            lambda season, date_from, season_type: [],
+        )
+        monkeypatch.setattr(
+            backfill, "_fetch_league_schedule",
+            lambda season: [
+                {**SEASON_GAME_ROW, "gameId": "0012400002"},
+                {**SEASON_GAME_ROW, "gameId": PLAYOFF_GAME_ID},
+            ],
+        )
+        monkeypatch.setattr(
+            backfill, "_upsert_schedule_rows",
+            lambda cur, rows: schedules.extend(rows) or len(rows),
+        )
+        monkeypatch.setattr(
+            backfill, "_batch_upsert", lambda cur, sql, rows: upserts.extend(rows) or len(rows)
+        )
+        monkeypatch.setattr(backfill, "scrape_game_status", lambda *a, **k: 0)
+
+        # act
+        backfill.backfill_game_logs_season(FakeConn(), "2024-25")
+
+        # assert
+        assert [t for kind, t in fetched if kind == "player"] == list(SEASON_TYPES_INGESTED)
+        assert {row[3] for row in upserts} == set(SEASON_TYPES_INGESTED)
+        assert [r["season_type"] for r in schedules] == ["Playoffs"]
+
+
+class TestValidationCoverageGate:
+    def test_schedule_coverage_is_checked_for_the_regular_season_only(self, monkeypatch):
+        # arrange
+        queries = []
+        monkeypatch.setattr(backfill, "_scalar", lambda conn, sql, params=(): 1)
+        monkeypatch.setattr(
+            backfill, "_rows",
+            lambda conn, sql, params=(): queries.append((sql, params)) or [],
+        )
+
+        # act
+        backfill.validate_game_logs(FakeConn(), "2024-25", "2024-25")
+
+        # assert
+        coverage = [
+            params for sql, params in queries
+            if "FROM nba_schedule s" in sql and "NOT EXISTS" in sql
+        ]
+        assert coverage == [("2024-25", "Regular Season")]

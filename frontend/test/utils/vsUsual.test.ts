@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  compactVsUsual,
-  reasonEvidenceLines,
-  showsVsUsual,
-  signedStat,
-} from '../../src/utils/vsUsual';
+import { reasonEvidenceLines, signedStat, slateEvidenceLines } from '../../src/utils/vsUsual';
 import type { SlatePlayer } from '../../src/types';
 
 function player(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
@@ -44,30 +39,17 @@ describe('signedStat', () => {
   });
 });
 
-describe('showsVsUsual', () => {
-  it('stays quiet for a small swing with no reason', () => {
-    expect(showsVsUsual(player())).toBe(false);
+describe('slateEvidenceLines', () => {
+  it('leads with minutes, then points, then the categories the server picked', () => {
+    expect(slateEvidenceLines(player())).toEqual([
+      'Minutes: 25.0 projected, usually 24.0 (+1.0)',
+      'Points if he plays: 10.0 projected, usually 9.0 (+1.0)',
+      'BLK: 1.2 projected, usually 0.5 (+0.7)',
+    ]);
   });
 
-  it('shows for a two-minute swing either way', () => {
-    const drop = player({
-      vs_usual: { ...player().vs_usual!, minutes: { usual: 30, projected: 28, delta: -2 } },
-    });
-    expect(showsVsUsual(drop)).toBe(true);
-  });
-
-  it('shows whenever a reason fired', () => {
-    expect(showsVsUsual(player({ reasons: ['HOT_STREAK'] }))).toBe(true);
-  });
-});
-
-describe('compactVsUsual', () => {
-  it('leads with minutes, then the categories the server picked', () => {
-    expect(compactVsUsual(player())).toBe('MIN +1.0 · BLK +0.7');
-  });
-
-  it('has nothing to say without a usual', () => {
-    expect(compactVsUsual(player({ vs_usual: null }))).toBeNull();
+  it('has only the reason evidence without a usual', () => {
+    expect(slateEvidenceLines(player({ vs_usual: null }))).toEqual([]);
   });
 });
 

@@ -16,11 +16,23 @@ export class BettingPage {
   }
 
   signInPrompt(): Locator {
-    return this.page.getByText(/Sign in to see Claude's betting picks/i);
+    return this.page.getByText('Sign in to track your bets.');
   }
 
-  oddsBoardHeading(): Locator {
-    return this.page.getByRole('heading', { name: /Upcoming Games & Odds/i });
+  gamesHeading(): Locator {
+    return this.page.getByRole('heading', { name: "Tonight's games" });
+  }
+
+  propsHeading(): Locator {
+    return this.page.getByRole('heading', { name: 'Prop picks' });
+  }
+
+  propsEmpty(): Locator {
+    return this.page.getByText('Prop picks appear here once prop odds are connected.');
+  }
+
+  betsHeading(): Locator {
+    return this.page.getByRole('heading', { name: 'My bets' });
   }
 
   glossaryHeading(): Locator {
@@ -32,28 +44,20 @@ export class BettingPage {
     return this.page.getByLabel(`Toggle explanation of ${term}`);
   }
 
-  categoryHeading(name: 'Best Value' | 'Safe' | 'Hail Mary'): Locator {
-    return this.page.getByRole('heading', { name, exact: true });
+  gameRow(sentence: string): Locator {
+    return this.page.getByRole('listitem').filter({ hasText: sentence });
   }
 
-  parlayHeading(): Locator {
-    return this.page.getByRole('heading', { name: /Suggested Parlay/i });
-  }
-
-  ledgerHeading(): Locator {
-    return this.page.getByRole('heading', { name: 'My Bets' });
+  pricesToggle(row: Locator): Locator {
+    return row.getByText('Prices', { exact: true });
   }
 
   addBetButton(): Locator {
-    return this.page.getByRole('button', { name: '+ Add bet' });
+    return this.page.getByRole('button', { name: 'Add a bet' });
   }
 
-  prefsToggle(): Locator {
-    return this.page.getByRole('button', { name: /Betting Preferences/i });
-  }
-
-  savePrefsButton(): Locator {
-    return this.page.getByRole('button', { name: /Save & Re-analyze/i });
+  manageToggle(betText: string): Locator {
+    return this.page.getByLabel(`Manage bet: ${betText}`);
   }
 
   chatHeading(): Locator {
@@ -61,6 +65,6 @@ export class BettingPage {
   }
 
   seeMoreButton(): Locator {
-    return this.page.getByRole('button', { name: /See more/ });
+    return this.page.getByRole('button', { name: /^See \d+ more$/ });
   }
 }

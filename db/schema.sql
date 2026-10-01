@@ -507,6 +507,29 @@ CREATE TABLE IF NOT EXISTS espn_event_map (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- player prop odds history (migration 019), append-only like odds_snapshots.
+-- one row per bookmaker, market, player and line; a one-sided line keeps the
+-- missing price NULL.
+CREATE TABLE IF NOT EXISTS prop_odds_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    provider TEXT NOT NULL,
+    provider_event_id TEXT NOT NULL,
+    nba_game_id TEXT,
+    game_date DATE NOT NULL,
+    bookmaker TEXT NOT NULL,
+    market TEXT NOT NULL CHECK (market IN ('pts', 'reb', 'ast', 'fg3m', 'pra', 'stl', 'blk', 'tov')),
+    player_name TEXT NOT NULL,
+    nba_player_id TEXT,
+    line NUMERIC NOT NULL,
+    over_price INTEGER,
+    under_price INTEGER,
+    provider_updated_at TIMESTAMPTZ,
+    captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source TEXT NOT NULL,
+    ingestion_run_id INTEGER REFERENCES ingestion_runs (id) ON DELETE SET NULL,
+    CHECK (over_price IS NOT NULL OR under_price IS NOT NULL)
+);
+
 -- prediction store (migrations 014, 015), append-only: a run writes new rows,
 -- never edits old ones, so a backtest measures foresight not hindsight.
 -- forecast_cutoff_at is the latest instant any input was allowed to see:
@@ -553,6 +576,39 @@ CREATE TABLE IF NOT EXISTS player_game_predictions (
     UNIQUE (prediction_run_id, nba_player_id, nba_game_id, stat, quantile)
 );
 
+-- migration 020: paper-trading ledger for model player-prop picks, recorded
+-- once per run with the market at surfacing; settlement fills the rest.
+CREATE TABLE IF NOT EXISTS model_prop_picks (
+    id BIGSERIAL PRIMARY KEY,
+    prediction_run_id INT NOT NULL REFERENCES prediction_runs (id),
+    nba_player_id TEXT NOT NULL,
+    player_name TEXT,
+    nba_game_id TEXT NOT NULL,
+    game_date DATE NOT NULL,
+    market TEXT NOT NULL
+      CHECK (market IN ('pts', 'reb', 'ast', 'fg3m', 'pra', 'stl', 'blk', 'tov')),
+    line NUMERIC NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('over', 'under')),
+    bookmaker TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    implied_prob NUMERIC NOT NULL,
+    implied_prob_novig NUMERIC,
+    -- model_prob is P(win) under void_rule, model_prob_plays is P(win | he plays)
+    model_prob NUMERIC NOT NULL,
+    model_prob_plays NUMERIC NOT NULL,
+    prob_active NUMERIC NOT NULL,
+    void_rule TEXT NOT NULL CHECK (void_rule IN ('dnp_void', 'dnp_loss')),
+    ev NUMERIC NOT NULL,
+    kelly_fraction NUMERIC NOT NULL,
+    surfaced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    closing_price INTEGER,
+    closing_line NUMERIC,
+    result TEXT CHECK (result IN ('win', 'loss', 'push', 'void')),
+    actual NUMERIC,
+    settled_at TIMESTAMPTZ,
+    UNIQUE (prediction_run_id, nba_player_id, nba_game_id, market, line, side, bookmaker)
+);
+
 CREATE INDEX IF NOT EXISTS idx_players_team ON players(team);
 CREATE INDEX IF NOT EXISTS idx_players_position ON players(position);
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
@@ -586,6 +642,8 @@ CREATE INDEX IF NOT EXISTS idx_player_injury_reports_game_as_of
   ON player_injury_reports(nba_game_id, report_as_of DESC) WHERE nba_game_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_odds_snapshots_game_captured ON odds_snapshots(nba_game_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_odds_snapshots_event_captured ON odds_snapshots(espn_event_id, captured_at);
+CREATE INDEX IF NOT EXISTS idx_prop_odds_snapshots_player_market ON prop_odds_snapshots(nba_player_id, game_date, market, captured_at);
+CREATE INDEX IF NOT EXISTS idx_prop_odds_snapshots_game_captured ON prop_odds_snapshots(nba_game_id, captured_at);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_predicted_at ON prediction_runs(status, predicted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_channel_served ON prediction_runs(channel, status, predicted_at DESC);
 -- the UNIQUE constraint above does not bite for expected values: Postgres treats
@@ -597,3 +655,7 @@ CREATE INDEX IF NOT EXISTS idx_player_game_predictions_player_date
   ON player_game_predictions(nba_player_id, game_date DESC);
 CREATE INDEX IF NOT EXISTS idx_player_game_predictions_run
   ON player_game_predictions(prediction_run_id);
+CREATE INDEX IF NOT EXISTS idx_model_prop_picks_game_date
+  ON model_prop_picks(game_date, prediction_run_id);
+CREATE INDEX IF NOT EXISTS idx_model_prop_picks_unsettled
+  ON model_prop_picks(nba_game_id) WHERE result IS NULL;

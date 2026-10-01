@@ -1,4 +1,4 @@
-# creates the "NBA IQ Scrape" shortcut on the desktop and in the start menu.
+# creates the "NBA IQ Scrape" and "NBA IQ box-details backfill" shortcuts on the desktop and in the start menu.
 # windows does not allow pinning to the taskbar from a script; right-click the
 # desktop shortcut and choose "Pin to taskbar" once.
 
@@ -11,13 +11,19 @@ $locations = @(
     [Environment]::GetFolderPath('Desktop'),
     (Join-Path ([Environment]::GetFolderPath('StartMenu')) 'Programs')
 )
+$shortcuts = @(
+    @{ Name = 'NBA IQ Scrape'; Extra = ''; Description = 'Run the NBA IQ full scrape against prod' },
+    @{ Name = 'NBA IQ box-details backfill'; Extra = ' -Task box-details'; Description = 'Backfill box-score details (starters, positions, rebound split, DNP reasons) against prod' }
+)
 foreach ($dir in $locations) {
-    $link = $shell.CreateShortcut((Join-Path $dir 'NBA IQ Scrape.lnk'))
-    $link.TargetPath = $powershell
-    $link.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$target`""
-    $link.WorkingDirectory = Split-Path -Parent $PSScriptRoot
-    $link.IconLocation = "$env:SystemRoot\System32\shell32.dll,238"
-    $link.Description = 'Run the NBA IQ full scrape against prod'
-    $link.Save()
-    Write-Host "created $($link.FullName)"
+    foreach ($item in $shortcuts) {
+        $link = $shell.CreateShortcut((Join-Path $dir "$($item.Name).lnk"))
+        $link.TargetPath = $powershell
+        $link.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$target`"$($item.Extra)"
+        $link.WorkingDirectory = Split-Path -Parent $PSScriptRoot
+        $link.IconLocation = "$env:SystemRoot\System32\shell32.dll,238"
+        $link.Description = $item.Description
+        $link.Save()
+        Write-Host "created $($link.FullName)"
+    }
 }

@@ -1,5 +1,4 @@
 export { StatsPage } from './StatsPage';
-export { WatchlistPage } from './WatchlistPage';
 export { ProjectionsPage } from './ProjectionsPage';
 export { PlayerAnalyticsPage } from './PlayerAnalyticsPage';
 export { FantasyPage } from './FantasyPage';

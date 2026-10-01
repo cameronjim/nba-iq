@@ -15,8 +15,13 @@ for path in (str(ML_ROOT), str(TESTS_DIR)):
 from fixtures.generate import generate  # noqa: E402
 
 from fnba_ml.data import ParquetSource  # noqa: E402
+from fnba_ml.data.schema import postseason_rows, training_rows  # noqa: E402
 from fnba_ml.features import build_features  # noqa: E402
-from fnba_ml.universe import approximate_universe, universe_from_status  # noqa: E402
+from fnba_ml.universe import (  # noqa: E402
+    approximate_universe,
+    postseason_appearances,
+    universe_from_status,
+)
 
 
 @pytest.fixture(scope="session")
@@ -29,27 +34,55 @@ def source(fixture_dir: Path) -> ParquetSource:
     return ParquetSource(fixture_dir, seasons=["2023-24", "2024-25"])
 
 
+# the history_* frames are what a source loads, playoffs included; the plain ones
+# are the training rows every other fixture and test is built from.
 @pytest.fixture(scope="session")
-def raw_logs(source: ParquetSource) -> pd.DataFrame:
+def history_logs(source: ParquetSource) -> pd.DataFrame:
     logs = source.load_player_game_logs()
     return logs.sort_values(["PLAYER_ID", "GAME_DATE"]).reset_index(drop=True)
 
 
 @pytest.fixture(scope="session")
-def schedule(source: ParquetSource) -> pd.DataFrame:
+def raw_logs(history_logs: pd.DataFrame) -> pd.DataFrame:
+    return training_rows(history_logs)
+
+
+@pytest.fixture(scope="session")
+def history_schedule(source: ParquetSource) -> pd.DataFrame:
     return source.load_schedule()
 
 
 @pytest.fixture(scope="session")
-def team_logs(source: ParquetSource) -> pd.DataFrame:
+def schedule(history_schedule: pd.DataFrame) -> pd.DataFrame:
+    return training_rows(history_schedule)
+
+
+@pytest.fixture(scope="session")
+def history_team_logs(source: ParquetSource) -> pd.DataFrame:
     return source.load_team_game_logs()
 
 
 @pytest.fixture(scope="session")
-def status(source: ParquetSource) -> pd.DataFrame:
+def team_logs(history_team_logs: pd.DataFrame) -> pd.DataFrame:
+    return training_rows(history_team_logs)
+
+
+@pytest.fixture(scope="session")
+def history_status(source: ParquetSource) -> pd.DataFrame:
     frame = source.load_player_game_status()
     assert frame is not None, "the fixture set must carry a player_game_status file"
     return frame
+
+
+@pytest.fixture(scope="session")
+def status(history_status: pd.DataFrame, history_schedule: pd.DataFrame) -> pd.DataFrame:
+    playoff_games = set(postseason_rows(history_schedule)["GAME_ID"])
+    return history_status[~history_status["GAME_ID"].isin(playoff_games)].reset_index(drop=True)
+
+
+@pytest.fixture(scope="session")
+def postseason(history_schedule, history_team_logs, history_logs, positions) -> pd.DataFrame:
+    return postseason_appearances(history_schedule, history_team_logs, history_logs, positions)
 
 
 @pytest.fixture(scope="session")

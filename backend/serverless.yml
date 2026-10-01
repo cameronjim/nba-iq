@@ -24,6 +24,7 @@ provider:
     FROM_EMAIL: ${env:FROM_EMAIL, ''}
     GOOGLE_CLIENT_ID: ${env:GOOGLE_CLIENT_ID, ''}
     AUTH_SECRET: ${env:AUTH_SECRET}
+    BASELINE_INCLUDES_POSTSEASON: ${env:BASELINE_INCLUDES_POSTSEASON, ''}
     NODE_ENV: production
   iam:
     role:

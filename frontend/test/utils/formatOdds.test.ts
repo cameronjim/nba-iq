@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   formatAmerican,
-  formatPercent,
-  formatSignedPercent,
   formatLine,
   formatMoney,
   formatSignedMoney,
@@ -29,21 +27,6 @@ describe('formatAmerican', () => {
     expect(formatAmerican(150)).toBe('+150');
     expect(formatAmerican(-110)).toBe('-110');
     expect(formatAmerican(100)).toBe('+100');
-  });
-});
-
-describe('formatPercent', () => {
-  it('renders a probability as a one-decimal percent', () => {
-    expect(formatPercent(0.5238)).toBe('52.4%');
-    expect(formatPercent(0.4)).toBe('40.0%');
-  });
-});
-
-describe('formatSignedPercent', () => {
-  it('keeps the sign visible for edges', () => {
-    expect(formatSignedPercent(0.067)).toBe('+6.7%');
-    expect(formatSignedPercent(-0.02)).toBe('-2.0%');
-    expect(formatSignedPercent(0)).toBe('+0.0%');
   });
 });
 

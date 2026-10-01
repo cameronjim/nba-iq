@@ -3,60 +3,68 @@ import type { Locator, Page } from '@playwright/test';
 export class ProjectionsPage {
   constructor(private readonly page: Page) {}
 
-  async goto(): Promise<void> {
-    await this.page.goto('/projections');
-    await this.page.getByRole('heading', { name: /Projections/ }).waitFor();
+  async goto(path = '/projections'): Promise<void> {
+    await this.page.goto(path);
+    await this.page.getByRole('heading', { name: 'Projections', exact: true }).waitFor();
   }
 
-  sortButton(label: string): Locator {
+  scopeButton(label: 'Tonight' | 'Next 7 days'): Locator {
     return this.page
-      .getByRole('group', { name: 'Sort players by' })
+      .getByRole('group', { name: 'Show projections for' })
       .getByRole('button', { name: label, exact: true });
   }
 
-  get rows(): Locator {
-    return this.page.locator('section.card li');
+  get dateInput(): Locator {
+    return this.page.getByLabel('Game date');
   }
 
-  row(name: string): Locator {
-    return this.rows.filter({ hasText: name });
+  get teamSelect(): Locator {
+    return this.page.getByRole('combobox', { name: 'Filter by team' });
   }
 
-  reasons(playerId: string): Locator {
-    return this.page.getByTestId(`reasons-${playerId}`);
+  get positionSelect(): Locator {
+    return this.page.getByRole('combobox', { name: 'Filter by position' });
   }
 
-  vsUsual(playerId: string): Locator {
-    return this.page.getByTestId(`vs-usual-${playerId}`);
+  line(playerId: string): Locator {
+    return this.page.getByTestId(`line-${playerId}`);
   }
 
-  async openVsUsual(playerId: string): Promise<void> {
-    await this.vsUsual(playerId).locator('summary').click();
+  note(playerId: string): Locator {
+    return this.page.getByTestId(`note-${playerId}`);
   }
 
-  gameCard(matchup: RegExp): Locator {
+  details(playerId: string): Locator {
+    return this.page.getByTestId(`details-${playerId}`);
+  }
+
+  async openDetails(playerId: string): Promise<void> {
+    await this.details(playerId).getByText('Details', { exact: true }).click();
+  }
+
+  breakdown(playerId: string): Locator {
+    return this.page.getByTestId(`games-${playerId}`);
+  }
+
+  get weekRows(): Locator {
+    return this.page.getByTestId('week-list').getByTestId(/^row-/);
+  }
+
+  game(matchup: RegExp): Locator {
     return this.page
-      .locator('section.card')
+      .locator('section')
       .filter({ has: this.page.getByRole('heading', { name: matchup }) });
   }
 
-  get preseasonNote(): Locator {
-    return this.page.getByTestId('slate-preseason-note');
-  }
-
-  get subtitle(): Locator {
-    return this.page.getByTestId('slate-subtitle');
-  }
-
   get coverageNotice(): Locator {
-    return this.page.getByTestId('slate-coverage-notice');
+    return this.page.getByTestId('coverage-notice');
   }
 
   scheduleOnly(matchup: RegExp): Locator {
-    return this.gameCard(matchup).getByTestId('slate-schedule-only');
+    return this.game(matchup).getByTestId('schedule-only');
   }
 
-  get orderNote(): Locator {
-    return this.page.getByTestId('slate-order-note');
+  get footer(): Locator {
+    return this.page.getByTestId('projections-footer');
   }
 }

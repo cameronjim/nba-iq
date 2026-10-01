@@ -1,6 +1,16 @@
 # one-click full scrape from this PC. stats.nba.com blocks cloud ips, so this is
 # the only way the players, game-log and box-score phases get fresh data.
-# launched by the "NBA IQ Scrape" shortcut that install_shortcut.ps1 creates.
+# launched by the "NBA IQ Scrape" and "NBA IQ box-details backfill" shortcuts
+# that install_shortcut.ps1 creates.
+# -Season empty means run_scraper.py uses its own current-season default.
+
+param(
+    [ValidateSet('scrape', 'box-details', 'game-logs')]
+    [string]$Task = 'scrape',
+    [string]$Season = '',
+    [int]$Limit = 300,
+    [int]$MaxBatches = 20
+)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -12,14 +22,14 @@ $stamp = Join-Path $venv 'requirements.sha256'
 $envFile = Join-Path $repo '.env'
 $logDir = Join-Path $scraper 'logs'
 
-$Host.UI.RawUI.WindowTitle = 'NBA IQ Scrape'
+$Host.UI.RawUI.WindowTitle = "NBA IQ $Task"
 
 function Wait-AndExit([int]$code) {
     if ($code -eq 0) {
         Write-Host "`nDone. Closing in 5 seconds..." -ForegroundColor Green
         Start-Sleep -Seconds 5
     } else {
-        Write-Host "`nScrape FAILED (exit $code). The log above says why." -ForegroundColor Red
+        Write-Host "`nTask $Task FAILED (exit $code). The log above says why." -ForegroundColor Red
         Read-Host 'Press Enter to close'
     }
     exit $code
@@ -63,14 +73,49 @@ try {
     }
 
     New-Item -ItemType Directory -Force $logDir | Out-Null
-    $log = Join-Path $logDir ("scrape-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
-    Write-Host "Running the full scrape against PROD (log: $log)`n" -ForegroundColor Cyan
+    $log = Join-Path $logDir ("{0}-{1:yyyyMMdd-HHmmss}.log" -f $Task, (Get-Date))
+    Write-Host "Running task '$Task' against PROD (log: $log)`n" -ForegroundColor Cyan
 
     $env:PYTHONUNBUFFERED = '1'
     $ErrorActionPreference = 'Continue'
-    & $python (Join-Path $scraper 'run_scraper.py') 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $log
-    $code = $LASTEXITCODE
-    Get-ChildItem $logDir -Filter 'scrape-*.log' | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 | Remove-Item
+    $script = Join-Path $scraper 'run_scraper.py'
+    $seasonArgs = if ($Season) { @('--season', $Season) } else { @() }
+
+    if ($Task -eq 'box-details') {
+        $code = 0
+        for ($batch = 1; $batch -le $MaxBatches; $batch++) {
+            Write-Host "Batch $batch of $MaxBatches (up to $Limit games)" -ForegroundColor Cyan
+            $lines = @(& $python $script --backfill-box-details @seasonArgs --limit $Limit 2>&1 |
+                ForEach-Object { "$_" } | Tee-Object -FilePath $log -Append |
+                ForEach-Object { Write-Host $_; $_ })
+            $code = $LASTEXITCODE
+            if ($code -ne 0) { break }
+            $processed = $null
+            foreach ($line in $lines) {
+                if ($line -match '^box_details_processed=(\d+)\s*$') { $processed = [int]$Matches[1] }
+            }
+            if ($null -eq $processed) {
+                Write-Host 'No box_details_processed line in the output; stopping.' -ForegroundColor Red
+                $code = 1
+                break
+            }
+            if ($processed -eq 0) {
+                Write-Host 'No games left to process.' -ForegroundColor Green
+                break
+            }
+            if ($batch -lt $MaxBatches) {
+                Write-Host 'Sleeping 60 seconds before the next batch...'
+                Start-Sleep -Seconds 60
+            }
+        }
+    } elseif ($Task -eq 'game-logs') {
+        & $python $script --backfill-game-logs 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $log
+        $code = $LASTEXITCODE
+    } else {
+        & $python $script 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $log
+        $code = $LASTEXITCODE
+    }
+    Get-ChildItem $logDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 | Remove-Item
     Wait-AndExit $code
 } catch {
     Write-Host $_ -ForegroundColor Red

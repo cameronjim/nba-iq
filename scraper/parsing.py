@@ -161,6 +161,19 @@ def resolve_positions(cbs_pos: str, nba_broad_pos: str) -> str:
     return ""
 
 
+PROCESSED_LINE_PREFIX = "box_details_processed="
+
+
+def format_processed_line(count: int) -> str:
+    return f"{PROCESSED_LINE_PREFIX}{count}"
+
+
+def parse_processed_line(text: str) -> int | None:
+    # last match wins; none means the run died before reporting.
+    found = re.findall(rf"^{re.escape(PROCESSED_LINE_PREFIX)}(\d+)\s*$", text, re.MULTILINE)
+    return int(found[-1]) if found else None
+
+
 def season_start_year(season: str) -> int:
     match = _SEASON_PATTERN.match(season.strip())
     if not match:

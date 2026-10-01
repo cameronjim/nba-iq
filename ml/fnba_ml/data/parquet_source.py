@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..config import SEASONS, season_tag
+from ..config import COMPETITION_BY_SEASON_TYPE, COMPETITION_COL, SEASONS, season_tag
 from .schema import (
     PLAYER_LOG_COLS,
     POSITION_COLS,
@@ -40,6 +40,15 @@ from .schema import (
 log = logging.getLogger(__name__)
 
 DEFAULT_SEASON_TYPE = "Regular Season"
+DEFAULT_COMPETITION = COMPETITION_BY_SEASON_TYPE[DEFAULT_SEASON_TYPE]
+SEASON_TYPE_BY_COMPETITION = {c: t for t, c in COMPETITION_BY_SEASON_TYPE.items()}
+
+
+def _competition(raw: pd.DataFrame) -> pd.Series:
+    """a file's own COMPETITION column, else regular season: the nba_api exports carry none."""
+    if COMPETITION_COL in raw.columns:
+        return raw[COMPETITION_COL].astype(object)
+    return pd.Series(DEFAULT_COMPETITION, index=raw.index, dtype=object)
 
 
 class ParquetSource:
@@ -86,7 +95,8 @@ class ParquetSource:
         # the nba_api export carries no season type, no starter flag and no dnp
         # reason. they are declared so the frame shape matches the postgres
         # source, and left null so nothing downstream can quietly rely on them.
-        out["SEASON_TYPE"] = DEFAULT_SEASON_TYPE
+        out[COMPETITION_COL] = _competition(raw)
+        out["SEASON_TYPE"] = out[COMPETITION_COL].map(SEASON_TYPE_BY_COMPETITION)
         out["STARTED"] = pd.NA
         out["DNP_REASON"] = pd.NA
 
@@ -113,6 +123,7 @@ class ParquetSource:
         keep = ["TEAM_ID", "TEAM_ABBREVIATION", "GAME_ID", "SEASON", "GAME_DATE",
                 "MATCHUP", "PTS", "MIN", "FGA", "FTA", "TOV", *optional]
         out = raw[keep].copy()
+        out[COMPETITION_COL] = _competition(raw)
         out = normalise_ids(normalise_dates(out))
         for col in ("PTS", "MIN", "FGA", "FTA", "TOV", *optional):
             out[col] = pd.to_numeric(out[col], errors="coerce").astype(float)
@@ -183,7 +194,9 @@ class ParquetSource:
             ["GAME_ID", "_IS_HOME", "TEAM_ID"], ascending=[True, False, True]
         )
         side = ordered.groupby("GAME_ID").cumcount()
-        home = ordered[side == 0][["GAME_ID", "SEASON", "GAME_DATE", "TEAM_ID"]].rename(
+        home = ordered[side == 0][
+            ["GAME_ID", "SEASON", "GAME_DATE", "TEAM_ID", COMPETITION_COL]
+        ].rename(
             columns={"TEAM_ID": "HOME_TEAM_ID"}
         )
         away = ordered[side == 1][["GAME_ID", "TEAM_ID"]].rename(
@@ -191,7 +204,7 @@ class ParquetSource:
         )
 
         sched = home.merge(away, on="GAME_ID", how="inner")
-        sched["SEASON_TYPE"] = DEFAULT_SEASON_TYPE
+        sched["SEASON_TYPE"] = sched[COMPETITION_COL].map(SEASON_TYPE_BY_COMPETITION)
         sched["SCHEDULED_AT"] = sched["GAME_DATE"]
         sched["GAME_STATUS"] = "Final"
         sched = normalise_ids(sched)

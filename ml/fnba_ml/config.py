@@ -51,6 +51,27 @@ FEATURE_VERSION = "v3"
 SEASONS: list[str] = ["2022-23", "2023-24", "2024-25", "2025-26"]
 SEASON_TYPES: list[str] = ["Regular Season"]
 
+# the sources load every competition a player logs minutes in; the universe and
+# every training frame keep TRAINING rows only (MODEL.md 20.1).
+HISTORY_SEASON_TYPES: tuple[str, ...] = ("Regular Season", "PlayIn", "Playoffs")
+TRAINING_SEASON_TYPES: tuple[str, ...] = ("Regular Season",)
+
+# the COMPETITION column carried through the frames, one label per season type.
+COMPETITION_COL = "COMPETITION"
+COMPETITION_BY_SEASON_TYPE: dict[str, str] = {
+    "Regular Season": "regular",
+    "PlayIn": "playin",
+    "Playoffs": "playoffs",
+}
+TRAINING_COMPETITIONS: tuple[str, ...] = tuple(
+    COMPETITION_BY_SEASON_TYPE[t] for t in TRAINING_SEASON_TYPES
+)
+POSTSEASON_COMPETITIONS: tuple[str, ...] = ("playin", "playoffs")
+
+# off until the v3 re-freeze: on, postseason appearances enter the career-scoped
+# rate history while season-to-date and availability columns stay regular only.
+RATE_HISTORY_INCLUDES_POSTSEASON: bool = False
+
 # ---- feature windows ----
 ROLL_WINDOWS: tuple[int, ...] = (3, 5, 10)
 ROLL_STATS: tuple[str, ...] = ("MIN", "PTS", "AST", "FGA")
@@ -545,6 +566,15 @@ HORIZON_RUN_METADATA: tuple[str, ...] = (
 # the league's initial participation-report deadline, as a local-time hour on
 # the day before the game. used only for `first_deadline_passed`.
 INITIAL_REPORT_DEADLINE_HOUR: int = 17
+
+# injury-report resolution switches (MODEL.md 20.2). the defaults reproduce the
+# frozen v2 serving behaviour; the v3 re-freeze flips both.
+# True: the 72-hour expiry drops out/suspended/g_league too. False: only the
+# fast-decaying game designations (questionable, doubtful, probable) expire.
+EXPIRE_UNAVAILABLE_STATUSES: bool = True
+# True: resolve per (player, game) with official-over-cbs precedence.
+# False: newest report per player regardless of game or source.
+GAME_SCOPED_STATUS_RESOLUTION: bool = False
 
 
 def horizon_label(horizon: str) -> str:

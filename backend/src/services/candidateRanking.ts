@@ -13,7 +13,13 @@ import {
 
 export const DEFAULT_WAIVER_LIMIT = 25;
 export const DEFAULT_TRADE_LIMIT = 20;
+export const DEFAULT_STREAMER_LIMIT = 5;
 export const DRIVERS_SHOWN = 3;
+
+export const ROSTER_DEPTH = 13;
+export const DEFAULT_LEAGUE_TEAMS = 10;
+export const MIN_LEAGUE_TEAMS = 4;
+export const WAIVER_BAND_WIDTH = 250;
 
 export const CATEGORY_LABELS: Record<ImpactCategory, string> = {
   pts: 'PTS',
@@ -215,4 +221,45 @@ export function rankTradeTargets(
   options: RankingOptions
 ): RankedCandidate[] {
   return rankCandidates(roster, pool, projections, options, DEFAULT_TRADE_LIMIT);
+}
+
+export function rankStreamers(
+  roster: RankingPlayer[],
+  pool: RankingPlayer[],
+  projections: ReadonlyMap<string, PlayerWindowProjection>,
+  options: RankingOptions
+): RankedCandidate[] {
+  // window totals sum every game, so the score is already weighted by games played in the window.
+  return rankCandidates(roster, pool, projections, options, DEFAULT_STREAMER_LIMIT);
+}
+
+export interface RankablePlayer {
+  id: number;
+  fantasy_rank: number | null;
+}
+
+export interface RankingPools<T extends RankablePlayer> {
+  teams: number;
+  rostered_cutoff: number;
+  trade_pool: T[];
+  waiver_pool: T[];
+}
+
+// the top teams * depth are presumed rostered elsewhere; the next band is the free-agent pool.
+export function rankingPools<T extends RankablePlayer>(
+  ranked: T[],
+  rosterIds: ReadonlySet<number>,
+  leagueSize?: number
+): RankingPools<T> {
+  const teams = leagueSize && leagueSize >= MIN_LEAGUE_TEAMS ? leagueSize : DEFAULT_LEAGUE_TEAMS;
+  const cutoff = teams * ROSTER_DEPTH;
+  const free = ranked.filter((p) => p.fantasy_rank != null && !rosterIds.has(p.id));
+  return {
+    teams,
+    rostered_cutoff: cutoff,
+    trade_pool: free.filter((p) => (p.fantasy_rank as number) <= cutoff),
+    waiver_pool: free.filter(
+      (p) => (p.fantasy_rank as number) > cutoff && (p.fantasy_rank as number) <= cutoff + WAIVER_BAND_WIDTH
+    ),
+  };
 }
