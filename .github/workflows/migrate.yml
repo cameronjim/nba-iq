@@ -24,10 +24,18 @@ on:
         type: boolean
         default: false
       only:
-        description: "Apply only this file, e.g. 015_prediction_run_provenance.sql (optional)"
+        description: "Apply only these files, comma-separated, e.g. 015_prediction_run_provenance.sql,016_odds_snapshots.sql (optional)"
         type: string
         required: false
         default: ""
+      rerecord_mismatch:
+        description: "A recorded migration's file changed (comment-only edit): re-record its checksum and continue"
+        type: boolean
+        default: false
+      include_older:
+        description: "Also plan unapplied files below the ledger floor (001-012 predate schema_migrations; leave off)"
+        type: boolean
+        default: false
 
 # one migrator per database; a queued run waits rather than killing one mid-file.
 concurrency:
@@ -57,9 +65,10 @@ jobs:
 
       # exits 1 whenever anything is unapplied, which is the normal state before
       # a migrate, so its report is informational here.
+      # exits 1 whenever anything is unapplied, which is the normal state before
+      # a migrate; the apply step is the one that decides.
       - name: Report migration state (before)
-        continue-on-error: true
-        run: python scraper/check_migrations.py --${{ inputs.target }}
+        run: python scraper/check_migrations.py --${{ inputs.target }} || echo "(informational)"
 
       - name: Apply migrations (${{ inputs.apply && 'APPLY' || 'dry run' }})
         env:
@@ -67,4 +76,6 @@ jobs:
         run: |
           python scraper/apply_migrations.py --${{ inputs.target }} \
             ${{ inputs.apply && '--apply' || '--dry-run' }} \
+            ${{ inputs.rerecord_mismatch && '--rerecord-mismatch' || '' }} \
+            ${{ inputs.include_older && '--include-older' || '' }} \
             ${ONLY:+--only "$ONLY"}
