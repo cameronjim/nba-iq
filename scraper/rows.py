@@ -13,6 +13,7 @@ from parsing import (
     parse_game_date,
     parse_matchup,
     parse_minutes,
+    resolve_positions,
     season_start_date,
     season_type_from_game_id,
 )
@@ -352,6 +353,34 @@ def roster_rows_from_nba_players_index(next_data: Mapping) -> dict[str, str]:
             continue
         snapshot[player_id] = team_id
     return snapshot
+
+
+def player_rows_from_nba_players_index(next_data: Mapping) -> list[tuple]:
+    # (nba_id, name, team abbr, position, headshot_url) per rostered player.
+    # players without a current team are skipped: there is nothing to label.
+    page_props = (next_data.get("props") or {}).get("pageProps") or {}
+    rows: list[tuple] = []
+    for raw in page_props.get("players") or []:
+        player_id = str(raw.get("PERSON_ID") or "").strip()
+        team_abbr = TEAM_ID_TO_ABBR.get(str(raw.get("TEAM_ID") or "").strip())
+        name = " ".join(
+            part
+            for part in (
+                str(raw.get("PLAYER_FIRST_NAME") or "").strip(),
+                str(raw.get("PLAYER_LAST_NAME") or "").strip(),
+            )
+            if part
+        )
+        if not player_id or not team_abbr or not name:
+            continue
+        rows.append((
+            player_id,
+            name,
+            team_abbr,
+            resolve_positions("", str(raw.get("POSITION") or "").strip()),
+            f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
+        ))
+    return rows
 
 
 def build_player_game_log_row(

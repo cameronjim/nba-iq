@@ -2,13 +2,19 @@ import sqlite3
 from datetime import date, timedelta
 
 import pytest
+import requests
 
+import fetching
+import scrapes
+import truth_layer
 from backfill import NOT_POSTPONED_PREDICATE
 from config import (
     current_season,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
     ROSTER_SNAPSHOT_SOURCE,
     SEASON,
+    STATS_HEADERS,
+    STATS_PROBE_TIMEOUT_SECONDS,
     V2_INACTIVE_UNRELIABLE_FROM,
 )
 from database import is_write_statement
@@ -35,6 +41,7 @@ from rows import (
     normalize_inactive_rows,
     plan_roster_snapshot,
     plan_stint_change,
+    player_rows_from_nba_players_index,
     roster_rows_from_nba_players_index,
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
@@ -1104,3 +1111,157 @@ class TestSnapshotStintVersusGameLog:
 
     def test_no_open_stint_is_never_skipped(self):
         assert stint_is_newer_than_game_log(None, date(2026, 1, 10)) is False
+
+
+class FakeCursor:
+    def __init__(self):
+        self.statements = []
+
+    def execute(self, sql, params=None):
+        self.statements.append(sql)
+
+    def close(self):
+        pass
+
+
+class FakeConn:
+    def __init__(self):
+        self.cursor_ = FakeCursor()
+
+    def cursor(self):
+        return self.cursor_
+
+
+PLAYERS_INDEX = {"props": {"pageProps": {"players": [
+    {
+        "PERSON_ID": 203507, "PLAYER_FIRST_NAME": "Giannis",
+        "PLAYER_LAST_NAME": "Antetokounmpo", "TEAM_ID": 1610612748,
+        "TEAM_ABBREVIATION": "MIA", "POSITION": "F",
+    },
+    {
+        "PERSON_ID": 1630163, "PLAYER_FIRST_NAME": "LaMelo",
+        "PLAYER_LAST_NAME": "Ball", "TEAM_ID": 1610612750, "POSITION": "G",
+    },
+    {
+        "PERSON_ID": 5, "PLAYER_FIRST_NAME": "Some", "PLAYER_LAST_NAME": "Rookie",
+        "TEAM_ID": 1610612738, "POSITION": None,
+    },
+    {"PERSON_ID": 6, "PLAYER_FIRST_NAME": "Free", "PLAYER_LAST_NAME": "Agent", "TEAM_ID": 0},
+    {"PERSON_ID": 7, "PLAYER_FIRST_NAME": "", "PLAYER_LAST_NAME": "", "TEAM_ID": 1610612738},
+]}}}
+
+
+class TestPlayerRowsFromIndex:
+    def test_maps_team_abbreviation_name_position_and_headshot(self):
+        rows = player_rows_from_nba_players_index(PLAYERS_INDEX)
+
+        assert rows[0] == (
+            "203507", "Giannis Antetokounmpo", "MIA", "SF,PF",
+            "https://cdn.nba.com/headshots/nba/latest/1040x760/203507.png",
+        )
+        assert rows[1][:4] == ("1630163", "LaMelo Ball", "MIN", "PG,SG")
+
+    def test_missing_position_maps_to_empty_and_unusable_rows_are_skipped(self):
+        rows = player_rows_from_nba_players_index(PLAYERS_INDEX)
+
+        assert [r[0] for r in rows] == ["203507", "1630163", "5"]
+        assert rows[2][3] == ""
+
+
+class TestScrapePlayersFromWeb:
+    def test_dry_run_counts_rows_and_writes_nothing(self, monkeypatch):
+        monkeypatch.setattr(scrapes, "_fetch_nba_web_players", lambda: PLAYERS_INDEX)
+        conn = FakeConn()
+
+        written = scrapes.scrape_players_from_web(conn, dry_run=True)
+
+        assert written == 3
+        assert conn.cursor_.statements == []
+
+    def test_a_failed_index_fetch_writes_nothing(self, monkeypatch):
+        def boom():
+            raise RuntimeError("down")
+
+        monkeypatch.setattr(scrapes, "_fetch_nba_web_players", boom)
+
+        assert scrapes.scrape_players_from_web(FakeConn(), dry_run=True) == 0
+
+    def test_unreachable_stats_goes_straight_to_the_web_path(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            scrapes, "scrape_players_from_web",
+            lambda conn, dry_run=False: calls.append(dry_run),
+        )
+        monkeypatch.setattr(
+            scrapes, "_fetch_cbs_positions",
+            lambda: pytest.fail("cbs must not be fetched"),
+        )
+
+        scrapes.scrape_players(FakeConn(), dry_run=True, stats_reachable=False)
+
+        assert calls == [True]
+
+    def test_a_stats_failure_falls_back_to_the_web_path(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(scrapes, "_fetch_cbs_positions", lambda: {})
+        monkeypatch.setattr(scrapes, "_fetch_nba_positions", lambda: {})
+        monkeypatch.setattr(scrapes.time, "sleep", lambda s: None)
+
+        def boom(season):
+            raise RuntimeError("blocked")
+
+        monkeypatch.setattr(scrapes, "fetch_player_stats", boom)
+        monkeypatch.setattr(
+            scrapes, "scrape_players_from_web",
+            lambda conn, dry_run=False: calls.append(dry_run),
+        )
+
+        scrapes.scrape_players(FakeConn(), dry_run=True)
+
+        assert calls == [True]
+
+
+class TestStatsReachability:
+    def test_a_timeout_means_unreachable(self, monkeypatch):
+        def timeout(*args, **kwargs):
+            raise requests.exceptions.ReadTimeout("tarpit")
+
+        monkeypatch.setattr(fetching.requests, "get", timeout)
+
+        assert fetching.stats_nba_reachable() is False
+
+    def test_an_ok_response_means_reachable_and_sends_browser_headers(self, monkeypatch):
+        seen = {}
+
+        class Resp:
+            def raise_for_status(self):
+                pass
+
+        def fake_get(url, **kwargs):
+            seen.update(kwargs)
+            return Resp()
+
+        monkeypatch.setattr(fetching.requests, "get", fake_get)
+
+        assert fetching.stats_nba_reachable() is True
+        assert seen["headers"] is STATS_HEADERS
+        assert seen["timeout"] == STATS_PROBE_TIMEOUT_SECONDS
+
+    def test_schedule_skips_stats_when_unreachable_and_fails_if_nba_com_is_empty(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(truth_layer, "_start_ingestion_run", lambda *a, **k: 1)
+        monkeypatch.setattr(truth_layer, "_finish_ingestion_run", lambda *a, **k: None)
+        monkeypatch.setattr(truth_layer, "fetch_nba_web_schedule_rows", lambda s: [])
+        monkeypatch.setattr(
+            truth_layer, "_fetch_league_schedule",
+            lambda s: pytest.fail("stats.nba.com must not be called"),
+        )
+        monkeypatch.setattr(
+            truth_layer, "_fetch_team_game_logs",
+            lambda *a, **k: pytest.fail("stats.nba.com must not be called"),
+        )
+
+        ok = truth_layer.scrape_schedule(FakeConn(), "2026-27", stats_reachable=False)
+
+        assert ok is False
