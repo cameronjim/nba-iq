@@ -60,17 +60,29 @@ describe('BettingPage', () => {
     renderPage(true);
 
     // assert
-    expect(screen.getByRole('status', { name: 'Loading upcoming games and odds' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: "Loading tonight's games" })).toBeInTheDocument();
     expect(screen.getByRole('status', { name: 'Loading bets' })).toBeInTheDocument();
     expect(screen.getByRole('status', { name: 'Loading picks' })).toBeInTheDocument();
     expect(document.querySelector('.loading-spinner')).toBeNull();
   });
 
-  it('shows the sign-in prompt, odds board, chat, and glossary when logged out', async () => {
+  it('stacks the three plainly named sections when logged in', async () => {
+    // arrange + act
+    renderPage(true);
+
+    // assert
+    const headings = (await screen.findAllByRole('heading', { level: 2 })).map((h) => h.textContent);
+    expect(headings.slice(0, 3)).toEqual(["Tonight's games", 'Picks', 'My bets']);
+    expect(screen.getByText(/win chances below are Claude's estimates, not the model's/)).toBeInTheDocument();
+    expect(screen.getByText(/Model-based player props will appear here when available/)).toBeInTheDocument();
+  });
+
+  it('shows the sign-in prompt, games, chat, and glossary when logged out', async () => {
     renderPage(false);
 
     expect(await screen.findByText(/Sign in to see Claude's betting picks/i)).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /Upcoming Games & Odds/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: "Tonight's games" })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'My bets' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /New to betting\? Start here/i })).toBeInTheDocument();
     expect(screen.getByText('Ask Claude')).toBeInTheDocument();
     expect(picksMock).not.toHaveBeenCalled();
@@ -80,7 +92,7 @@ describe('BettingPage', () => {
   it('loads picks, ledger, and prefs when logged in', async () => {
     renderPage(true);
 
-    expect(await screen.findByText(/No bettable games right now/i)).toBeInTheDocument();
+    expect(await screen.findAllByText('No games with posted odds in the next two days.')).toHaveLength(2);
     expect(picksMock).toHaveBeenCalled();
     expect(betsMock).toHaveBeenCalled();
     expect(screen.getByText('Betting Preferences')).toBeInTheDocument();
@@ -91,7 +103,7 @@ describe('BettingPage', () => {
 
     renderPage(false);
 
-    expect(await screen.findByText(/Failed to load odds/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Try Again/i })).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load the odds right now.")).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 });

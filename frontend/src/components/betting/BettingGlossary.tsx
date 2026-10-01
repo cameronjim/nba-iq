@@ -13,7 +13,7 @@ const ENTRIES = [
   },
   {
     term: 'Implied probability',
-    body: 'What the price says about the chances. Odds of -110 imply about a 52.4% chance; +150 implies 40%. We show this next to every line. A bet is only "good value" if the TRUE chance is higher than the implied one. That gap is the edge.',
+    body: 'What the price says about the chances. Odds of -110 imply about a 52.4% chance; +150 implies 40%. Open Prices on any game to see the odds, and each of Claude\'s picks compares its estimate with this number. A bet is only "good value" if the TRUE chance is higher than the implied one. That gap is the edge.',
   },
   {
     term: 'Vig (the house cut)',

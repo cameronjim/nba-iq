@@ -1,16 +1,27 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useBettingPicks } from '../hooks/useBettingPicks';
 import { useBetLedger } from '../hooks/useBetLedger';
-import { BettingOddsBoard } from '../components/betting/BettingOddsBoard';
-import { BettingPicksPanel } from '../components/betting/BettingPicksPanel';
+import { GamesList } from '../components/betting/GamesList';
+import { PicksList } from '../components/betting/PicksList';
+import { ModelPropsSection } from '../components/betting/ModelPropsSection';
+import { MyBets } from '../components/betting/MyBets';
 import { BettingPrefsPanel } from '../components/betting/BettingPrefsPanel';
-import { BetLedger } from '../components/betting/BetLedger';
 import { BettingGlossary } from '../components/betting/BettingGlossary';
 import { ChatBox } from '../components/ChatBox';
 
 interface BettingPageProps {
   isLoggedIn: boolean;
 }
+
+const Section = ({ title, children }: { title: string; children: ReactNode }): JSX.Element => (
+  <section className="space-y-3">
+    <h2 className="font-display text-xl font-semibold uppercase tracking-wide border-b border-base-300 pb-1">
+      {title}
+    </h2>
+    {children}
+  </section>
+);
 
 export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
   const {
@@ -19,54 +30,60 @@ export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
   } = useBettingPicks(isLoggedIn);
   const {
     bets, summary, loading: ledgerLoading, error: ledgerError,
-    trackBet, settleBet, removeBet,
+    trackBet, settleBet, removeBet, reload: reloadLedger,
   } = useBetLedger(isLoggedIn);
 
   return (
-    <div className="max-w-[1400px] mx-auto px-4 py-6 space-y-6">
-      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Betting</h1>
-      {isLoggedIn ? (
-        <>
-          <BettingPrefsPanel onSaved={() => void reloadPicks(true)} />
-          <BettingPicksPanel
-            picks={picks}
-            loading={picksLoading}
-            refreshing={refreshing}
-            error={picksError}
-            onReload={(refresh) => void reloadPicks(refresh)}
-          />
-          <BetLedger
+    <div className="max-w-[1100px] mx-auto px-4 py-6 space-y-8">
+      <div className="space-y-1">
+        <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Betting</h1>
+        <p className="text-xs text-muted">
+          Picks are informational, not betting advice. 21+ where legal. Problem gambling help: 1-800-GAMBLER.{' '}
+          <Link to="/terms" className="link">Terms</Link>
+        </p>
+      </div>
+
+      <Section title="Tonight's games">
+        <GamesList games={odds} loading={oddsLoading} error={oddsError} onRetry={reloadOdds} />
+      </Section>
+
+      <Section title="Picks">
+        <p className="text-xs text-muted">
+          The win chances below are Claude's estimates, not the model's. Model-based player props will appear
+          here when available.
+        </p>
+        {isLoggedIn ? (
+          <>
+            <BettingPrefsPanel onSaved={() => void reloadPicks(true)} />
+            <PicksList
+              picks={picks}
+              loading={picksLoading}
+              refreshing={refreshing}
+              error={picksError}
+              onReload={(refresh) => void reloadPicks(refresh)}
+            />
+          </>
+        ) : (
+          <p className="text-sm">Sign in to see Claude's betting picks and track your own bets.</p>
+        )}
+        <ModelPropsSection />
+      </Section>
+
+      {isLoggedIn && (
+        <Section title="My bets">
+          <MyBets
             bets={bets}
             summary={summary}
             loading={ledgerLoading}
             error={ledgerError}
             games={odds}
+            onRetry={() => void reloadLedger()}
             onTrackBet={trackBet}
             onSettleBet={settleBet}
             onRemoveBet={removeBet}
           />
-        </>
-      ) : (
-        <div className="border border-base-300 p-4 space-y-1">
-          <p className="font-semibold">Sign in to see Claude's betting picks</p>
-          <p className="text-sm text-muted max-w-xl">
-            Signed-in users get Best Value, Safe, and Hail Mary picks based on their preferences, a suggested
-            parlay, and a bet tracker. The odds board below is free to browse.
-          </p>
-        </div>
+        </Section>
       )}
-
-      <p className="text-xs text-muted">
-        Picks are informational, not betting advice. 21+ where legal. Problem gambling help: 1-800-GAMBLER.{' '}
-        <Link to="/terms" className="link">Terms</Link>
-      </p>
-
-      <section>
-        <h2 className="font-display text-xl font-semibold uppercase tracking-wide border-b border-base-300 pb-1 mb-3">
-          Upcoming Games & Odds
-        </h2>
-        <BettingOddsBoard games={odds} loading={oddsLoading} error={oddsError} onRetry={reloadOdds} />
-      </section>
 
       <ChatBox
         contextType="betting"

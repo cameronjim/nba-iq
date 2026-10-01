@@ -19,8 +19,16 @@ export class BettingPage {
     return this.page.getByText(/Sign in to see Claude's betting picks/i);
   }
 
-  oddsBoardHeading(): Locator {
-    return this.page.getByRole('heading', { name: /Upcoming Games & Odds/i });
+  gamesHeading(): Locator {
+    return this.page.getByRole('heading', { name: "Tonight's games" });
+  }
+
+  picksHeading(): Locator {
+    return this.page.getByRole('heading', { name: 'Picks', exact: true });
+  }
+
+  betsHeading(): Locator {
+    return this.page.getByRole('heading', { name: 'My bets' });
   }
 
   glossaryHeading(): Locator {
@@ -32,20 +40,24 @@ export class BettingPage {
     return this.page.getByLabel(`Toggle explanation of ${term}`);
   }
 
-  categoryHeading(name: 'Best Value' | 'Safe' | 'Hail Mary'): Locator {
-    return this.page.getByRole('heading', { name, exact: true });
+  gameRow(sentence: string): Locator {
+    return this.page.getByRole('listitem').filter({ hasText: sentence });
   }
 
-  parlayHeading(): Locator {
-    return this.page.getByRole('heading', { name: /Suggested Parlay/i });
+  pricesToggle(row: Locator): Locator {
+    return row.getByText('Prices', { exact: true });
   }
 
-  ledgerHeading(): Locator {
-    return this.page.getByRole('heading', { name: 'My Bets' });
+  parlayToggle(): Locator {
+    return this.page.getByText("Claude's parlay idea", { exact: true });
   }
 
   addBetButton(): Locator {
-    return this.page.getByRole('button', { name: '+ Add bet' });
+    return this.page.getByRole('button', { name: 'Add a bet' });
+  }
+
+  manageToggle(betText: string): Locator {
+    return this.page.getByLabel(`Manage bet: ${betText}`);
   }
 
   prefsToggle(): Locator {
@@ -61,6 +73,6 @@ export class BettingPage {
   }
 
   seeMoreButton(): Locator {
-    return this.page.getByRole('button', { name: /See more/ });
+    return this.page.getByRole('button', { name: /^See \d+ more$/ });
   }
 }
