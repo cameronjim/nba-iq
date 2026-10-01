@@ -111,6 +111,12 @@ python train.py --version 2026-08-16
 python evaluate.py --version 2026-08-16
 python evaluate.py --version 2026-08-16 --rate-halflife-selection
 
+# 3b. phase-2 challengers (never served): poisson count models for STL/BLK/FG3M/TOV
+#     vs the rate composition, and per-minutes-tier interval offsets vs pooled ->
+#     reports/counts_<version>_*.csv
+python report_counts.py --version 2026-08-16
+python train.py --version 2026-08-16 --tiered-quantiles   # adds production.quantiles_by_tier
+
 # 4. predict: next games -> parquet, and optionally to postgres
 python predict.py --version 2026-08-16 --out data\predictions.parquet
 python predict.py --version 2026-08-16 --statuses data\statuses.parquet --horizon lock
@@ -242,7 +248,14 @@ fnba_ml/
   evaluate.py            rolling-origin harness, segments, skill scores, champion
                          picks, composition parity check (per stat), the 9-cat
                          rate ladder and the inner-fold halflife selection
-  intervals.py           empirical residual quantiles -> non-crossing P10/P50/P90
+  intervals.py           empirical residual quantiles -> non-crossing P10/P50/P90,
+                         plus the per-minutes-tier challenger (pooled fallback
+                         below MIN_TIER_ROWS = 200 residuals)
+  count_model.py         challenger: LightGBM poisson for STL/BLK/FG3M/TOV with a
+                         log E[MIN] offset, small grid chosen on inner folds; the
+                         docstring states how it differs from tournament M6
+  eval_counts.py         tidy [variant, endpoint, stat, cohort, n, value] endpoints
+                         for both challengers, importable without a dataset
   coherence.py           opt-in team-minutes and points-identity corrections (pure)
   eval_coherence.py      their retrospective endpoints and the minute-sum diagnostic
   store.py               the migration-014 row builder (pure) and its transaction
@@ -512,7 +525,7 @@ protocol says so up front rather than discovering it in April.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 680 tests
+python -m pytest tests -q      # 704 tests
 ```
 
 | File | Covers |
@@ -528,6 +541,8 @@ python -m pytest tests -q      # 680 tests
 | `tests/test_teammates.py` | the **oracle** (v2) teammate family, kept because it is the evaluation bracket's upper bound and an oracle whose arithmetic is wrong is a useless bound: self-exclusion under a rebuilt feature frame, the split as-of contract with negative controls on both halves, the usage arithmetic against a hand computation, rank independence from the row's own availability |
 | `tests/test_teammates_v3.py` | the **served** (v3) family: teammate-outcome invariance pinned to PASS on the expected columns and to **FAIL** on the oracle ones; closed-form sensitivity to `p_j` for every column; the shrinkage weight at four points; career-scoped magnitudes crossing the season boundary; backward-only reliability features; the base model refusing teammate context; the cross-fit's out-of-fold stamp on every row plus a tampered-cutoff rejection; the team-game block permutation collapsing both gain share and out-of-sample MAE |
 | `tests/test_prospective_freeze.py` | **the 2026-27 pre-registration, enforced.** Every pinned artifact checksum recomputed from the bytes on disk, per file so a failure names *which* artifact moved, plus an assertion that the pinned set covers the whole directory (six passing per-file checks would not notice a seventh file appearing). Then the frozen serving configuration against the live module: champions, per-stat halflives and estimators (parametrised per stat, with STL's `expanding` called out separately because it is the most surprising entry), the 51-column feature contract by digest, the override constants against `overrides.DEFAULT_POLICY` — including the PROBABLE floor condition `s >= 1 - w`, which the defaults satisfy with *equality* and which therefore needs a float tolerance to be checkable at all — the horizon windows, the coherence constraints and the frozen cohort definitions. Then the protocol's own shape: exactly three look dates asserted literally, ordered, inside the season, with non-decreasing row minimums; and the falsification table checked for the properties that make it binding — every endpoint names all three looks (a `None` is a pre-registered "no power here", a *missing* key is an oversight), no threshold is a placeholder, no endpoint is report-only everywhere, thresholds only tighten across looks, no bar demands more than the retrospective effect it tests, and the Dec-1 teammate-context bars sit on the *worse* side of zero because at ~1.5 month-blocks the MDE exceeds the effect. The one row we expect to fail (REB/TOV/FG3M at halflife 20, which section 12.4's validation rows already contradict) is pinned as expected-to-fail |
+| `tests/test_count_model.py` | the count challenger: fits and predicts non-negative counts on the fixture, refuses training rows past its cutoff and a minutes forecast that is in-fold or from another cutoff, doubling the minutes forecast doubles the conditional count (and recovers a hand-built constant rate), inner-fold selection returns a grid member deterministically, and the count endpoints computed by hand |
+| `tests/test_intervals_tiered.py` | tiered intervals: a wide tier gets wider offsets than a narrow one, the pooled fallback below `MIN_TIER_ROWS`, non-crossing per tier even from unsorted hand offsets, the metadata round trip, `train.py --tiered-quantiles` off by default, coverage and width endpoints by hand, and `report_counts.run` end to end on the fixture |
 | `tests/test_serving_context.py` | the serving wiring: an injury report must raise a teammate's `exp_vacated_minutes` by exactly the probability shift times the absent player's magnitude, the as-of filter applies at the context stage too, an absent report is an identity, the rebuilt features carry the base model's cutoff, and the corrected measured-offset horizon definition with its stored per-run facts |
 
 Every leakage test runs **twice**, once per universe construction, so a dropped

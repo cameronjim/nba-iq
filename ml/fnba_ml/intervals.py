@@ -17,10 +17,12 @@ what that buys and what it does not:
          below -8.4 points, then subtracting 8.4 gives a P10 that was right 10%
          of the time over that window.
   does   NOT vary the width by player. a fringe player and a star get the same
-         offsets, though the star's true spread is wider. a per-tier version is
-         the obvious next step; a fitted quantile model is not, for the same
-         reason the conditional mean is not a fitted model (README section
-         "the one-sentence design").
+         offsets, though the star's true spread is wider. the per-tier version
+         (:func:`fit_residual_quantiles_by_tier`) is a challenger built the same
+         way, one offset set per minutes tier, and it is not served. a fitted
+         quantile model is not the next step, for the same reason the
+         conditional mean is not a fitted model (README section "the
+         one-sentence design").
 
 NON-CROSSING is enforced twice, on purpose. offsets are sorted when they are
 built, and the emitted quantiles are sorted again row-wise when they are
@@ -37,7 +39,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .config import RATE_TARGETS
+from .config import RATE_TARGETS, TIER_BASIS, TIER_ORDER
 
 # P10/P50/P90. the 80% central interval is what evaluate.py already reports
 # coverage for (NOMINAL_COVERAGE), so the tails line up with the existing
@@ -186,4 +188,133 @@ def attach_quantiles(
     columns = quantile_columns(offsets.target, offsets.levels)
     for level, values in apply_quantiles(point, offsets, floor).items():
         out[columns[level]] = values
+    return out
+
+
+# below this many residuals a tier's own quantiles are noise, so it takes the
+# pooled offsets instead.
+MIN_TIER_ROWS = 200
+
+TIER_COL = "MIN_TIER"
+
+# the pooled set rides in the tiered mapping under the cohort label eval_core uses.
+POOLED_KEY = "ALL"
+
+
+def tier_labels(frame: pd.DataFrame, tier_col: str = TIER_COL) -> np.ndarray:
+    """the frame's tier column, or the TIER_BASIS-derived tier when it is absent."""
+    if tier_col in frame.columns:
+        return frame[tier_col].astype(object).to_numpy()
+    from .features import assign_minutes_tier  # noqa: PLC0415
+
+    return assign_minutes_tier(frame).to_numpy()
+
+
+def fit_residual_quantiles_by_tier(
+    frame: pd.DataFrame,
+    target: str,
+    estimate_col: str,
+    tier_col: str = TIER_COL,
+    levels: tuple[float, ...] = QUANTILE_LEVELS,
+    min_tier_rows: int = MIN_TIER_ROWS,
+    window: tuple[str, str] | None = None,
+) -> dict[str, QuantileOffsets]:
+    """tier -> offsets, each fitted like :func:`fit_residual_quantiles`.
+
+    the mapping holds the pooled set under POOLED_KEY and an entry for every tier
+    in TIER_ORDER plus any other label on the frame. a tier with fewer than
+    ``min_tier_rows`` finite residuals is handed the pooled object itself, which
+    is what lets the serialiser record it as a fallback rather than a fit.
+    """
+    actual = frame[target].to_numpy(dtype=float)
+    predicted = frame[estimate_col].to_numpy(dtype=float)
+    pooled = fit_residual_quantiles(actual, predicted, target, levels, window)
+    tiers = tier_labels(frame, tier_col)
+    finite = np.isfinite(actual - predicted)
+
+    labels = list(TIER_ORDER) + sorted(
+        {str(t) for t in tiers if str(t) not in TIER_ORDER}
+    )
+    out: dict[str, QuantileOffsets] = {POOLED_KEY: pooled}
+    for tier in labels:
+        mask = (tiers == tier) & finite
+        if int(mask.sum()) < min_tier_rows:
+            out[tier] = pooled
+            continue
+        out[tier] = fit_residual_quantiles(
+            actual[mask], predicted[mask], target, levels, window
+        )
+    return out
+
+
+def fallback_tiers(by_tier: dict[str, QuantileOffsets]) -> list[str]:
+    """the tiers that took the pooled offsets instead of their own."""
+    pooled = by_tier[POOLED_KEY]
+    return [t for t, q in by_tier.items() if t != POOLED_KEY and q is pooled]
+
+
+def apply_quantiles_by_tier(
+    point: np.ndarray | pd.Series,
+    tiers: np.ndarray | pd.Series,
+    by_tier: dict[str, QuantileOffsets],
+    floor: float | None = VALUE_FLOOR,
+) -> dict[float, np.ndarray]:
+    """:func:`apply_quantiles` tier by tier; an unseen tier takes the pooled set.
+
+    non-crossing holds per tier because each tier goes through the same sorted
+    construction, and every row belongs to exactly one tier.
+    """
+    base = np.asarray(point, dtype=float)
+    labels = np.asarray(tiers, dtype=object)
+    pooled = by_tier[POOLED_KEY]
+    out = {level: np.full(base.shape, np.nan) for level in pooled.levels}
+    for tier in sorted({str(t) for t in labels}):
+        mask = labels == tier
+        offsets = by_tier.get(tier, pooled)
+        for level, values in apply_quantiles(base[mask], offsets, floor).items():
+            out[level][mask] = values
+    return out
+
+
+def attach_quantiles_by_tier(
+    frame: pd.DataFrame,
+    point: np.ndarray | pd.Series,
+    by_tier: dict[str, QuantileOffsets],
+    tier_col: str = TIER_COL,
+    floor: float | None = VALUE_FLOOR,
+) -> pd.DataFrame:
+    """write tiered ``Q10_<target>``/``Q50_<target>``/``Q90_<target>`` onto a copy."""
+    out = frame.copy()
+    pooled = by_tier[POOLED_KEY]
+    columns = quantile_columns(pooled.target, pooled.levels)
+    values = apply_quantiles_by_tier(point, tier_labels(frame, tier_col), by_tier, floor)
+    for level, column in columns.items():
+        out[column] = values[level]
+    return out
+
+
+def tiered_quantiles_as_dict(
+    by_tier: dict[str, QuantileOffsets], min_tier_rows: int = MIN_TIER_ROWS
+) -> dict[str, object]:
+    """json form for metadata.json, written beside the pooled production.quantiles."""
+    return {
+        "tier_basis": TIER_BASIS,
+        "min_tier_rows": int(min_tier_rows),
+        "pooled": by_tier[POOLED_KEY].as_dict(),
+        "fallback": fallback_tiers(by_tier),
+        "tiers": {
+            tier: q.as_dict() for tier, q in by_tier.items()
+            if tier != POOLED_KEY and tier not in fallback_tiers(by_tier)
+        },
+    }
+
+
+def tiered_quantiles_from_dict(payload: dict[str, object]) -> dict[str, QuantileOffsets]:
+    """inverse of :func:`tiered_quantiles_as_dict`; fallbacks share the pooled object."""
+    pooled = QuantileOffsets.from_dict(payload["pooled"])  # type: ignore[arg-type]
+    out: dict[str, QuantileOffsets] = {POOLED_KEY: pooled}
+    for tier, q in payload.get("tiers", {}).items():  # type: ignore[union-attr]
+        out[str(tier)] = QuantileOffsets.from_dict(q)
+    for tier in payload.get("fallback", []):  # type: ignore[union-attr]
+        out[str(tier)] = pooled
     return out
