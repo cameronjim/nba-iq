@@ -4,6 +4,7 @@ import {
   getAuthToken, getCurrentUser, getAdminStats, getAdminUsers, getAdminViews,
   type AdminStats, type AdminUser, type AdminPageView,
 } from '../api/client';
+import { PropJobsPanel } from '../components/admin/PropJobsPanel';
 import { SkeletonBlock, SkeletonTable } from '../components/Skeleton';
 import { STAT_PLACEHOLDER } from '../utils/stats';
 
@@ -104,6 +105,8 @@ export const AdminPage = (): JSX.Element => {
           <div className="stat-desc">signed-in visitors</div>
         </div>
       </div>
+
+      <PropJobsPanel />
 
       <section>
         <h2 className="mb-3 font-display text-2xl font-semibold uppercase tracking-wide">Users ({users.length})</h2>

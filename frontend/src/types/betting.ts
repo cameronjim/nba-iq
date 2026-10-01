@@ -72,6 +72,32 @@ export interface PropPicksResponse {
   picks: PropPick[];
 }
 
+export interface PropRefreshResult {
+  snapshots: number;
+  candidates: number;
+  recorded: number;
+}
+
+export interface PropSettleResult {
+  examined: number;
+  settled: number;
+  by_result: { win: number; loss: number; push: number; void: number };
+}
+
+export interface PropMarketSummary {
+  market: PropMarket | 'all';
+  picks: number;
+  settled: number;
+  wins: number;
+  losses: number;
+  pushes: number;
+  voids: number;
+  hit_rate: number | null;
+  avg_ev: number | null;
+  clv_count: number;
+  avg_clv_points: number | null;
+}
+
 export type WagerType = 'cash' | 'bonus_bet' | 'odds_boost';
 
 export interface Bet {
