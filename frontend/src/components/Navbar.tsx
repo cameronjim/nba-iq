@@ -12,7 +12,6 @@ const tabs = [
   { to: '/', label: 'Home' },
   { to: '/stats', label: 'Stats' },
   { to: '/projections', label: 'Projections' },
-  { to: '/watchlist', label: 'Watchlist' },
   { to: '/betting', label: 'Betting' },
   { to: '/fantasy', label: 'My Team' },
   { to: '/improve', label: 'Improve Team' },

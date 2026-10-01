@@ -86,7 +86,7 @@ describe('Navbar', () => {
     // assert
     const labels = screen.getAllByRole('link').map((l) => l.textContent).filter((l) => l !== 'NBA IQ');
     expect(labels).toEqual([
-      'Home', 'Stats', 'Projections', 'Watchlist', 'Betting', 'My Team', 'Improve Team', 'History', '2K Ratings',
+      'Home', 'Stats', 'Projections', 'Betting', 'My Team', 'Improve Team', 'History', '2K Ratings',
     ]);
     expect(screen.queryByText(/Updated .* ago|Data status/)).not.toBeInTheDocument();
   });
