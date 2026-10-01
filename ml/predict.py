@@ -9,6 +9,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -73,6 +74,7 @@ from fnba_ml.overrides import (  # noqa: E402
     override_summary,
     resolve_overrides,
 )
+from fnba_ml.scenarios import scenario_summary, score_with_scenarios  # noqa: E402
 from fnba_ml.store import (  # noqa: E402
     PRODUCTION_CHANNEL,
     RUN_CHANNELS,
@@ -130,6 +132,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coherence", choices=COHERENCE_VARIANTS, default=COHERENCE_NONE,
                         help="serving-time coherence correction: team minutes to 240, "
                              "the points identity, both, or none (frozen serving)")
+    parser.add_argument("--scenarios", action="store_true",
+                        help="score team-games with a questionable or doubtful star "
+                             "once per play/sit world and mix the outputs (off by "
+                             "default); writes a <out>_scenarios.parquet audit")
     return parser.parse_args(argv)
 
 
@@ -162,6 +168,11 @@ def load_version(version: str, models_dir: Path):
         joblib.load(base_path),
         metadata,
     )
+
+
+def scenario_audit_path(out: Path) -> Path:
+    """where --scenarios writes its per-pivotal-player audit, beside --out."""
+    return out.with_name(f"{out.stem}_scenarios.parquet")
 
 
 def load_statuses(path: Path | None) -> pd.DataFrame | None:
@@ -198,16 +209,29 @@ def rebuild_context(
     statuses: pd.DataFrame | None,
     as_of: pd.Timestamp,
     policy=DEFAULT_POLICY,
+    forced_probabilities: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """returns (features with the expected context rebuilt, a per-row audit frame)."""
+    """returns (features with the expected context rebuilt, a per-row audit frame).
+
+    ``forced_probabilities`` maps a player id to the p_j his teammates' sums read,
+    applied after the injury override; the scenario path uses it to pin one world.
+    """
     # the override must land on base p BEFORE the teammate sums are taken, or a
     # ruled-out star's minutes never move to his teammates.
     base_p = base_model.predict_proba(features)
     resolved = resolve_overrides(
         features["PLAYER_ID"], base_p, statuses, policy, as_of=as_of
     )
+    probability = resolved.probability
+    forced = None
+    if forced_probabilities:
+        pinned = features["PLAYER_ID"].astype(str).map(
+            {str(k): float(v) for k, v in forced_probabilities.items()}
+        )
+        forced = pinned.notna().to_numpy()
+        probability = np.where(forced, pinned.to_numpy(dtype=float), probability)
     rebuilt = attach_expected_context(
-        features, resolved.probability, pd.Timestamp(base_model.cutoff)
+        features, probability, pd.Timestamp(base_model.cutoff)
     )
     validate_out_of_fold(rebuilt, P_CONTEXT, P_CONTEXT_CUTOFF, "p_context")
 
@@ -215,9 +239,11 @@ def rebuild_context(
         "PLAYER_ID": features["PLAYER_ID"].to_numpy(),
         "GAME_ID": features["GAME_ID"].to_numpy(),
         "P_CONTEXT_BASE": base_p,
-        "P_CONTEXT": resolved.probability,
+        "P_CONTEXT": probability,
         "CONTEXT_OVERRIDDEN": resolved.applies,
     })
+    if forced is not None:
+        audit["CONTEXT_FORCED"] = forced
     log.info(
         "context rebuilt from base p on %d rows; %d of them corrected by the injury "
         "report before the teammate sums were taken",
@@ -528,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     # context, not only the row's own probability, or the projections page would
     # correctly show a ruled-out star at ~0 and still show his backup the minutes of
     # a night the star plays.
+    slate = upcoming
     try:
         upcoming, context_audit = rebuild_context(
             upcoming, base_model, statuses, statuses_as_of, DEFAULT_POLICY
@@ -555,11 +582,29 @@ def main(argv: list[str] | None = None) -> int:
     predictions = apply_status_overrides(
         predictions, statuses, DEFAULT_POLICY, as_of=statuses_as_of
     )
-    # after the overrides so the minute sums use the served P(play).
+    scenario_audit: pd.DataFrame | None = None
+    if args.scenarios:
+        try:
+            predictions, scenario_audit = score_with_scenarios(
+                slate, base_model, model, minutes_model, metadata, statuses,
+                statuses_as_of, DEFAULT_POLICY,
+                baseline=predictions, rebuild=rebuild_context, score=build_predictions,
+            )
+        except LeakageError as exc:
+            raise SystemExit(f"refusing to emit scenario predictions: {exc}") from exc
+
+    # last: after the overrides so the minute sums use the served P(play), and
+    # after the scenario mix so a rescored team-game is corrected too.
     predictions = apply_coherence(predictions, args.coherence)
 
     source = universe_source(upcoming, metadata)
     notes = args.notes
+    if scenario_audit is not None:
+        scenario_facts = scenario_summary(scenario_audit)
+        notes = "; ".join(filter(None, [
+            f"scenarios=on; scenario_team_games={scenario_facts['team_games']}",
+            notes,
+        ]))
     horizon = None if args.horizon == NO_HORIZON else args.horizon
 
     # the run-level half of the cold-start flag. Prepended to notes on the same
@@ -587,6 +632,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     predictions.to_parquet(args.out, index=False)
+    scenario_path = scenario_audit_path(args.out)
+    if scenario_audit is not None:
+        scenario_audit.to_parquet(scenario_path, index=False)
 
     horizon_facts = horizon_metadata(upcoming, statuses, statuses_as_of, horizon)
     if horizon and horizon_facts["horizon_measured"] != horizon:
@@ -645,6 +693,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"overrides : {int(summary['rows'].sum()):,} rows, as of {statuses_as_of}")
         print(summary.to_string(index=False))
+    if scenario_audit is None:
+        print("scenarios : off")
+    else:
+        facts = scenario_summary(scenario_audit)
+        print(f"scenarios : {facts['team_games']:,} team-games, "
+              f"{facts['pivotal_players']:,} pivotal players, "
+              f"{facts['scenarios']:,} worlds scored; backup E[MIN|plays] delta "
+              f"mean {facts['mean_backup_min_delta']}, max {facts['max_backup_min_delta']}")
+        if not scenario_audit.empty:
+            print(scenario_audit[[
+                "GAME_ID", "TEAM_ID", "PLAYER_ID", "STATUS", "P_PLAY",
+                "BACKUP_PLAYER_ID", "BACKUP_MIN_DELTA",
+            ]].to_string(index=False))
+        print(f"            audit -> {scenario_path}")
     print(f"saved     -> {args.out}")
     if written is not None:
         print(f"database  -> prediction_runs id {written[0]}, {written[1]:,} prediction rows")
