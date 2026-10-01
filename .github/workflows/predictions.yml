@@ -77,8 +77,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r ml/requirements.txt
 
+      # --shadow-feature-set v1 adds the 13.4 rung (c) shadow run (channel 'shadow',
+      # never served). until ml/models/20260818-v1/ is committed it is skipped with
+      # a warning and the served runs are unchanged.
       - name: Run daily predictions
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          python ml/daily_run.py ${{ inputs.dry_run && '--dry-run' || '' }}
+          python ml/daily_run.py --shadow-feature-set v1 ${{ inputs.dry_run && '--dry-run' || '' }}

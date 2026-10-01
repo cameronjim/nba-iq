@@ -110,6 +110,7 @@ RUNS_TABLE = "prediction_runs"
 # record for comparison and must never reach the app.
 RUN_CHANNELS: tuple[str, ...] = ("production", "shadow")
 PRODUCTION_CHANNEL = "production"
+SHADOW_CHANNEL = "shadow"
 
 ROW_COLUMNS: tuple[str, ...] = (
     "nba_player_id",

@@ -18,7 +18,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import FEATURE_VERSION, MODELS_DIR
+from .config import FEATURE_VERSION, MODELS_DIR, SERVED_FEATURE_SET
 
 log = logging.getLogger(__name__)
 
@@ -77,10 +77,12 @@ def build_entry(
     champions: dict[str, str],
     universe_source: str,
     feature_cols: list[str],
+    feature_set: str = SERVED_FEATURE_SET,
 ) -> dict[str, object]:
     return {
         "model_version": model_version,
         "feature_version": FEATURE_VERSION,
+        "feature_set": feature_set,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "git_commit": git_commit(),
         "universe_source": universe_source,

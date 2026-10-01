@@ -35,9 +35,13 @@ on:
         required: false
         default: ""
       version:
-        description: "evaluate.py --version"
+        description: "evaluate.py --version (and the served version a shadow is paired with)"
         type: string
         default: "20260818"
+      train_shadow:
+        description: "Train the v1 shadow artifact models/<version>-v1/ and upload it"
+        type: boolean
+        default: false
 
 concurrency:
   group: ml-evaluate
@@ -70,6 +74,52 @@ jobs:
       - name: Build dataset
         if: inputs.build_dataset
         run: python ml/build_dataset.py --source postgres
+
+      # the v1 artifact inherits the cutoff of models/<version>/metadata.json, so it
+      # is fitted on the same dataset build at the same cutoff as the served one.
+      - name: Train v1 shadow artifact
+        if: inputs.train_shadow
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python ml/train.py --feature-set v1 --version "$VERSION"
+
+      # models/ is versioned and CI cannot commit, so the artifact leaves as an upload.
+      - name: Upload v1 shadow artifact
+        if: inputs.train_shadow
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-shadow-${{ inputs.version }}-v1-${{ github.run_id }}
+          path: |
+            ml/models/${{ inputs.version }}-v1/
+            ml/models/registry.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Shadow artifact summary
+        if: inputs.train_shadow
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          {
+            echo "## v1 shadow artifact: models/${VERSION}-v1"
+            echo
+            echo "Trained from the ${TARGET} database. It is NOT live until it is committed:"
+            echo "models/ is versioned and CI cannot commit."
+            echo
+            echo "1. Download the ml-shadow-${VERSION}-v1 artifact."
+            echo "2. Copy models/${VERSION}-v1/ into ml/models/ and merge its registry entry"
+            echo "   (model_version ${VERSION}-v1) into ml/models/registry.json. Leave every"
+            echo "   other entry, and models/${VERSION}/, byte for byte as committed."
+            echo "3. Verify: cd ml && python -c \"from fnba_ml.registry import verify_artifacts; print(verify_artifacts('${VERSION}-v1'))\""
+            echo "   must print []."
+            echo "4. Commit. daily_run.py --shadow-feature-set v1 publishes the shadow from the next run."
+            if [ "${TARGET}" = "dev" ]; then
+              echo
+              echo "**Dev target:** the dev branch holds two seasons, so this artifact was not"
+              echo "fitted on the served artifact's training history. Train against prod to commit."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # exit 1 is a real gate (ml/README.md): the promoted composition regressed
       # more than 1% MAE against the one it replaced.

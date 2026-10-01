@@ -3724,3 +3724,35 @@ rows it could not compute rather than leaving them blank.
   which is the history a learned policy would need; F10 is the measurement.
 - **E5 in the scoring tool**, with the shifted-rate skill and the frozen-baseline rows
   above. These are needed by the `dec1` look, where F1 and F6 bind.
+
+### 17.7 Rung (c) is wired: the daily v1 shadow
+
+16.6's "no shadow run" is closed. Section 13 is unchanged; this records how its
+rung (c) is now executed.
+
+- **The artifact.** `train.py --feature-set v1 --version 20260818` writes
+  `models/20260818-v1/`: availability and minutes models on the 36
+  `BASE_FEATURE_COLS`, the same `ewma_state` snapshot logic, `feature_set: v1` in
+  `metadata.json` and the registry entry. With no `--cutoff` it inherits the
+  cutoff of `models/20260818/metadata.json` (2026-04-13), and it is fitted from
+  the same dataset build as everything else in that run. Stages 1-3 of the
+  two-stage pipeline are skipped and recorded as skipped: v1 has no teammate
+  context, so there is no base model and `predict.py` skips `rebuild_context`.
+  `models/20260818/` is not touched.
+- **The run.** `daily_run.py --shadow-feature-set v1` publishes the shadow right
+  after run A from the same prospective frame, `statuses_as_of`, window and
+  horizon, with `predict.py --channel shadow`. Its note is
+  `prospective_2026_27_v2; feature_set=v1; channel=shadow` when run A qualifies:
+  a shadow at the served boundary is a qualifying prospective run, it is just not
+  served. It is `NOT PROSPECTIVE (...)` if run A is, or if its own artifact names
+  another feature set, has another cutoff, or fails its registry checksums. The
+  same row-level override layer applies; the context-stage override has nothing
+  to act on in v1.
+- **The served run is untouched.** Its argv, notes and code path are
+  byte-identical with or without the shadow. A missing shadow artifact is a
+  warning and a skip. A failed shadow is logged, run B still publishes, and the
+  job exits 1 afterwards. Run B gets no shadow.
+- **Not yet live.** The workflow passes `--shadow-feature-set v1`, but the
+  artifact must be trained (ML Evaluate, `train_shadow`, against prod), committed
+  with its registry entry and checked with `fnba_ml.registry.verify_artifacts`.
+  Until then rung (c), and F2 to F4 in `score_runs.py`, still have no data.

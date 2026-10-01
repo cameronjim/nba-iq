@@ -29,6 +29,11 @@ extended window, published AFTER A so it is the one the app shows. B is NOT
 PROSPECTIVE by construction and says so in its notes, and it carries no horizon
 because a seven-day run has no single bucket (MODEL.md 16.7).
 
+SHADOWS RIDE ON RUN A. Each ``--shadow-feature-set`` adds one ``channel='shadow'`` run
+of ``models/<pinned>-<set>/`` scored from run A's frame at run A's boundary (13.4 rung
+(c), MODEL.md 17.7). An absent shadow artifact is a warning, a failed shadow is
+recorded, and neither stops run B.
+
 THE OFFSEASON NO-OP IS THE NORMAL CASE FOR MOST OF THE YEAR. No games in the extended
 window means exit 0 having written nothing: not a failure, not an empty run row, nothing. A
 daily cron that goes red every morning from June to October is a cron whose red is
@@ -56,6 +61,7 @@ TWO RULES THIS FILE ENFORCES THAT NOTHING ELSE CAN:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -72,7 +78,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_dataset  # noqa: E402
 import predict as predict_script  # noqa: E402
 from fnba_ml import registry  # noqa: E402
-from fnba_ml.cli import add_common_args, load_dataset, setup_logging  # noqa: E402
+from fnba_ml.cli import (  # noqa: E402
+    add_common_args,
+    feature_set_version,
+    load_dataset,
+    setup_logging,
+)
 from fnba_ml.config import (  # noqa: E402
     DATA_DIR,
     MODELS_DIR,
@@ -82,11 +93,12 @@ from fnba_ml.config import (  # noqa: E402
     PROSPECTIVE_MODEL_VERSION,
     PROSPECTIVE_RUN_NOTE_LABEL,
     PROSPECTIVE_SERVING_HORIZON,
+    PROSPECTIVE_SHADOW_FEATURE_SETS,
     SEASON_TYPES,
     SEASONS,
     SERVED_FEATURE_SET,
 )
-from fnba_ml.store import PRODUCTION_CHANNEL  # noqa: E402
+from fnba_ml.store import PRODUCTION_CHANNEL, SHADOW_CHANNEL  # noqa: E402
 from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
     build_prospective_features,
@@ -361,7 +373,12 @@ def prospective_conditions(
     return reasons
 
 
-def run_notes(reasons: list[str], stale: str | None = None) -> str:
+def run_notes(
+    reasons: list[str],
+    stale: str | None = None,
+    feature_set: str = SERVED_FEATURE_SET,
+    channel: str = PRODUCTION_CHANNEL,
+) -> str:
     """``prediction_runs.notes`` for this run.
 
     The qualifying form follows 13.4: the label, then ``feature_set=v3-honest``,
@@ -373,7 +390,7 @@ def run_notes(reasons: list[str], stale: str | None = None) -> str:
     it. The assertion below is not decoration; it is the only thing standing between
     a reworded reason string and a contaminated season.
     """
-    tail = f"feature_set={SERVED_FEATURE_SET}; channel={PRODUCTION_CHANNEL}"
+    tail = f"feature_set={feature_set}; channel={channel}"
     if reasons:
         note = f"NOT PROSPECTIVE ({'; '.join(reasons)}); {tail}"
         if PROSPECTIVE_RUN_NOTE_LABEL in note:
@@ -397,6 +414,67 @@ def extended_notes(
     non-qualifying note cannot contain the label applies to this run too.
     """
     return run_notes([f"extended {extended_days}-day serving window", *conditions], stale)
+
+
+def shadow_notes(
+    reasons: list[str], feature_set: str, stale: str | None = None
+) -> str:
+    """``prediction_runs.notes`` for a shadow: run A's form, on the shadow channel.
+
+    A shadow at run A's boundary is a qualifying prospective run per 13.4, so it
+    carries the label exactly when ``reasons`` is empty and goes through the same
+    assertion when it is not.
+    """
+    return run_notes(reasons, stale, feature_set=feature_set, channel=SHADOW_CHANNEL)
+
+
+def shadow_version(feature_set: str) -> str:
+    """the shadow artifact paired with the pinned one, e.g. ``20260818-v1``."""
+    return feature_set_version(PROSPECTIVE_MODEL_VERSION, feature_set)
+
+
+def shadow_artifact_conditions(
+    feature_set: str, models_dir: Path = MODELS_DIR
+) -> list[str] | None:
+    """reasons the shadow artifact disqualifies its run; None when it is absent.
+
+    None means skip the shadow and serve as usual. The checks pin what 13.4 needs
+    for a like-for-like comparison: the feature set it claims, its own registry
+    checksums, and the served artifact's training cutoff.
+    """
+    version = shadow_version(feature_set)
+    directory = models_dir / version
+    if not (directory / "metadata.json").is_file():
+        return None
+    shadow_meta = _read_metadata(directory)
+    served_meta = _read_metadata(models_dir / PROSPECTIVE_MODEL_VERSION)
+
+    reasons: list[str] = []
+    trained_on = str(shadow_meta.get("feature_set", ""))
+    if trained_on != feature_set:
+        reasons.append(f"shadow artifact feature_set {trained_on or 'unset'} is not "
+                       f"{feature_set}")
+    shadow_cutoff = shadow_meta.get("training_window", {}).get("cutoff")
+    served_cutoff = served_meta.get("training_window", {}).get("cutoff")
+    if shadow_cutoff != served_cutoff:
+        reasons.append(f"shadow cutoff {shadow_cutoff} is not the served cutoff "
+                       f"{served_cutoff}")
+    try:
+        bad = registry.verify_artifacts(version, models_dir)
+    except KeyError:
+        reasons.append(f"no registry entry for {version}")
+    else:
+        if bad:
+            reasons.append(f"shadow artifact checksums not verified ({', '.join(bad)})")
+    return reasons
+
+
+def _read_metadata(directory: Path) -> dict:
+    path = directory / "metadata.json"
+    if not path.is_file():
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 def split_prospective(
@@ -653,6 +731,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--rosters", type=Path, default=None,
         help="csv of roster assignments (nba_player_id, team_id) instead of "
              "player_team_stints",
+    )
+    parser.add_argument(
+        "--shadow-feature-set", dest="shadow_feature_sets", action="append",
+        choices=PROSPECTIVE_SHADOW_FEATURE_SETS, default=[],
+        help="after run A, also publish a shadow run (channel 'shadow', never served) "
+             "of models/<pinned>-<set>/ on the same frame and boundary (MODEL.md 13.4c). "
+             "repeatable; skipped with a warning when the artifact is absent",
     )
     args = parser.parse_args(argv)
     if args.extended_days < args.window_days:
@@ -915,6 +1000,12 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             )
             runs.append({**run_a, "reasons": reasons, "notes": notes})
 
+            # the shadows score run A's own frame at run A's boundary; run B gets none.
+            runs.extend(publish_shadows(
+                args, reasons, stale, prospective_path, window_start,
+                statuses_as_of, statuses_path, history_through,
+            ))
+
         # RUN B, everything servable in the extended window, AFTER A so it is the
         # newest run and the one the app serves. No horizon: its games span days.
         served_all = schedule[schedule["GAME_ID"].isin(set(features["GAME_ID"]))]
@@ -953,14 +1044,22 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
           f"{statuses_as_of.isoformat(timespec='seconds')}")
     for run in runs:
         name = str(run["name"])
+        if run.get("failed"):
+            print(f"[{name}] FAILED ({run['skip_reason']}); the served runs are unaffected")
+            continue
         if run.get("skipped"):
-            print(f"[{name}] SKIPPED (no Regular Season game in the prospective window)")
+            reason = run.get(
+                "skip_reason", "no Regular Season game in the prospective window"
+            )
+            print(f"[{name}] SKIPPED ({reason})")
             continue
         predictions = pd.read_parquet(Path(str(run["path"])))
         print(f"[{name}] games {predictions['GAME_ID'].nunique():,}, "
               f"rows {len(predictions):,} player-games, "
               f"players {predictions['PLAYER_ID'].nunique():,}")
-        if name == "prospective":
+        if "version" in run:
+            print(f"[{name}] artifact: {run['version']} (channel {run['channel']})")
+        if "reasons" in run:
             why = run.get("reasons") or []
             print(f"[{name}] prospective: "
                   f"{'YES' if not why else 'no - ' + '; '.join(why)}")
@@ -978,7 +1077,8 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
         print("wrote     : nothing to the database (--dry-run)")
     print(f"parquets  -> {args.out_dir}")
     print(f"elapsed   : {time.monotonic() - started:.1f}s")
-    return 0
+    # red for a failed shadow, but only after the served runs were published.
+    return 1 if any(run.get("failed") for run in runs) else 0
 
 
 def predict_argv(
@@ -992,18 +1092,20 @@ def predict_argv(
     statuses_path: Path | None,
     history_through: date | None,
     write_db: bool,
+    version: str = PROSPECTIVE_MODEL_VERSION,
+    channel: str = PRODUCTION_CHANNEL,
 ) -> list[str]:
-    """the predict.py argv for one daily run, always on the production channel."""
+    """the predict.py argv for one daily run; production unless it is a shadow."""
     argv = [
         "--dataset", str(dataset_path),
-        "--version", PROSPECTIVE_MODEL_VERSION,
+        "--version", version,
         "--models-dir", str(models_dir),
         "--out", str(out_path),
         "--run-at", str(window_start),
         "--horizon", horizon,
         "--notes", notes,
         "--statuses-as-of", statuses_as_of.isoformat(),
-        "--channel", PRODUCTION_CHANNEL,
+        "--channel", channel,
     ]
     if history_through is not None:
         argv += ["--history-through", str(history_through)]
@@ -1025,16 +1127,19 @@ def _publish_run(
     statuses_as_of: pd.Timestamp,
     statuses_path: Path | None,
     history_through: date | None = None,
+    version: str = PROSPECTIVE_MODEL_VERSION,
+    channel: str = PRODUCTION_CHANNEL,
 ) -> dict[str, object]:
     """score one frame through predict.py and report where it went."""
     log.info("run %s notes : %s", name, notes)
     registry_path = args.models_dir / "registry.json"
-    entry = registry.find(PROSPECTIVE_MODEL_VERSION, registry_path)
+    entry = registry.find(version, registry_path)
     runs_before = len(entry.get("prediction_runs", []) if entry else [])
 
     predict_args = predict_argv(
         dataset_path, args.models_dir, out_path, notes, horizon, window_start,
         statuses_as_of, statuses_path, history_through, write_db=not args.dry_run,
+        version=version, channel=channel,
     )
     if args.dry_run:
         log.warning("--dry-run: predict.py will NOT be given --write-db")
@@ -1046,7 +1151,7 @@ def _publish_run(
 
     run_id: object = "(dry run, nothing written)"
     if not args.dry_run:
-        entry = registry.find(PROSPECTIVE_MODEL_VERSION, registry_path)
+        entry = registry.find(version, registry_path)
         recorded = entry.get("prediction_runs", []) if entry else []
         if len(recorded) > runs_before:
             run_id = recorded[-1].get("run_id")
@@ -1056,7 +1161,61 @@ def _publish_run(
                 "prediction-run entry; the run id is unknown"
             )
             run_id = "(unknown: registry not updated)"
-    return {"name": name, "path": out_path, "run_id": run_id}
+    return {
+        "name": name, "path": out_path, "run_id": run_id,
+        "version": version, "channel": channel,
+    }
+
+
+def publish_shadows(
+    args: argparse.Namespace,
+    reasons: list[str],
+    stale: str | None,
+    prospective_path: Path,
+    window_start: date,
+    statuses_as_of: pd.Timestamp,
+    statuses_path: Path | None,
+    history_through: date | None,
+) -> list[dict[str, object]]:
+    """one shadow run per ``--shadow-feature-set``, on run A's frame and boundary.
+
+    Never raises: an absent artifact is a warning and a failed shadow is recorded,
+    so the served runs are published whatever happens here.
+    """
+    runs: list[dict[str, object]] = []
+    for feature_set in args.shadow_feature_sets:
+        name = f"shadow-{feature_set}"
+        version = shadow_version(feature_set)
+        artifact_reasons = shadow_artifact_conditions(feature_set, args.models_dir)
+        if artifact_reasons is None:
+            log.warning(
+                "shadow %s skipped: no artifact at %s. train it with train.py "
+                "--feature-set %s --version %s and commit it; the served run is "
+                "unaffected", name, args.models_dir / version, feature_set,
+                PROSPECTIVE_MODEL_VERSION,
+            )
+            runs.append({
+                "name": name, "skipped": True,
+                "skip_reason": f"no artifact models/{version}",
+            })
+            continue
+        shadow_reasons = [*reasons, *artifact_reasons]
+        notes = shadow_notes(shadow_reasons, feature_set, stale)
+        try:
+            run = _publish_run(
+                args, name, prospective_path,
+                args.out_dir / f"predictions_shadow_{feature_set}.parquet", notes,
+                PROSPECTIVE_SERVING_HORIZON, window_start, statuses_as_of,
+                statuses_path, history_through,
+                version=version, channel=SHADOW_CHANNEL,
+            )
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 - recorded, never fatal
+            cause = exc.cause if isinstance(exc, PhaseFailure) else exc
+            log.error("shadow %s failed: %s; the served runs are unaffected", name, cause)
+            runs.append({"name": name, "failed": True, "skip_reason": str(cause)})
+            continue
+        runs.append({**run, "reasons": shadow_reasons, "notes": notes})
+    return runs
 
 
 def _rows_per_player_game(predictions: pd.DataFrame) -> int:
