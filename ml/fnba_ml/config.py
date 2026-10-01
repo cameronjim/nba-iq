@@ -296,6 +296,13 @@ MAGNITUDE_PRIORS: dict[str, float] = {"MIN": 10.0, "FGA": 6.0, "USG": 15.0}
 # per-teammate inputs summed over a set, not model features themselves.
 MAGNITUDE_COLS: tuple[str, ...] = ("tm_MIN", "tm_FGA", "tm_USG")
 
+# ---- scenario serving for uncertain stars (predict.py --scenarios, off by default) ----
+# a questionable or doubtful player whose shrunk minutes magnitude reaches this (or
+# who is a top-usage player) is scored in both worlds rather than at a blended p.
+SCENARIO_MIN_MAGNITUDE: float = 20.0
+# 2 pivotal players is 4 scenarios per team-game; the cap bounds the refits.
+SCENARIO_MAX_PIVOTAL: int = 2
+
 # ---- the served teammate context: expectations over as-of probabilities (v3) ----
 # every column is a linear functional of the teammates' play probabilities p_j
 # and their as-of magnitudes m_j, so no target-game outcome enters any of them.

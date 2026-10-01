@@ -52,6 +52,20 @@ an explicit `cleared` row when a player drops off the CBS page, so a recovered
 player's last OUT no longer stands forever. A failed or empty scrape writes
 nothing rather than clearing everyone. Full policy table in `MODEL.md` section 7.1.
 
+**Scenario serving (`predict.py --scenarios`, off by default).** A questionable
+star's blended `p_j` fed once through the nonlinear minutes model is not the
+average of the night he plays and the night he sits. With the flag on,
+`fnba_ml/scenarios.py` finds each team-game's pivotal players (questionable or
+doubtful as of the boundary, and `tm_MIN >= SCENARIO_MIN_MAGNITUDE` (20) or
+top-3 by usage, at most `SCENARIO_MAX_PIVOTAL` (2) per team-game), scores the
+team-game once per play/sit world (teammate `p_j` forced to 1.0 or the OUT 0.02),
+and weight-averages his teammates' outputs over the worlds, treating two pivotal
+players as independent. The star's own row keeps his blended `P(play)` and takes
+his conditional numbers from the worlds he plays in. Every other team-game is
+scored exactly once, as without the flag. The per-player audit (world weights,
+the backup with the largest minutes swing and that swing) is written to
+`<out>_scenarios.parquet`, and `notes` gains `scenarios=on; scenario_team_games=N`.
+
 ---
 
 ## Runbook
@@ -207,6 +221,8 @@ fnba_ml/
   models.py              the ladder, availability + minutes champions, per-minute
                          rates, the minutes-propagating composition, OOF guards
   overrides.py           serving-time injury-report policy on P(play) (pure)
+  scenarios.py           --scenarios: per-world scoring and output mixing for
+                         questionable/doubtful stars (off by default)
   evaluate.py            rolling-origin harness, segments, skill scores, champion
                          picks, composition parity check (per stat), the 9-cat
                          rate ladder and the inner-fold halflife selection
