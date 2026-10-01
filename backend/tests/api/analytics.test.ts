@@ -8,6 +8,7 @@ const { clearAnalyticsCache, ANALYTICS_STATS, POOL_DEFINITION } = await import(
   '../../src/services/analytics.js'
 );
 const { clearPredictionsCache } = await import('../../src/services/predictions.js');
+const { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } = await import('../../src/services/slate.js');
 const queryMock = vi.mocked(query);
 
 
@@ -342,7 +343,7 @@ describe('GET /api/players/:id/analytics', () => {
 
     const [sql, params] = queryMock.mock.calls[5];
     expect(sql).toContain('player_game_predictions');
-    expect(params).toEqual(['2544']);
+    expect(params).toEqual(['2544', COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
   });
 
   it('keeps the rest of the page when the prediction tables are missing', async () => {

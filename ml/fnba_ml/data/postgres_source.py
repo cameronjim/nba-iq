@@ -181,11 +181,11 @@ CUTOFF_CLAUSE = " AND {col} < %(cutoff)s"
 # ---------------------------------------------------------------------------
 # the serving-time injury report, for fnba_ml.overrides.
 # ---------------------------------------------------------------------------
-# NOT EXECUTED ANYWHERE IN THIS REPO. there is no test database (AGENTS.md
-# section 6) and the offline path reads a --statuses parquet/csv instead. this is
-# the query a live run will use, written against migration 013's
-# player_injury_reports contract and kept next to the rest of the SQL so it moves
-# with the schema rather than being rediscovered later.
+# executed by daily_run.py's load_statuses through
+# PostgresSource.load_latest_injury_statuses; the offline path reads a --statuses
+# parquet/csv instead. there is no test database (AGENTS.md section 6), so the
+# suite never runs it. written against migration 013's player_injury_reports
+# contract and kept next to the rest of the SQL so it moves with the schema.
 #
 # THREE THINGS THIS QUERY GETS RIGHT, all of which are easy to get wrong:
 #
@@ -209,6 +209,10 @@ CUTOFF_CLAUSE = " AND {col} < %(cutoff)s"
 #      equality filter on it would return nothing, and an IS NULL filter would
 #      throw away the game-specific reports that are strictly better information.
 #      the newest report wins regardless of which kind it is.
+#
+#   4. a 7-day lower bound so the database does not ship the whole history. it is
+#      wider than overrides.REPORT_MAX_AGE_HOURS on purpose: the python-side
+#      expiry is the rule that decides, this only trims what cannot matter.
 LATEST_INJURY_STATUS_SQL = """
 SELECT DISTINCT ON (r.nba_player_id)
     r.nba_player_id    AS "nba_player_id",
@@ -219,6 +223,7 @@ SELECT DISTINCT ON (r.nba_player_id)
     r.source           AS "source"
 FROM player_injury_reports r
 WHERE r.captured_at < %(as_of)s
+  AND r.captured_at >= %(as_of)s - INTERVAL '7 days'
 ORDER BY r.nba_player_id, r.captured_at DESC
 """
 

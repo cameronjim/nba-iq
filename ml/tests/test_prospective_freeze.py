@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from fnba_ml import config, overrides
+from fnba_ml import config, frozen, overrides
 
 ML_ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_DIR = ML_ROOT / "models" / "20260818"
@@ -38,7 +38,7 @@ def test_pinned_checksum_matches_disk(filename: str) -> None:
     assert _sha256(path) == config.PROSPECTIVE_ARTIFACT_CHECKSUMS[filename], (
         f"{filename} does not match the checksum frozen in "
         "config.PROSPECTIVE_ARTIFACT_CHECKSUMS. the serving artifact changed after "
-        "the freeze - bump to prospective_2026_27_v2 and re-freeze MODEL.md "
+        "the freeze - bump PROSPECTIVE_PROTOCOL_VERSION and re-freeze MODEL.md "
         "section 13, or revert"
     )
 
@@ -126,6 +126,19 @@ def test_override_constants_have_not_drifted() -> None:
     assert overrides.DEFAULT_POLICY.as_dict() == config.PROSPECTIVE_OVERRIDE_CONSTANTS
 
 
+def test_report_max_age_has_not_drifted() -> None:
+    assert overrides.REPORT_MAX_AGE_HOURS == frozen.PROSPECTIVE_REPORT_MAX_AGE_HOURS
+    assert frozen.PROSPECTIVE_2026_27["report_max_age_hours"] == 72.0
+
+
+def test_passthrough_statuses_have_not_drifted() -> None:
+    assert overrides.PASSTHROUGH_STATUSES == frozen.PROSPECTIVE_PASSTHROUGH_STATUSES
+    assert "cleared" in frozen.PROSPECTIVE_PASSTHROUGH_STATUSES
+    assert not (
+        frozen.PROSPECTIVE_PASSTHROUGH_STATUSES & overrides.UNAVAILABLE_STATUSES
+    )
+
+
 def test_probable_rule_is_still_a_floor_at_the_frozen_constants() -> None:
     """`w*p + s` is a floor on [0, 1] iff `s >= 1 - w`, with equality at the defaults."""
     w = config.PROSPECTIVE_OVERRIDE_CONSTANTS["probable_model_weight"]
@@ -163,11 +176,20 @@ def test_cohort_definitions_have_not_drifted() -> None:
 
 
 def test_protocol_version_string() -> None:
-    assert config.PROSPECTIVE_PROTOCOL_VERSION == "prospective_2026_27_v1"
-    assert config.PROSPECTIVE_RUN_NOTE_LABEL == "prospective_2026_27_v1"
+    assert config.PROSPECTIVE_PROTOCOL_VERSION == "prospective_2026_27_v2"
+    assert config.PROSPECTIVE_RUN_NOTE_LABEL == "prospective_2026_27_v2"
     assert config.PROSPECTIVE_2026_27["protocol_version"] == (
         config.PROSPECTIVE_PROTOCOL_VERSION
     )
+
+
+def test_v2_records_what_it_was_refrozen_from() -> None:
+    bundle = config.PROSPECTIVE_2026_27
+    assert config.PROSPECTIVE_PROTOCOL_VERSION.endswith("_v2")
+    assert bundle["refrozen_from"] == "prospective_2026_27_v1"
+    assert bundle["frozen_at"] == "2026-10-01"
+    # the re-freeze must land before opening night, or it is a mid-season change
+    assert bundle["frozen_at"] < "2026-10-20"
 
 
 def test_look_dates_are_what_section_13_says() -> None:
@@ -301,7 +323,7 @@ def test_block_standard_deviations_are_present_where_a_threshold_was_derived() -
 
 def test_bundle_is_json_serialisable() -> None:
     text = json.dumps(config.PROSPECTIVE_2026_27, sort_keys=True, default=list)
-    assert json.loads(text)["protocol_version"] == "prospective_2026_27_v1"
+    assert json.loads(text)["protocol_version"] == "prospective_2026_27_v2"
 
 
 def test_bundle_agrees_with_its_components() -> None:
@@ -317,11 +339,14 @@ def test_bundle_agrees_with_its_components() -> None:
     assert bundle["rate_estimators"] == config.PROSPECTIVE_RATE_ESTIMATORS
     assert bundle["falsification"] == config.PROSPECTIVE_FALSIFICATION
     assert bundle["artifact_dir"] == "models/20260818"
+    assert bundle["report_max_age_hours"] == frozen.PROSPECTIVE_REPORT_MAX_AGE_HOURS
+    assert bundle["passthrough_statuses"] == frozen.PROSPECTIVE_PASSTHROUGH_STATUSES
 
 
 def test_model_md_section_13_exists_and_declares_the_same_protocol() -> None:
     text = (ML_ROOT / "MODEL.md").read_text(encoding="utf-8")
     assert "## 13. `prospective_2026_27_v1` (FROZEN)" in text
+    assert "## 17. Phase 0 correctness and the `prospective_2026_27_v2` re-freeze" in text
     assert config.PROSPECTIVE_PROTOCOL_VERSION in text
     assert config.PROSPECTIVE_MODEL_VERSION in text
     assert config.PROSPECTIVE_COLD_START_FLAG in text

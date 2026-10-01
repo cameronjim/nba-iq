@@ -15,6 +15,9 @@ export const TOP_PLAYERS_PER_GAME = 8;
 
 export const COMPLETE_RUN_STATUS = 'complete';
 
+// shadow and challenger runs share the table; only production runs are served.
+export const PRODUCTION_CHANNEL = 'production';
+
 export const UNCOND_SUFFIX = '_uncond';
 
 export function uncondStat(stat: string): string {
@@ -207,9 +210,10 @@ export async function getLatestCompleteRun(): Promise<(SlateRun & { id: number }
       `SELECT id, model_version, predicted_at
        FROM prediction_runs
        WHERE status = $1
+         AND channel = $2
        ORDER BY predicted_at DESC, id DESC
        LIMIT 1`,
-      [COMPLETE_RUN_STATUS]
+      [COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]
     )
   );
 

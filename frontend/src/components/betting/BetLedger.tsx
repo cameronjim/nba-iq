@@ -70,19 +70,20 @@ const AddBetForm = ({ games, onTrackBet, onDone }: AddBetFormProps) => {
   const [error, setError] = useState('');
 
   const isStraight = STRAIGHT.includes(market);
-  const game = games.find((g) => g.nba_game_id === gameId);
+  const game = games.find((g) => g.espn_event_id === gameId);
 
   // line and odds come from the posted markets; unposted markets are flagged.
   const resolveStraight = (): { line: number | null; odds: number } | null => {
     if (!game) return null;
     const { spread, total, moneyline } = game.markets;
     if (market === 'spread' && spread) {
-      return selection === 'home'
-        ? { line: spread.home_line, odds: spread.home_price }
-        : { line: spread.away_line, odds: spread.away_price };
+      const odds = selection === 'home' ? spread.home_price : spread.away_price;
+      if (odds == null) return null;
+      return { line: selection === 'home' ? spread.home_line : spread.away_line, odds };
     }
     if (market === 'total' && total) {
-      return { line: total.line, odds: selection === 'over' ? total.over_price : total.under_price };
+      const odds = selection === 'over' ? total.over_price : total.under_price;
+      return odds == null ? null : { line: total.line, odds };
     }
     if (market === 'moneyline' && moneyline) {
       return { line: null, odds: selection === 'home' ? moneyline.home : moneyline.away };
@@ -137,7 +138,7 @@ const AddBetForm = ({ games, onTrackBet, onDone }: AddBetFormProps) => {
       if (isStraight && game && resolved) {
         await onTrackBet({
           market: market as StraightMarket,
-          nba_game_id: game.nba_game_id,
+          nba_game_id: game.espn_event_id,
           selection,
           line: resolved.line,
           american_odds: resolved.odds,
@@ -151,7 +152,7 @@ const AddBetForm = ({ games, onTrackBet, onDone }: AddBetFormProps) => {
           american_odds: odds,
           stake,
           wager_type: wagerType,
-          ...(market === 'prop' && game ? { nba_game_id: game.nba_game_id } : {}),
+          ...(market === 'prop' && game ? { nba_game_id: game.espn_event_id } : {}),
         }, market === 'prop' ? gameRef : undefined);
       }
       onDone();
@@ -192,7 +193,7 @@ const AddBetForm = ({ games, onTrackBet, onDone }: AddBetFormProps) => {
             >
               <option value="">Pick a game...</option>
               {games.map((g) => (
-                <option key={g.nba_game_id} value={g.nba_game_id}>
+                <option key={g.espn_event_id} value={g.espn_event_id}>
                   {g.away_team} @ {g.home_team} ({g.game_date})
                 </option>
               ))}

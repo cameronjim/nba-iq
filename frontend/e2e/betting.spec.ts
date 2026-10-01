@@ -4,7 +4,7 @@ import { mockApi } from './fixtures/apiMock';
 import type { BettingGame, BettingPicksResponse } from '../src/types';
 
 const makeGame = (id: string, home: string, away: string): BettingGame => ({
-  nba_game_id: id,
+  espn_event_id: id,
   home_team: home,
   away_team: away,
   home_abbrev: home.slice(0, 2).toUpperCase(),
@@ -37,16 +37,16 @@ const PICKS_FIXTURE: BettingPicksResponse = {
       game_id: '401859966', category: 'best_value', market: 'spread', selection: 'home',
       matchup: 'San Antonio Spurs @ New York Knicks', game_date: '2026-06-10',
       tipoff: '6/10 - 8:30 PM EDT', selection_label: 'New York Knicks -2.5',
-      line: -2.5, american_odds: -105, implied_prob: 0.5122,
-      estimated_win_prob: 0.58, edge: 0.0678,
+      line: -2.5, american_odds: -105, implied_prob: 0.5122, implied_prob_novig: 0.4891,
+      estimated_win_prob: 0.58, estimate_source: 'claude', edge: 0.0678,
       rationale: 'Rest advantage and a top-five defense at home.', confidence: 'medium',
     },
     {
       game_id: '401859966', category: 'safe', market: 'moneyline', selection: 'home',
       matchup: 'San Antonio Spurs @ New York Knicks', game_date: '2026-06-10',
       tipoff: '6/10 - 8:30 PM EDT', selection_label: 'New York Knicks ML (-130)',
-      line: null, american_odds: -130, implied_prob: 0.5652,
-      estimated_win_prob: 0.62, edge: 0.0548,
+      line: null, american_odds: -130, implied_prob: 0.5652, implied_prob_novig: 0.5367,
+      estimated_win_prob: 0.62, estimate_source: 'claude', edge: 0.0548,
       rationale: 'Better team straight up.', confidence: 'high',
     },
   ],

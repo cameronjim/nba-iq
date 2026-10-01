@@ -46,8 +46,11 @@ serving time from the latest official designation known at the run's information
 boundary (OUT → 0.02, DOUBTFUL → 0.10, QUESTIONABLE → blended, PROBABLE → floored,
 everything else untouched). The constants are hand-set; the model's own
 probability is stored beside the overridden one so the layer stays measurable and
-those constants can be replaced by learned ones. Full policy table in
-`MODEL.md` section 7.1.
+those constants can be replaced by learned ones. A designation older than
+`REPORT_MAX_AGE_HOURS` (72) before the boundary is ignored, and the scraper appends
+an explicit `cleared` row when a player drops off the CBS page, so a recovered
+player's last OUT no longer stands forever. A failed or empty scrape writes
+nothing rather than clearing everyone. Full policy table in `MODEL.md` section 7.1.
 
 ---
 
@@ -81,7 +84,13 @@ python evaluate.py --version 2026-08-16 --rate-halflife-selection
 # 4. predict: next games -> parquet, and optionally to postgres
 python predict.py --version 2026-08-16 --out data\predictions.parquet
 python predict.py --version 2026-08-16 --statuses data\statuses.parquet --horizon lock
-python predict.py --version 2026-08-16 --write-db    # needs DATABASE_URL + migration 014
+python predict.py --version 2026-08-16 --write-db    # needs DATABASE_URL + migrations 014, 015
+python predict.py --version 2026-08-16 --write-db --channel shadow   # recorded, never served
+
+# 5. score: stored runs vs completed games -> reports/scoring/scoring_<today>.md + _results.csv
+python score_runs.py                                  # runs predicted in the last 30 days
+python score_runs.py --since 2026-10-20 --channel production
+python score_runs.py --run-id 412 --run-id 413 --md reports\scoring\look_dec1.md
 
 # tests
 python -m pytest tests -v
@@ -89,14 +98,20 @@ python -m pytest tests -v
 
 `--write-db` inserts one `prediction_runs` row and one
 `player_game_predictions` row per (player, game, stat, quantile), in a single
-transaction, against the tables from `db/migrations/014_predictions.sql`. That
-migration is applied by hand in the Neon SQL editor — run it against prod and
-the dev branch before the first `--write-db`, then record it in
-`schema_migrations` the way `scraper/check_migrations.py` expects.
+transaction, against the tables from `db/migrations/014_predictions.sql` and
+`015_prediction_run_provenance.sql`. Both are applied by hand in the Neon SQL
+editor: run them against prod and the dev branch before the first `--write-db`
+with this code (015 adds columns the insert names, so the write fails without
+it), then record each in `schema_migrations` the way
+`scraper/check_migrations.py` expects.
 
 The store is **append-only**. A re-run writes a new run and never edits an old
 one, because a prediction that can be revised after the fact cannot be
-backtested. Serving reads the newest run with `status = 'complete'`.
+backtested. Serving reads the newest run with `status = 'complete'` and
+`channel = 'production'`. `--channel shadow` (default `production`) records a
+challenger run beside the served one without the app ever reading it; the daily
+run always passes `--channel production`, and its notes say `channel=production`
+to match the column.
 
 `--write-db` **refuses the approximation universe** unless
 `--allow-biased-universe` is passed, and stamps the reason into the run's notes
@@ -134,9 +149,29 @@ window (`fnba_ml/intervals.py`), measured on appearances only against the
 estimator that actually ships, and are non-crossing by construction — offsets
 sorted when built, values sorted again when written.
 
+### Scoring stored runs (runbook step 5)
+
+`score_runs.py` reads runs from the store (read-only) and scores every completed
+player-game against the truth layer, per run and pooled per (channel,
+prospective label), with the 13.3 endpoints split by `cold_start` and season
+type: E1 Brier on `prob_active` and `prob_active_model`, E2 calibration slope and
+intercept, E3 minutes MAE on appearances, E4 unconditional MAE for all twelve
+stats, the override increment, P10-P90 coverage and mean bias. A pool keeps each
+player-game's latest pre-tip forecast once. A completed game with no status row
+for a predicted player is counted as a coverage miss, not dropped. E1 skill needs
+the shifted appearance rate and E5 needs the frozen `ewma_total` rows; neither is
+in the store, so both are reported as not computed. Nothing to score exits 0.
+The logic is pure (`fnba_ml/scoring.py`, tested in `tests/test_scoring.py`).
+
 Every run records its **forecast horizon** (`--horizon early|gameday|lock`, i.e.
 T-24h / T-6h / T-60m) in `prediction_runs.notes` and in the registry entry. The
 same model scoring the same game at T-24h and T-60m makes two different claims.
+Each run also stores three boundaries, in the row and the registry entry:
+`information_as_of` (`--statuses-as-of`, the newest injury report it could see),
+`history_through` (the last game date with outcomes in the feature frame, derived
+from played rows or passed as `--history-through`), and `forecast_cutoff_at`, the
+later of `information_as_of` and the start of the `--run-at` day. `--run-at` only
+selects which games are scored; `predicted_at` is when the run was generated.
 
 ### Artifacts
 
@@ -166,6 +201,9 @@ fnba_ml/
   data/postgres_source.py  SQL against the migration-013 tables (NOT executed in tests)
   universe.py            scheduled-player-game rows: status-based, or BIASED fallback
   features.py            leakage-safe as-of feature construction
+  prospective.py         future scheduled player-games; features built one date
+                         at a time, schedule columns read from the whole known
+                         schedule
   models.py              the ladder, availability + minutes champions, per-minute
                          rates, the minutes-propagating composition, OOF guards
   overrides.py           serving-time injury-report policy on P(play) (pure)
@@ -412,8 +450,11 @@ questions were still chosen after the era was visible. The 2026-27 season is the
 first genuinely untouched evaluation this system will get, and it counts only if
 the protocol was fixed before opening night.
 
-**MODEL.md section 13 (`prospective_2026_27_v1`) is that pre-registration** — the
-pinned artifact and its checksums, five primary endpoints, nine frozen cohorts, a
+**MODEL.md section 13, re-frozen as `prospective_2026_27_v2` in section 17, is that
+pre-registration**; v2 exists because the Phase 0 fixes (stale injury reports, future
+back-to-backs) change emitted numbers, and since no Regular Season slate was ever
+scored under v1 the re-freeze is a clean start. It holds the pinned artifact and
+its checksums, five primary endpoints, nine frozen cohorts, a
 three-rung comparison ladder (shifted appearance rate / per-stat frozen baselines /
 a `v1` no-teammate shadow run), a ten-row falsification table with thresholds
 derived from measured between-origin variance, exactly three look dates
@@ -423,7 +464,7 @@ commitments that make the store auditable.
 `config.PROSPECTIVE_2026_27` carries the machine-checkable half and
 `tests/test_prospective_freeze.py` enforces it. **A failure there is not a bug in
 the test** — it means the served configuration moved after the freeze, and the
-response is a bump to `prospective_2026_27_v2` with a re-freeze (before opening
+response is a protocol version bump with a re-freeze (before opening
 night) or a revert (after it). Editing a frozen literal to match a drifted constant
 defeats the entire point.
 
@@ -437,18 +478,19 @@ protocol says so up front rather than discovering it in April.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 468 tests
+python -m pytest tests -q      # 680 tests
 ```
 
 | File | Covers |
 |---|---|
 | `tests/test_rate_targets.py` | the 9-category extension, in five blocks. **The vocabulary**: every served stat has a store name and every store name is inside migration 014's reserved list — which is parsed out of the `.sql` file rather than restated, because the schema has no `CHECK` on `stat`, so that comment *is* the contract and a typo'd name would insert cleanly and be invisible to every consumer. **The per-stat halflife**: each rate column reconstructed from the raw ratio at that stat's own configured halflife, plus a negative control showing two halflives on the same history disagree — without it the entire selection mechanism could be inert and every assertion would still pass. PTS/AST pinned frozen at the tournament's verdict. **Coherence**: the clip moves the bounded stat down and never raises the bound, the FG3M→FGM→FGA chain settles in one pass, a missing bound is skipped rather than clipping makes to nothing, and — the test that justifies the clip existing at all — equal halflives *cannot* produce an incoherent expectation while different ones demonstrably can, on a history whose truth is coherent in every row. **The emitted rows**: all eleven stats reach the store conditional, unconditional and at every quantile level. **The selection rule**: material-but-inconsistent and consistent-but-immaterial winners both fall back to the default, a frozen target cannot be moved by *any* evidence, and the synthetic fixture carries its own negative control proving its pooled and per-origin axes are independent |
-| `tests/test_features.py` | all 12 leakage tests ported from `ml-spike/leakage_tests.py`, plus the `groupby().first()` trap regression, missingness-flag checks, the per-minute rate definition (hand-recomputed) and the rate backfill reproducing the built-in columns exactly |
+| `tests/test_features.py` | all 12 leakage tests ported from `ml-spike/leakage_tests.py`, plus the `groupby().first()` trap regression, missingness-flag checks, the per-minute rate definition (hand-recomputed) and the rate backfill reproducing the built-in columns exactly, and a pin that `build_features(schedule=None)` is the pre-existing schedule computation |
+| `tests/test_prospective.py` | the future-game universe and its one-date-at-a-time feature build. Outcome-derived columns (`avail_rate_*`, rolls, EWMAs) of a future row are identical whether or not other future dates exist, with the naive whole-week build kept as a negative control that does leak. Schedule-derived columns read the whole known schedule: a future back-to-back has `TEAM_REST_DAYS == 1` and `IS_B2B == 1`, the first future game's rest is measured from the last played game, `OPP_REST_DAYS` follows the opponent's own future games, a new season's second game reads rest from its opener, and a future row's `OPP_DEF_FORM` is the mean of the opponent's last played games, not diluted by unplayed ones |
 | `tests/test_universe.py` | status-based preferred; fallback labeled and warns; approximation over-states availability and truncates long absences; schedule symmetry |
 | `tests/test_models.py` | composition math; out-of-fold discipline for **both** multiplied quantities including deliberately constructed in-fold failures and a mismatched-cutoff pair; the minutes-propagation regression test (double the predicted minutes → double both estimates, checked through the fitted serving path); per-minute rate behaviour and the cameo floor; metric helpers |
 | `tests/test_overrides.py` | every status rule and its exact arithmetic; the questionable blend; probable as a floor that can never lower a projection (now by arithmetic rather than by a `max`); unlisted and passthrough statuses; unconditional recomputation with conditional estimates and quantiles left alone; the newest-admissible-report rule; a report captured at or after the boundary refused (the leakage case); missing/empty statuses as an identity; the TEXT-vs-int64 id trap |
 | `tests/test_evaluate.py` | the composition-parity verdict logic, including the sign of a regression and the could-not-run case reporting nothing rather than a pass; the composition champion family appearing in the selection table; cohort masks defined on dataset columns rather than model output; the permutation controls |
-| `tests/test_predictions.py` | the migration-014 row builder as a pure function: conditional vs unconditional flagging, quantile non-crossing (including a deliberately crossed input), `prob_active` clamped to [0,1], non-finite values dropped rather than zeroed, both probabilities stored, override reason as a code and `captured_at` as epoch seconds, horizon labels in the run record. No database — `write_predictions` is read, never run |
+| `tests/test_predictions.py` | the migration-014 row builder as a pure function: conditional vs unconditional flagging, quantile non-crossing (including a deliberately crossed input), `prob_active` clamped to [0,1], non-finite values dropped rather than zeroed, both probabilities stored, override reason as a code and `captured_at` as epoch seconds, horizon labels, channel validation and the three information boundaries in the run record, plus `predict.history_through` and `predict.forecast_cutoff`. No database — `write_predictions` is read, never run |
 | `tests/test_teammates.py` | the **oracle** (v2) teammate family, kept because it is the evaluation bracket's upper bound and an oracle whose arithmetic is wrong is a useless bound: self-exclusion under a rebuilt feature frame, the split as-of contract with negative controls on both halves, the usage arithmetic against a hand computation, rank independence from the row's own availability |
 | `tests/test_teammates_v3.py` | the **served** (v3) family: teammate-outcome invariance pinned to PASS on the expected columns and to **FAIL** on the oracle ones; closed-form sensitivity to `p_j` for every column; the shrinkage weight at four points; career-scoped magnitudes crossing the season boundary; backward-only reliability features; the base model refusing teammate context; the cross-fit's out-of-fold stamp on every row plus a tampered-cutoff rejection; the team-game block permutation collapsing both gain share and out-of-sample MAE |
 | `tests/test_prospective_freeze.py` | **the 2026-27 pre-registration, enforced.** Every pinned artifact checksum recomputed from the bytes on disk, per file so a failure names *which* artifact moved, plus an assertion that the pinned set covers the whole directory (six passing per-file checks would not notice a seventh file appearing). Then the frozen serving configuration against the live module: champions, per-stat halflives and estimators (parametrised per stat, with STL's `expanding` called out separately because it is the most surprising entry), the 51-column feature contract by digest, the override constants against `overrides.DEFAULT_POLICY` — including the PROBABLE floor condition `s >= 1 - w`, which the defaults satisfy with *equality* and which therefore needs a float tolerance to be checkable at all — the horizon windows, the coherence constraints and the frozen cohort definitions. Then the protocol's own shape: exactly three look dates asserted literally, ordered, inside the season, with non-decreasing row minimums; and the falsification table checked for the properties that make it binding — every endpoint names all three looks (a `None` is a pre-registered "no power here", a *missing* key is an oversight), no threshold is a placeholder, no endpoint is report-only everywhere, thresholds only tighten across looks, no bar demands more than the retrospective effect it tests, and the Dec-1 teammate-context bars sit on the *worse* side of zero because at ~1.5 month-blocks the MDE exceeds the effect. The one row we expect to fail (REB/TOV/FG3M at halflife 20, which section 12.4's validation rows already contradict) is pinned as expected-to-fail |

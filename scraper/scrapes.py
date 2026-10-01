@@ -23,6 +23,7 @@ from parsing import (
     _pct,
     _resolve_team_abbr,
     _safe_float,
+    cleared_player_ids,
     normalize_injury_status,
     resolve_positions,
 )
@@ -313,6 +314,27 @@ def scrape_scoreboard(
     logger.info("total games upserted: %d", total)
 
 
+def _parse_cbs_injury_rows(html: str) -> list[tuple[str, str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    parsed: list[tuple[str, str, str]] = []
+    for table in soup.select("div.TableBase"):
+        for row in table.select("tr.TableBase-bodyTr"):
+            cells = row.select("td")
+            if len(cells) < 4:
+                continue
+
+            name_el = cells[0].select_one("span.CellPlayerName--long a") or cells[0].select_one("a")
+            player_name = name_el.get_text(strip=True) if name_el else ""
+            if not player_name:
+                continue
+            injury_detail = cells[2].get_text(strip=True)
+            injury_status = cells[3].get_text(strip=True)
+            parsed.append(
+                (player_name, injury_status or "Day-To-Day", injury_detail or "Unknown")
+            )
+    return parsed
+
+
 def scrape_injuries(
     conn: psycopg2.extensions.connection, dry_run: bool = False
 ) -> None:
@@ -320,70 +342,81 @@ def scrape_injuries(
     time.sleep(1)
     try:
         html = fetch_injury_page()
-    except Exception as e:
-        logger.error("error fetching injuries: %s", e)
+    except Exception as e:  # noqa: BLE001 - any failure means the page is unusable
+        logger.warning("error fetching injuries, leaving statuses untouched: %s", e)
         return
 
-    soup = BeautifulSoup(html, "html.parser")
+    parsed = _parse_cbs_injury_rows(html)
+    # a failed or empty scrape must never read as "everyone is healthy".
+    if not parsed:
+        logger.warning("injury page parsed to zero rows, leaving statuses untouched")
+        return
 
     cur = maybe_write_cursor(conn.cursor(), dry_run)
+    cur.execute("SELECT nba_id FROM players WHERE injury_status IS NOT NULL")
+    previously_listed = [str(nba_id) for (nba_id,) in cur.fetchall() if nba_id]
+    # resolved with a read so a dry run reports the same clearances production writes.
+    cur.execute(
+        "SELECT nba_id FROM players WHERE LOWER(name) = ANY(%s)",
+        ([name.lower() for name, _, _ in parsed],),
+    )
+    currently_listed = [str(nba_id) for (nba_id,) in cur.fetchall() if nba_id]
+
     cur.execute("UPDATE players SET injury_status = NULL, injury_detail = NULL")
 
     count = 0
     logged = 0
-    tables = soup.select("div.TableBase")
-    for table in tables:
-        rows = table.select("tr.TableBase-bodyTr")
-        for row in rows:
-            cells = row.select("td")
-            if len(cells) < 4:
+    for player_name, status, detail in parsed:
+        # RETURNING nba_id because CBS publishes names only, and the players
+        # table is the only place the name -> NBA id mapping exists.
+        cur.execute(
+            """
+            UPDATE players SET injury_status = %s, injury_detail = %s,
+                updated_at = NOW()
+            WHERE LOWER(name) = LOWER(%s)
+            RETURNING nba_id
+            """,
+            (status, detail, player_name),
+        )
+        matched = cur.fetchall()
+        if matched:
+            count += len(matched)
+
+        # append-only history, never an upsert: "what did we know at 6am" is
+        # the question the model asks, and overwriting destroys the answer.
+        for (nba_id,) in matched:
+            if not nba_id:
                 continue
-
-            name_el = cells[0].select_one("span.CellPlayerName--long a") or cells[0].select_one("a")
-            player_name = name_el.get_text(strip=True) if name_el else ""
-            injury_detail = cells[2].get_text(strip=True) if len(cells) > 2 else ""
-            injury_status = cells[3].get_text(strip=True) if len(cells) > 3 else "Day-To-Day"
-
-            if not player_name:
-                continue
-
-            status = injury_status or "Day-To-Day"
-            detail = injury_detail or "Unknown"
-            # RETURNING nba_id because CBS publishes names only, and the players
-            # table is the only place the name -> NBA id mapping exists.
+            logged += 1
             cur.execute(
                 """
-                UPDATE players SET injury_status = %s, injury_detail = %s,
-                    updated_at = NOW()
-                WHERE LOWER(name) = LOWER(%s)
-                RETURNING nba_id
+                INSERT INTO player_injury_reports (nba_player_id, captured_at,
+                                                   status_raw, status_normalized,
+                                                   reason, source)
+                VALUES (%s, NOW(), %s, %s, %s, 'cbssports')
                 """,
-                (status, detail, player_name),
+                (str(nba_id), status, normalize_injury_status(status), detail),
             )
-            matched = cur.fetchall()
-            if matched:
-                count += len(matched)
 
-            # append-only history, never an upsert: "what did we know at 6am" is
-            # the question the model asks, and overwriting destroys the answer.
-            for (nba_id,) in matched:
-                if not nba_id:
-                    continue
-                logged += 1
-                cur.execute(
-                    """
-                    INSERT INTO player_injury_reports (nba_player_id, captured_at,
-                                                       status_raw, status_normalized,
-                                                       reason, source)
-                    VALUES (%s, NOW(), %s, %s, %s, 'cbssports')
-                    """,
-                    (str(nba_id), status, normalize_injury_status(status), detail),
-                )
+    # a recovered player just disappears from the page, so his clearance has to be
+    # written explicitly or his last 'out' row stands forever.
+    cleared = cleared_player_ids(previously_listed, currently_listed)
+    for nba_id in cleared:
+        cur.execute(
+            """
+            INSERT INTO player_injury_reports (nba_player_id, captured_at,
+                                               status_raw, status_normalized,
+                                               reason, source)
+            VALUES (%s, NOW(), 'cleared', 'cleared', NULL, 'cbssports')
+            """,
+            (nba_id,),
+        )
 
     cur.close()
     logger.info(
-        "updated %d player injuries%s, logged %d report row(s)",
+        "updated %d player injuries%s, logged %d report row(s), cleared %d player(s)",
         count,
         " (dry run: no rows written)" if dry_run else "",
         logged,
+        len(cleared),
     )

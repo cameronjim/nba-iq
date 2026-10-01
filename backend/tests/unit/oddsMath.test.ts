@@ -5,6 +5,7 @@ import {
   americanToImpliedProb,
   profitOnWin,
   combineParlay,
+  noVigProbabilities,
 } from '../../src/services/oddsMath.js';
 
 describe('profitOnWin', () => {
@@ -55,5 +56,34 @@ describe('combineParlay', () => {
 
     expect(result.american).toBe(150);
     expect(result.impliedProb).toBeCloseTo(0.4, 5);
+  });
+});
+
+describe('noVigProbabilities', () => {
+  it('splits two -110 sides evenly', () => {
+    // arrange
+    const side = americanToImpliedProb(-110);
+
+    // act
+    const [a, b] = noVigProbabilities(side, side);
+
+    // assert
+    expect(a).toBeCloseTo(0.5, 6);
+    expect(b).toBeCloseTo(0.5, 6);
+  });
+
+  it('removes the vig from an asymmetric market and sums to 1', () => {
+    // arrange
+    const favorite = americanToImpliedProb(-130); // 0.565217
+    const dog = americanToImpliedProb(105); // 0.487805
+
+    // act
+    const [a, b] = noVigProbabilities(favorite, dog);
+
+    // assert
+    expect(a).toBeCloseTo(0.565217 / 1.053022, 5);
+    expect(a).toBeCloseTo(0.5367, 3);
+    expect(b).toBeCloseTo(0.4633, 3);
+    expect(a + b).toBeCloseTo(1, 10);
   });
 });

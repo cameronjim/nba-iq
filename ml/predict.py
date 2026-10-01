@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +40,7 @@ from fnba_ml.config import (  # noqa: E402
     is_cold_start,
 )
 from fnba_ml.features import attach_expected_context  # noqa: E402
+from fnba_ml.prospective import SOURCE_PROSPECTIVE  # noqa: E402
 from fnba_ml.intervals import (  # noqa: E402
     QUANTILE_LEVELS,
     QuantileOffsets,
@@ -67,6 +69,8 @@ from fnba_ml.overrides import (  # noqa: E402
     resolve_overrides,
 )
 from fnba_ml.store import (  # noqa: E402
+    PRODUCTION_CHANNEL,
+    RUN_CHANNELS,
     build_prediction_rows,
     build_run_record,
     utc_now,
@@ -94,7 +98,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--models-dir", type=Path, default=MODELS_DIR)
     parser.add_argument("--out", type=Path, default=DATA_DIR / "predictions.parquet")
     parser.add_argument("--run-at", default=None,
-                        help="only score games on or after this date")
+                        help="only score games on or after this date (a game-date "
+                             "selector, not an information boundary; defaults to the "
+                             "model cutoff)")
     parser.add_argument("--write-db", action="store_true",
                         help="also insert the run into prediction_runs / "
                              "player_game_predictions")
@@ -104,7 +110,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--statuses", type=Path, default=None,
                         help="parquet or csv of latest injury designations")
     parser.add_argument("--statuses-as-of", default=None,
-                        help="information boundary for the injury reports")
+                        help="information boundary for the injury reports; stored "
+                             "as prediction_runs.information_as_of (default: now)")
+    parser.add_argument("--history-through", default=None,
+                        help="last game date whose outcomes fed the features, for a "
+                             "frame that holds no played rows (default: derived from "
+                             "the dataset)")
+    parser.add_argument("--channel", choices=RUN_CHANNELS, default=PRODUCTION_CHANNEL,
+                        help="prediction_runs.channel; only 'production' is served")
     parser.add_argument("--horizon", choices=(*HORIZONS, NO_HORIZON),
                         default=DEFAULT_HORIZON,
                         help="when this run is being made relative to tipoff; 'none' "
@@ -357,6 +370,33 @@ def horizon_metadata(
     }
 
 
+def history_through(features: pd.DataFrame) -> date | None:
+    """the last GAME_DATE with a played outcome in the frame, or None."""
+    if "GAME_DATE" not in features.columns or features.empty:
+        return None
+    if "PLAYED" in features.columns:
+        played = features[pd.to_numeric(features["PLAYED"], errors="coerce") == 1]
+    elif "UNIVERSE_SOURCE" in features.columns:
+        played = features[features["UNIVERSE_SOURCE"].astype(str) != SOURCE_PROSPECTIVE]
+    else:
+        return None
+    if played.empty:
+        return None
+    newest = pd.to_datetime(played["GAME_DATE"], errors="coerce").max()
+    return None if pd.isna(newest) else pd.Timestamp(newest).date()
+
+
+def as_utc(value: object) -> pd.Timestamp:
+    """an aware UTC timestamp; a naive one is taken to already be UTC."""
+    stamp = pd.Timestamp(value)  # type: ignore[arg-type]
+    return stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+
+
+def forecast_cutoff(run_at: pd.Timestamp, information_as_of: pd.Timestamp) -> pd.Timestamp:
+    """the latest instant any input was allowed to see: max(start of run_at day, info)."""
+    return max(as_utc(pd.Timestamp(run_at).normalize()), as_utc(information_as_of))
+
+
 def universe_source(features: pd.DataFrame, metadata: dict) -> str:
     if "UNIVERSE_SOURCE" in features.columns and len(features) > 0:
         return str(features["UNIVERSE_SOURCE"].iloc[0])
@@ -366,26 +406,35 @@ def universe_source(features: pd.DataFrame, metadata: dict) -> str:
 def write_run(
     predictions: pd.DataFrame,
     metadata: dict,
-    forecast_cutoff: pd.Timestamp,
+    run_at: pd.Timestamp,
     notes: str | None,
     horizon: str | None,
     horizon_facts: dict[str, object] | None = None,
+    channel: str = PRODUCTION_CHANNEL,
+    information_as_of: pd.Timestamp | None = None,
+    history_through_date: date | None = None,
 ) -> tuple[int, int]:
     """build the rows, insert them in one transaction, link the run back."""
     rows = build_prediction_rows(predictions, TARGETS, QUANTILE_LEVELS)
     predicted_at = utc_now()
+    information = (
+        as_utc(information_as_of).to_pydatetime() if information_as_of is not None else None
+    )
     run_record = build_run_record(
         metadata,
         predicted_at=predicted_at,
-        # the information boundary: every game at or after it is what the run is
-        # predicting, and nothing at or after it was visible to the model.
-        forecast_cutoff_at=pd.Timestamp(forecast_cutoff).to_pydatetime(),
+        # the start of the first scored day; build_run_record stores the later of
+        # it and information_as_of, so the column is a true boundary.
+        forecast_cutoff_at=as_utc(pd.Timestamp(run_at).normalize()).to_pydatetime(),
         # the commit that made the PREDICTION. the commit that trained the model
         # is a different fact and lives in the registry entry.
         code_sha=registry.git_commit(),
         status="complete",
         notes=notes,
         horizon=horizon,
+        channel=channel,
+        information_as_of=information,
+        history_through=history_through_date,
     )
     run_id = write_predictions(rows, run_record)
     overridden = (
@@ -397,7 +446,10 @@ def write_run(
         {
             "run_id": run_id,
             "predicted_at": predicted_at.isoformat(timespec="seconds"),
-            "forecast_cutoff_at": str(pd.Timestamp(forecast_cutoff)),
+            "forecast_cutoff_at": pd.Timestamp(run_record["forecast_cutoff_at"]).isoformat(),
+            "channel": channel,
+            "information_as_of": information.isoformat() if information else None,
+            "history_through": str(history_through_date) if history_through_date else None,
             # the horizon lands in both places on purpose: prediction_runs.notes is
             # what a database consumer reads, the registry entry is what an audit of
             # the artifact reads, and neither should have to join to the other to
@@ -440,6 +492,11 @@ def main(argv: list[str] | None = None) -> int:
         pd.Timestamp(args.statuses_as_of) if args.statuses_as_of
         else pd.Timestamp(utc_now())
     )
+    run_history_through = (
+        pd.Timestamp(args.history_through).date() if args.history_through
+        else history_through(features)
+    )
+    run_cutoff = forecast_cutoff(run_at, statuses_as_of)
 
     # STAGES 1-3 BEFORE ANY FINAL SCORING. the report has to reach the teammate
     # context, not only the row's own probability, or the projections page would
@@ -520,7 +577,10 @@ def main(argv: list[str] | None = None) -> int:
     written: tuple[int, int] | None = None
     if args.write_db:
         written = write_run(
-            predictions, metadata, run_at, notes, horizon, horizon_facts
+            predictions, metadata, run_at, notes, horizon, horizon_facts,
+            channel=args.channel,
+            information_as_of=statuses_as_of,
+            history_through_date=run_history_through,
         )
 
     summary = override_summary(predictions)
@@ -528,6 +588,10 @@ def main(argv: list[str] | None = None) -> int:
     print("--- PREDICT ---")
     print(f"version   : {args.version}")
     print(f"run at    : {run_at.date()} (model cutoff {pd.Timestamp(model.cutoff).date()})")
+    print(f"channel   : {args.channel}")
+    print(f"cutoff    : {run_cutoff.isoformat()} (latest instant any input could see)")
+    print(f"info as of: {as_utc(statuses_as_of).isoformat()} (injury reports)")
+    print(f"history   : outcomes through {run_history_through or 'unknown'}")
     print(f"horizon   : {horizon_label(horizon) if horizon else NO_HORIZON}")
     for key, value in horizon_facts.items():
         if key != "horizon_requested":

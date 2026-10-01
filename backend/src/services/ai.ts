@@ -2,6 +2,7 @@ import { query } from '../db.js';
 import { activeProviderKind, getNarrator } from './aiProvider.js';
 import { getRankedPlayers } from './fantasyScore.js';
 import type { BettingGame } from './odds.js';
+import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } from './slate.js';
 
 export function extractJSON(text: string): string {
   const fenced = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
@@ -84,7 +85,8 @@ async function buildRosterAnalyticsBlock(
        ),
        run AS (
          SELECT id FROM prediction_runs
-         WHERE status = 'complete'
+         WHERE status = $2
+           AND channel = $3
          ORDER BY predicted_at DESC, id DESC
          LIMIT 1
        ),
@@ -109,7 +111,7 @@ async function buildRosterAnalyticsBlock(
               pr.prob_active
        FROM agg a
        LEFT JOIN prob pr ON pr.nba_player_id = a.nba_player_id`,
-      [ids]
+      [ids, COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]
     );
 
     const nameById = new Map(roster.map((p) => [p.nba_id, p.name]));
@@ -275,20 +277,23 @@ function shuffleInPlace<T>(arr: T[]): void {
 
 const pct = (p: number): string => `${(p * 100).toFixed(1)}%`;
 
+const priceText = (price: number | null, implied: number | null): string =>
+  price == null || implied == null ? 'n/a' : `${price}, implied ${pct(implied)}`;
+
 function formatMarketLines(game: BettingGame): string[] {
   const lines: string[] = [];
   const s = game.markets.spread;
   if (s) {
     lines.push(
-      `  SPREAD: home ${s.home_line > 0 ? '+' : ''}${s.home_line} (${s.home_price}, implied ${pct(s.home_implied)}) / ` +
-      `away ${s.away_line > 0 ? '+' : ''}${s.away_line} (${s.away_price}, implied ${pct(s.away_implied)})`
+      `  SPREAD: home ${s.home_line > 0 ? '+' : ''}${s.home_line} (${priceText(s.home_price, s.home_implied)}) / ` +
+      `away ${s.away_line > 0 ? '+' : ''}${s.away_line} (${priceText(s.away_price, s.away_implied)})`
     );
   }
   const t = game.markets.total;
   if (t) {
     lines.push(
-      `  TOTAL: ${t.line}: over (${t.over_price}, implied ${pct(t.over_implied)}) / ` +
-      `under (${t.under_price}, implied ${pct(t.under_implied)})`
+      `  TOTAL: ${t.line}: over (${priceText(t.over_price, t.over_implied)}) / ` +
+      `under (${priceText(t.under_price, t.under_implied)})`
     );
   }
   const m = game.markets.moneyline;
@@ -423,7 +428,7 @@ export async function buildBettingContext(games: BettingGame[]): Promise<string>
 
   const blocks = games.map((g) => {
     const lines = [
-      `GAME ${g.nba_game_id}: ${g.away_team} @ ${g.home_team} (${g.game_date}, ${g.tipoff})`,
+      `GAME ${g.espn_event_id}: ${g.away_team} @ ${g.home_team} (${g.game_date}, ${g.tipoff})`,
       ...formatMarketLines(g),
       teamLine(g.home_team),
       teamLine(g.away_team),

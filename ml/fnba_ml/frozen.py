@@ -1,4 +1,4 @@
-"""the frozen `prospective_2026_27_v1` pre-registration, machine-readable half.
+"""the frozen `prospective_2026_27_v2` pre-registration, machine-readable half.
 
 every value here is a hand-copied snapshot of the served configuration, never a
 read of the live constant: a mirror that reads the live value can never fail.
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-PROSPECTIVE_PROTOCOL_VERSION = "prospective_2026_27_v1"
+PROSPECTIVE_PROTOCOL_VERSION = "prospective_2026_27_v2"
 
 PROSPECTIVE_ARTIFACT_CHECKSUMS: dict[str, str] = {
     "availability_model.joblib":
@@ -37,7 +37,7 @@ PROSPECTIVE_LOOK_DATES: tuple[str, ...] = tuple(d for _, d, _ in PROSPECTIVE_LOO
 
 # the label stamped into prediction_runs.notes; a run without it is not part of
 # the prospective test.
-PROSPECTIVE_RUN_NOTE_LABEL = "prospective_2026_27_v1"
+PROSPECTIVE_RUN_NOTE_LABEL = "prospective_2026_27_v2"
 
 # a secondary reporting axis, not a filter: flagged rows stay in every endpoint.
 PROSPECTIVE_COLD_START_FLAG = "cold_start"
@@ -95,6 +95,12 @@ PROSPECTIVE_OVERRIDE_CONSTANTS: dict[str, float] = {
     "probable_model_weight": 0.85,
     "probable_shift": 0.15,
 }
+
+# literals for the same reason: report expiry and the statuses the layer leaves alone.
+PROSPECTIVE_REPORT_MAX_AGE_HOURS = 72.0
+PROSPECTIVE_PASSTHROUGH_STATUSES: frozenset[str] = frozenset(
+    {"available", "day_to_day", "cleared", "unknown"}
+)
 
 # `direction` says which way a FAILURE lies; a `None` threshold means the look is
 # report-only for that endpoint because it has no power at that sample size.
@@ -184,7 +190,8 @@ PROSPECTIVE_OCTOBER_GATE: dict[str, float] = {
 
 PROSPECTIVE_2026_27: dict[str, object] = {
     "protocol_version": PROSPECTIVE_PROTOCOL_VERSION,
-    "frozen_at": "2026-08-17",
+    "frozen_at": "2026-10-01",
+    "refrozen_from": "prospective_2026_27_v1",
     "season": "2026-27",
     "model_version": PROSPECTIVE_MODEL_VERSION,
     "feature_version": PROSPECTIVE_FEATURE_VERSION,
@@ -205,6 +212,8 @@ PROSPECTIVE_2026_27: dict[str, object] = {
     "rate_estimators": PROSPECTIVE_RATE_ESTIMATORS,
     "coherence_constraints": PROSPECTIVE_COHERENCE_CONSTRAINTS,
     "override_constants": PROSPECTIVE_OVERRIDE_CONSTANTS,
+    "report_max_age_hours": PROSPECTIVE_REPORT_MAX_AGE_HOURS,
+    "passthrough_statuses": PROSPECTIVE_PASSTHROUGH_STATUSES,
     "horizon_windows": PROSPECTIVE_HORIZON_WINDOWS,
     "feature_cols_sha256": PROSPECTIVE_FEATURE_COLS_SHA256,
     "n_features": PROSPECTIVE_N_FEATURES,

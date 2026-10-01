@@ -14,6 +14,11 @@ export function americanToImpliedProb(odds: number): number {
   return Math.abs(odds) / (Math.abs(odds) + 100);
 }
 
+export function noVigProbabilities(a: number, b: number): [number, number] {
+  const total = a + b;
+  return [a / total, b / total];
+}
+
 export interface ParlayOdds {
   american: number;
   impliedProb: number;

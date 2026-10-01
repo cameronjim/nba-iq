@@ -3,6 +3,7 @@ import { pgResult } from '../helpers/mockDb.js';
 
 const { buildTeamContext, buildWaiverContext } = await import('../../src/services/ai.js');
 const { query } = await import('../../src/db.js');
+const { PRODUCTION_CHANNEL } = await import('../../src/services/slate.js');
 const queryMock = vi.mocked(query);
 
 
@@ -107,7 +108,7 @@ describe('buildTeamContext analytics enrichment', () => {
     await buildTeamContext(1);
 
     const [sql, params] = queryMock.mock.calls[1];
-    expect(params).toEqual([['2544']]);
+    expect(params).toEqual([['2544'], 'complete', 'production']);
     expect(sql).toContain('ANY($1)');
   });
 });
@@ -135,5 +136,22 @@ describe('buildWaiverContext analytics enrichment', () => {
     expect(context).toContain('WAIVER CANDIDATES');
     expect(context).toContain('TRADE TARGETS');
     expect(context).not.toContain('RECENT FORM');
+  });
+});
+
+describe('buildTeamContext prediction run selection', () => {
+  it('reads availability only from a complete production run', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult([rosterRow]))
+      .mockResolvedValueOnce(pgResult([analyticsRow()]));
+
+    // act
+    await buildTeamContext(1);
+
+    // assert
+    const [sql, params] = queryMock.mock.calls[1];
+    expect(params).toContain(PRODUCTION_CHANNEL);
+    expect(sql).toMatch(/channel = \$3/);
   });
 });

@@ -8,8 +8,13 @@ const { IMPACT_PERCENTILE_FLOOR, MAX_WINDOW_DAYS, POSITION_FILTERS } = await imp
   '../../src/services/watchlist.js'
 );
 const { baselineDescriptor, BASELINE_STATS } = await import('../../src/services/baselines.js');
-const { IMPACT_POOL_KEY, IMPACT_POOL_LABEL, IMPACT_POOL_DEFINITION, POINTS_UNCOND_STAT } =
-  await import('../../src/services/slate.js');
+const {
+  IMPACT_POOL_KEY,
+  IMPACT_POOL_LABEL,
+  IMPACT_POOL_DEFINITION,
+  POINTS_UNCOND_STAT,
+  PRODUCTION_CHANNEL,
+} = await import('../../src/services/slate.js');
 const queryMock = vi.mocked(query);
 
 function poolOf(size: number): Record<string, unknown> {
@@ -933,5 +938,38 @@ describe('GET /api/watchlist over a window', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/position must be one of/);
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('prediction run channel', () => {
+  it('serves the slate from a production run, never a shadow one', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult(scheduleRows))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult(teamRows));
+
+    // act
+    const res = await request(app).get('/api/predictions/slate').query({ date: '2026-02-04' });
+
+    // assert
+    expect(res.status).toBe(200);
+    const [sql, params] = queryMock.mock.calls[1];
+    expect(sql).toContain('FROM prediction_runs');
+    expect(params).toContain(PRODUCTION_CHANNEL);
+  });
+
+  it('builds the watchlist from a production run, never a shadow one', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const res = await request(app).get('/api/watchlist').query({ date: '2026-02-04' });
+
+    // assert
+    expect(res.status).toBe(200);
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(sql).toContain('FROM prediction_runs');
+    expect(params).toContain(PRODUCTION_CHANNEL);
   });
 });

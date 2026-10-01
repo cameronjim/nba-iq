@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { query } from '../../src/db.js';
+import { pgResult } from '../helpers/mockDb.js';
+import { PRODUCTION_CHANNEL } from '../../src/services/slate.js';
 import {
+  getWatchlist,
   DEVIATION_STATS,
   DEVIATION_WEIGHTS,
   DEFAULT_WINDOW_DAYS,
@@ -912,5 +916,25 @@ describe('watchlistPool', () => {
     expect(pool.sample_size).toBe(1200);
     expect(pool.label).toBe("Each night's slate");
     expect(pool.definition).toMatch(/each night in the window is scored against its own slate/);
+  });
+});
+
+describe('getWatchlist run selection', () => {
+  const queryMock = vi.mocked(query);
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('looks up its run on the production channel and serves nothing without one', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const response = await getWatchlist('2026-02-04');
+
+    // assert
+    expect(queryMock.mock.calls[0][1]).toContain(PRODUCTION_CHANNEL);
+    expect(response.run).toBeNull();
   });
 });

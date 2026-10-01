@@ -46,10 +46,13 @@ const PickCard = ({ pick }: { pick: BettingPick }) => {
           <span className="opacity-50">AI says</span>{' '}
           <span className="font-medium">{formatPercent(pick.estimated_win_prob)}</span>
         </span>
-        <span title="AI estimate minus implied probability. Positive means potential value.">
+        <span title="Claude's estimate minus the no-vig implied probability when both sides are priced. Positive means potential value.">
           <span className="opacity-50">Edge</span>{' '}
           <span className={`font-semibold ${edgePositive ? 'text-success' : 'text-error'}`}>
             {formatSignedPercent(pick.edge)}
+          </span>{' '}
+          <span className="badge badge-ghost badge-xs whitespace-nowrap" title="A language-model estimate, not a trained model output">
+            Claude estimate
           </span>
         </span>
       </div>

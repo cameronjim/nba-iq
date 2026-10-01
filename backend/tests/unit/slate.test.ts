@@ -1,5 +1,10 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { query } from '../../src/db.js';
+import { pgResult } from '../helpers/mockDb.js';
 import {
+  COMPLETE_RUN_STATUS,
+  PRODUCTION_CHANNEL,
+  getLatestCompleteRun,
   IMPACT_CATEGORIES,
   PLACEHOLDER_NAME_SUFFIX,
   POINTS_UNCOND_STAT,
@@ -468,5 +473,40 @@ describe('injuryOverlayFields', () => {
       RUN_AT
     );
     expect(fields.injury_status).toBe('unknown');
+  });
+});
+
+describe('getLatestCompleteRun', () => {
+  const queryMock = vi.mocked(query);
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('selects only complete runs on the production channel', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(
+      pgResult([{ id: 7, model_version: 'v3', predicted_at: new Date('2026-09-30T12:00:00.000Z') }])
+    );
+
+    // act
+    const run = await getLatestCompleteRun();
+
+    // assert
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(params).toEqual([COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
+    expect(sql).toMatch(/channel = \$2/);
+    expect(run).toEqual({ id: 7, model_version: 'v3', predicted_at: '2026-09-30T12:00:00.000Z' });
+  });
+
+  it('returns null when no production run exists', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const run = await getLatestCompleteRun();
+
+    // assert
+    expect(run).toBeNull();
   });
 });

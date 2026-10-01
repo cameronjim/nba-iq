@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -190,7 +191,7 @@ class TestRunNotes:
         note = daily_run.run_notes([])
         assert note == (
             f"{config.PROSPECTIVE_RUN_NOTE_LABEL}; "
-            f"feature_set={config.SERVED_FEATURE_SET}; shadow=false"
+            f"feature_set={config.SERVED_FEATURE_SET}; channel=production"
         )
 
     def test_a_disqualified_run_never_carries_the_label(self) -> None:
@@ -203,11 +204,12 @@ class TestRunNotes:
         with pytest.raises(AssertionError, match=config.PROSPECTIVE_RUN_NOTE_LABEL):
             daily_run.run_notes([f"not {config.PROSPECTIVE_RUN_NOTE_LABEL}"])
 
-    def test_the_feature_set_and_shadow_flags_are_always_present(self) -> None:
+    def test_the_feature_set_and_channel_flags_are_always_present(self) -> None:
         for reasons in ([], ["something"]):
             note = daily_run.run_notes(reasons)
             assert f"feature_set={config.SERVED_FEATURE_SET}" in note
-            assert "shadow=false" in note
+            assert "channel=production" in note
+            assert "shadow=" not in note
 
     def test_staleness_is_appended_to_either_form(self) -> None:
         stale = "STALE truth layer: game logs end 2026-11-20"
@@ -532,7 +534,7 @@ class TestExtendedNotes:
         )
         assert "horizon=" not in note
         assert "Pre Season" in note
-        assert f"feature_set={config.SERVED_FEATURE_SET}; shadow=false" in note
+        assert f"feature_set={config.SERVED_FEATURE_SET}; channel=production" in note
 
     def test_staleness_is_appended(self) -> None:
         note = daily_run.extended_notes(7, [], "STALE truth layer")
@@ -545,3 +547,51 @@ class TestExtendedNotes:
     def test_the_slate_widens_only_the_slate_query(self) -> None:
         assert "Pre Season" in daily_run.SLATE_SEASON_TYPES
         assert config.SEASON_TYPES == ["Regular Season"]
+
+
+class TestPredictArgv:
+    def _argv(self, **overrides) -> list[str]:
+        kwargs = dict(
+            dataset_path=Path("prospective.parquet"),
+            models_dir=Path("models"),
+            out_path=Path("predictions.parquet"),
+            notes="note",
+            horizon="gameday",
+            window_start=date(2026, 10, 20),
+            statuses_as_of=pd.Timestamp("2026-10-20T15:30:00Z"),
+            statuses_path=None,
+            history_through=date(2026, 10, 19),
+            write_db=True,
+        )
+        kwargs.update(overrides)
+        return daily_run.predict_argv(**kwargs)
+
+    @staticmethod
+    def _value(argv: list[str], flag: str) -> str:
+        return argv[argv.index(flag) + 1]
+
+    def test_every_daily_run_is_on_the_production_channel(self) -> None:
+        for horizon in ("gameday", "none"):
+            argv = self._argv(horizon=horizon)
+            assert self._value(argv, "--channel") == "production"
+
+    def test_the_two_boundaries_are_passed_separately(self) -> None:
+        argv = self._argv()
+        assert self._value(argv, "--run-at") == "2026-10-20"
+        assert self._value(argv, "--statuses-as-of") == "2026-10-20T15:30:00+00:00"
+        assert self._value(argv, "--history-through") == "2026-10-19"
+
+    def test_unknown_history_is_left_for_predict_to_derive(self) -> None:
+        assert "--history-through" not in self._argv(history_through=None)
+
+    def test_a_dry_run_never_writes(self) -> None:
+        assert "--write-db" not in self._argv(write_db=False)
+        assert "--write-db" in self._argv(write_db=True)
+
+    def test_the_argv_parses_in_predict(self) -> None:
+        import predict  # noqa: PLC0415
+
+        args = predict.parse_args(self._argv(statuses_path=Path("s.parquet")))
+        assert args.channel == "production"
+        assert args.history_through == "2026-10-19"
+        assert args.write_db is True

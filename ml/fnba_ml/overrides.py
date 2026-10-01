@@ -32,6 +32,13 @@ reads the T-60m report and looks prescient. :func:`apply_status_overrides` takes
 ``as_of`` and drops every report at or after it. this is the same rule the
 training cutoff enforces, one layer further out.
 
+REPORTS EXPIRE, AND CLEARANCES ARE ROWS. a recovered player simply drops off the
+source page, so his last 'out' would otherwise stand indefinitely. two guards: the
+scraper appends an explicit 'cleared' row for every player who left the page, and
+a report older than ``REPORT_MAX_AGE_HOURS`` before ``as_of`` is ignored. 'cleared'
+is a passthrough status, so a newer clearance supersedes an older 'out' and leaves
+the model alone.
+
 PURE. a frame in, a frame out. no database, no clock, no environment - predict.py
 supplies both frames and the boundary.
 """
@@ -121,6 +128,11 @@ LEAGUE_QUESTIONABLE_PLAY_RATE: float = 0.60
 PROBABLE_MODEL_WEIGHT: float = 0.85
 PROBABLE_SHIFT: float = 0.15
 
+# a designation older than this says nothing about tonight; the CBS feed re-lists
+# active injuries every scrape, so a report that has not been refreshed in three
+# days is one the source has dropped.
+REPORT_MAX_AGE_HOURS: float = 72.0
+
 # ---- the status vocabulary ----
 # migration 013 normalises to: out, doubtful, questionable, probable, day_to_day,
 # available, unknown. the extra names here are the ones a widened scraper will
@@ -133,6 +145,7 @@ STATUS_G_LEAGUE = "g_league"
 STATUS_DOUBTFUL = "doubtful"
 STATUS_QUESTIONABLE = "questionable"
 STATUS_PROBABLE = "probable"
+STATUS_CLEARED = "cleared"
 
 # aliases collapse source wording onto the vocabulary above, applied AFTER case,
 # whitespace and hyphen normalisation - so "G-League", "g league" and "g_league"
@@ -158,7 +171,8 @@ UNAVAILABLE_STATUSES: frozenset[str] = frozenset(
 
 # DELIBERATELY NOT OVERRIDDEN: 'available', 'day_to_day' (a roster note, not a
 # statement about tonight's game - the CBS-style feeds attach it to players who then
-# play), 'unknown', and anything unlisted.
+# play), 'cleared' (the scraper's row for a player who left the report), 'unknown',
+# and anything unlisted.
 #
 # [PLANNED] 'AVAILABLE' IS NOT INFORMATIONALLY NULL, and the previous justification
 # for passing it through - "the model is already answering that question with more
@@ -177,7 +191,9 @@ UNAVAILABLE_STATUSES: frozenset[str] = frozenset(
 # work rather than guessed at: an 'available' rule invented from nothing would be a
 # third hand-set constant with no measurement behind it, and this module already has
 # five.
-PASSTHROUGH_STATUSES: frozenset[str] = frozenset({"available", "day_to_day", "unknown"})
+PASSTHROUGH_STATUSES: frozenset[str] = frozenset(
+    {"available", "day_to_day", STATUS_CLEARED, "unknown"}
+)
 
 
 def normalise_status(value: object) -> str:
@@ -280,6 +296,7 @@ def _to_naive_utc(values) -> pd.Series:
 def latest_statuses(
     statuses: pd.DataFrame,
     as_of: pd.Timestamp | None = None,
+    max_age_hours: float | None = REPORT_MAX_AGE_HOURS,
 ) -> pd.DataFrame:
     """one row per player: the newest report KNOWN at ``as_of``.
 
@@ -287,6 +304,10 @@ def latest_statuses(
     the whole point - the T-24h run must be scored against the report that
     existed at T-24h, and "use the newest one but pretend it is older" is the
     exact error this guard exists to prevent.
+
+    reports captured more than ``max_age_hours`` before ``as_of`` are dropped as
+    stale. ``max_age_hours=None`` disables that, and without ``as_of`` there is
+    no reference point so no report expires.
     """
     missing = [c for c in STATUS_COLUMNS if c not in statuses.columns]
     if missing:
@@ -312,6 +333,14 @@ def latest_statuses(
                 "information boundary %s", int(future.sum()), boundary,
             )
         frame = frame[~future]
+        if max_age_hours is not None:
+            stale = frame["captured_at"] < boundary - pd.Timedelta(hours=max_age_hours)
+            if stale.any():
+                log.info(
+                    "ignoring %d injury reports captured more than %s hours before %s",
+                    int(stale.sum()), max_age_hours, boundary,
+                )
+            frame = frame[~stale]
 
     return (
         frame.sort_values("captured_at")
@@ -356,6 +385,8 @@ def resolve_overrides(
     statuses: pd.DataFrame | None,
     policy: StatusPolicy = DEFAULT_POLICY,
     as_of: pd.Timestamp | None = None,
+    *,
+    max_age_hours: float | None = REPORT_MAX_AGE_HOURS,
 ) -> OverrideResult:
     """the policy table, applied to one probability vector. no frame surgery.
 
@@ -374,7 +405,7 @@ def resolve_overrides(
     if statuses is None or len(statuses) == 0:
         return empty
 
-    latest = latest_statuses(statuses, as_of)
+    latest = latest_statuses(statuses, as_of, max_age_hours)
     if latest.empty:
         return empty
 
@@ -421,6 +452,8 @@ def apply_status_overrides(
     statuses: pd.DataFrame | None,
     policy: StatusPolicy = DEFAULT_POLICY,
     as_of: pd.Timestamp | None = None,
+    *,
+    max_age_hours: float | None = REPORT_MAX_AGE_HOURS,
 ) -> pd.DataFrame:
     """apply the injury-report policy to a scored prediction frame.
 
@@ -462,7 +495,7 @@ def apply_status_overrides(
 
     resolved = resolve_overrides(
         out["PLAYER_ID"], out[P_PLAY_MODEL].to_numpy(dtype=float),
-        statuses, policy, as_of,
+        statuses, policy, as_of, max_age_hours=max_age_hours,
     )
     applies = resolved.applies
 

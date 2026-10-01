@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { query } from '../../src/db.js';
+import { pgResult } from '../helpers/mockDb.js';
+import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } from '../../src/services/slate.js';
 import {
+  getLatestRunMeta,
   DEFAULT_UPCOMING_LIMIT,
   MAX_UPCOMING_LIMIT,
   collectStatKeys,
@@ -195,5 +199,27 @@ describe('collectStatKeys', () => {
     const keys = collectStatKeys(pivotUpcomingRows(rows, 'LAL'));
 
     expect(keys).toEqual(['minutes', 'pts', 'reb']);
+  });
+});
+
+describe('getLatestRunMeta', () => {
+  const queryMock = vi.mocked(query);
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('reads run metadata only from the production channel', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const meta = await getLatestRunMeta();
+
+    // assert
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(params).toEqual([COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
+    expect(sql).toMatch(/channel = \$2/);
+    expect(meta).toBeNull();
   });
 });

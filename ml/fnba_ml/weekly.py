@@ -167,11 +167,9 @@ def ratio_totals(
 def availability_risk(rows: Sequence[GamePrediction]) -> float:
     """probability the player misses AT LEAST ONE game in the range.
 
-    1 - product(prob_active). the complement (playing every game) is the
-    product only because per-game availabilities are treated as independent;
-    they are not, quite - a lingering injury correlates across a week - so
-    this is a LOWER bound on the true risk. it is still the right shape: risk
-    rises with every additional game, which is the decision this number feeds.
+    1 - product(prob_active), exact under independence. absences are
+    positively correlated (a lingering injury), which raises P(plays every
+    game) above the product, so this is an UPPER bound on the true risk.
 
     an empty range carries no risk at all, so it reports 0.0.
     """

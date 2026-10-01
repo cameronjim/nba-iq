@@ -20,6 +20,7 @@ from config import (
 from database import is_write_statement
 from parsing import (
     box_score_violations,
+    cleared_player_ids,
     extract_next_data,
     in_season,
     normalize_injury_status,
@@ -363,6 +364,7 @@ class TestNormalizeInjuryStatus:
             ("Game Time Decision", "day_to_day"),
             ("GTD", "day_to_day"),
             ("Available", "available"),
+            ("cleared", "cleared"),
         ],
     )
     def test_buckets_known_wording(self, raw, expected):
@@ -374,6 +376,28 @@ class TestNormalizeInjuryStatus:
     @pytest.mark.parametrize("raw", [None, "", "Reconditioning", "G League Two-Way"])
     def test_unrecognised_degrades_to_unknown(self, raw):
         assert normalize_injury_status(raw) == "unknown"
+
+
+class TestClearedPlayerIds:
+    def test_previously_listed_players_missing_from_the_page_are_cleared(self):
+        cleared = cleared_player_ids(["1", "2", "3"], ["2", "4"])
+
+        assert cleared == ["1", "3"]
+
+    def test_an_empty_current_set_clears_nobody(self):
+        cleared = cleared_player_ids(["1", "2"], [])
+
+        assert cleared == []
+
+    def test_still_listed_players_are_never_cleared(self):
+        cleared = cleared_player_ids(["1", "2"], ["1", "2"])
+
+        assert cleared == []
+
+    def test_ids_are_compared_as_strings_and_blanks_are_ignored(self):
+        cleared = cleared_player_ids([2544, "", None, "203507"], ["2544"])
+
+        assert cleared == ["203507"]
 
 
 class TestNormalizeInactiveRows:
@@ -1265,3 +1289,106 @@ class TestStatsReachability:
         ok = truth_layer.scrape_schedule(FakeConn(), "2026-27", stats_reachable=False)
 
         assert ok is False
+
+
+CBS_INJURY_HTML = """
+<div class="TableBase"><table>
+<tr class="TableBase-bodyTr">
+  <td><span class="CellPlayerName--long"><a>LeBron James</a></span></td>
+  <td>F</td><td>Ankle</td><td>Out</td>
+</tr>
+<tr class="TableBase-bodyTr">
+  <td><span class="CellPlayerName--long"><a>Stephen Curry</a></span></td>
+  <td>G</td><td>Knee</td><td>Questionable</td>
+</tr>
+</table></div>
+"""
+
+INJURY_IDS_BY_NAME = {"lebron james": "2544", "stephen curry": "201939"}
+
+
+class InjuryCursor:
+    def __init__(self, previously_listed: list[str]):
+        self.previously_listed = previously_listed
+        self.statements: list[tuple[str, object]] = []
+        self._result: list[tuple] = []
+
+    def execute(self, sql, params=None):
+        self.statements.append((sql, params))
+        if "injury_status IS NOT NULL" in sql:
+            self._result = [(i,) for i in self.previously_listed]
+        elif "= ANY(" in sql:
+            self._result = [
+                (INJURY_IDS_BY_NAME[n],) for n in params[0] if n in INJURY_IDS_BY_NAME
+            ]
+        elif "RETURNING nba_id" in sql:
+            nba_id = INJURY_IDS_BY_NAME.get(params[2].lower())
+            self._result = [(nba_id,)] if nba_id else []
+        else:
+            self._result = []
+
+    def fetchall(self):
+        return self._result
+
+    def close(self):
+        pass
+
+    def report_inserts(self):
+        return [p for sql, p in self.statements if "INSERT INTO player_injury_reports" in sql]
+
+    def clearances(self):
+        return [
+            p for sql, p in self.statements
+            if "INSERT INTO player_injury_reports" in sql and "'cleared'" in sql
+        ]
+
+
+class InjuryConn:
+    def __init__(self, previously_listed: list[str]):
+        self.cursor_ = InjuryCursor(previously_listed)
+
+    def cursor(self):
+        return self.cursor_
+
+
+class TestScrapeInjuries:
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr(scrapes.time, "sleep", lambda seconds: None)
+
+    def test_a_recovered_player_gets_an_explicit_clearance_row(self, monkeypatch):
+        monkeypatch.setattr(scrapes, "fetch_injury_page", lambda: CBS_INJURY_HTML)
+        conn = InjuryConn(previously_listed=["2544", "1629029"])
+
+        scrapes.scrape_injuries(conn)
+
+        assert conn.cursor_.clearances() == [("1629029",)]
+        assert len(conn.cursor_.report_inserts()) == 3
+
+    def test_a_failed_fetch_writes_nothing(self, monkeypatch):
+        def boom():
+            raise requests.ConnectionError("down")
+
+        monkeypatch.setattr(scrapes, "fetch_injury_page", boom)
+        conn = InjuryConn(previously_listed=["2544"])
+
+        scrapes.scrape_injuries(conn)
+
+        assert conn.cursor_.statements == []
+
+    def test_a_page_with_no_rows_writes_nothing(self, monkeypatch):
+        monkeypatch.setattr(scrapes, "fetch_injury_page", lambda: "<html></html>")
+        conn = InjuryConn(previously_listed=["2544"])
+
+        scrapes.scrape_injuries(conn)
+
+        assert conn.cursor_.statements == []
+
+    def test_dry_run_reads_but_writes_no_reset_reports_or_clearances(self, monkeypatch):
+        monkeypatch.setattr(scrapes, "fetch_injury_page", lambda: CBS_INJURY_HTML)
+        conn = InjuryConn(previously_listed=["2544", "1629029"])
+
+        scrapes.scrape_injuries(conn, dry_run=True)
+
+        executed = [sql for sql, _ in conn.cursor_.statements]
+        assert executed and all(not is_write_statement(sql) for sql in executed)

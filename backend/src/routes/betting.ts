@@ -6,7 +6,7 @@ import { rateLimit } from '../middleware/rateLimit.js';
 import { callClaude, buildBettingContext, extractJSON } from '../services/ai.js';
 import { getUserPreferences, buildBettingPromptBlock } from '../services/preferences.js';
 import { getUpcomingOdds, computeOddsHash, type BettingGame } from '../services/odds.js';
-import { americanToImpliedProb, combineParlay, profitOnWin } from '../services/oddsMath.js';
+import { americanToImpliedProb, combineParlay, noVigProbabilities, profitOnWin } from '../services/oddsMath.js';
 import {
   settleBet,
   summarizeLedger,
@@ -69,51 +69,80 @@ interface EnrichedPick {
   line: number | null;
   american_odds: number;
   implied_prob: number;
+  implied_prob_novig: number | null;
   estimated_win_prob: number;
+  estimate_source: 'claude';
   edge: number;
   rationale: string;
   confidence: 'low' | 'medium' | 'high';
+}
+
+interface ResolvedSelection {
+  line: number | null;
+  odds: number;
+  implied: number;
+  impliedNoVig: number | null;
+  label: string;
+}
+
+function sidePair(
+  selected: number | null,
+  other: number | null
+): { odds: number; impliedNoVig: number | null } | null {
+  if (selected == null) return null;
+  if (other == null) return { odds: selected, impliedNoVig: null };
+  const pair = noVigProbabilities(americanToImpliedProb(selected), americanToImpliedProb(other));
+  return { odds: selected, impliedNoVig: pair[0] };
 }
 
 function resolveSelection(
   game: BettingGame,
   market: StraightMarket,
   selection: BetSelection
-): { line: number | null; odds: number; implied: number; label: string } | null {
+): ResolvedSelection | null {
   if (market === 'spread' && (selection === 'home' || selection === 'away')) {
     const s = game.markets.spread;
     if (!s) return null;
-    const line = selection === 'home' ? s.home_line : s.away_line;
-    const odds = selection === 'home' ? s.home_price : s.away_price;
-    const team = selection === 'home' ? game.home_team : game.away_team;
+    const isHome = selection === 'home';
+    const line = isHome ? s.home_line : s.away_line;
+    const side = sidePair(isHome ? s.home_price : s.away_price, isHome ? s.away_price : s.home_price);
+    if (!side) return null;
+    const team = isHome ? game.home_team : game.away_team;
     return {
       line,
-      odds,
-      implied: americanToImpliedProb(odds),
+      odds: side.odds,
+      implied: americanToImpliedProb(side.odds),
+      impliedNoVig: side.impliedNoVig,
       label: `${team} ${line > 0 ? '+' : ''}${line}`,
     };
   }
   if (market === 'total' && (selection === 'over' || selection === 'under')) {
     const t = game.markets.total;
     if (!t) return null;
-    const odds = selection === 'over' ? t.over_price : t.under_price;
+    const isOver = selection === 'over';
+    const side = sidePair(isOver ? t.over_price : t.under_price, isOver ? t.under_price : t.over_price);
+    if (!side) return null;
     return {
       line: t.line,
-      odds,
-      implied: americanToImpliedProb(odds),
-      label: `${selection === 'over' ? 'Over' : 'Under'} ${t.line}`,
+      odds: side.odds,
+      implied: americanToImpliedProb(side.odds),
+      impliedNoVig: side.impliedNoVig,
+      label: `${isOver ? 'Over' : 'Under'} ${t.line}`,
     };
   }
   if (market === 'moneyline' && (selection === 'home' || selection === 'away')) {
     const m = game.markets.moneyline;
     if (!m) return null;
-    const odds = selection === 'home' ? m.home : m.away;
-    const team = selection === 'home' ? game.home_team : game.away_team;
+    const isHome = selection === 'home';
+    const side = sidePair(isHome ? m.home : m.away, isHome ? m.away : m.home);
+    if (!side) return null;
+    const team = isHome ? game.home_team : game.away_team;
     return {
       line: null,
-      odds,
-      implied: americanToImpliedProb(odds),
-      label: `${team} ML (${odds > 0 ? '+' : ''}${odds})`,
+      odds: side.odds,
+      implied: americanToImpliedProb(side.odds),
+      impliedNoVig: side.impliedNoVig,
+      label: `${team} ML (${side.odds > 0 ? '+' : ''}${side.odds})`,
     };
   }
   return null;
@@ -141,7 +170,7 @@ function enrichPicks(rawPicks: RawPick[], gamesById: Map<string, BettingGame>): 
     const estimated = Math.min(0.95, Math.max(0.05, raw.estimated_win_prob));
     perCategory[category] += 1;
     picks.push({
-      game_id: game.nba_game_id,
+      game_id: game.espn_event_id,
       category,
       market,
       selection,
@@ -152,8 +181,10 @@ function enrichPicks(rawPicks: RawPick[], gamesById: Map<string, BettingGame>): 
       line: resolved.line,
       american_odds: resolved.odds,
       implied_prob: resolved.implied,
+      implied_prob_novig: resolved.impliedNoVig,
       estimated_win_prob: estimated,
-      edge: estimated - resolved.implied,
+      estimate_source: 'claude',
+      edge: estimated - (resolved.impliedNoVig ?? resolved.implied),
       rationale: typeof raw.rationale === 'string' ? raw.rationale : '',
       confidence: CONFIDENCES.includes(raw.confidence ?? '')
         ? (raw.confidence as 'low' | 'medium' | 'high')
@@ -314,7 +345,7 @@ Return ONLY valid JSON.`;
         summary?: string;
       };
 
-      const picks = enrichPicks(raw.picks ?? [], new Map(bettable.map((g) => [g.nba_game_id, g])));
+      const picks = enrichPicks(raw.picks ?? [], new Map(bettable.map((g) => [g.espn_event_id, g])));
       const parlay = enrichParlay(raw.parlay?.legs ?? [], raw.parlay?.rationale ?? '', picks);
       const summary = typeof raw.summary === 'string' ? raw.summary : '';
 
@@ -442,7 +473,7 @@ router.post('/bets', requireAuth, async (req: Request, res: Response): Promise<v
     const resolveGame = async (): Promise<GameRef | null> => {
       try {
         const games = await getUpcomingOdds();
-        const game = games.find((g) => g.nba_game_id === nba_game_id);
+        const game = games.find((g) => g.espn_event_id === nba_game_id);
         if (game) {
           return { home_team: game.home_team, away_team: game.away_team, game_date: game.game_date };
         }
@@ -519,6 +550,7 @@ router.post('/bets', requireAuth, async (req: Request, res: Response): Promise<v
       [
         userId,
         market,
+        // stores an espn event id pending a provider-to-nba mapping
         game ? nba_game_id : null,
         game?.home_team ?? null,
         game?.away_team ?? null,

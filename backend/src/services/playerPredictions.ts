@@ -1,5 +1,5 @@
 import { query } from '../db.js';
-import { COMPLETE_RUN_STATUS, rowsOrEmpty } from './slate.js';
+import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL, rowsOrEmpty } from './slate.js';
 
 // the stat vocabulary is not hardcoded here on purpose, since the emitted stat list grows over time; this pivots by whatever `stat` values come back
 const UNCOND_SUFFIX = '_uncond';
@@ -269,9 +269,10 @@ export async function getLatestRunMeta(): Promise<PredictionRunMeta | null> {
       `SELECT id, model_version, feature_version, predicted_at, forecast_cutoff_at, notes
        FROM prediction_runs
        WHERE status = $1
+         AND channel = $2
        ORDER BY predicted_at DESC, id DESC
        LIMIT 1`,
-      [COMPLETE_RUN_STATUS]
+      [COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]
     )
   );
 

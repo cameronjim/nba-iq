@@ -2135,6 +2135,8 @@ could drift.
 
 ## 13. `prospective_2026_27_v1` (FROZEN)
 
+*Re-frozen as `prospective_2026_27_v2` on 2026-10-01; see section 17 for what moved.*
+
 **Frozen 2026-08-17, 64 days before opening night. Append-only. Nothing in this
 section may be edited after 2026-10-20; before that date a change requires bumping to
 `prospective_2026_27_v2` and re-freezing the whole section.**
@@ -3549,3 +3551,176 @@ today + 6 Eastern (`--extended-days`, default 7) over both `Pre Season` and
 - **Known caveat, unchanged:** the prospective two-day run labels tomorrow's games
   `gameday` although their measured offset is roughly 24-36 hours. The label is part
   of the freeze and is not touched here.
+
+## 17. Phase 0 correctness and the `prospective_2026_27_v2` re-freeze (2026-10-01)
+
+**Section 13 is not edited.** Its text is the `v1` pre-registration and stays on the
+record as written. This section is the 13.2 re-freeze: it names what moved, what did
+not, and the two places where 13's wording is superseded (17.4, 17.5). Everything in
+13 that this section does not amend binds `v2` exactly as it bound `v1`.
+
+### 17.1 The verdict first
+
+**`v1` ended before it began.** No Regular Season slate has ever been scored under
+`v1`. Run A (16.7) only exists when the window holds a Regular Season game, and the
+first one is on 2026-10-20, so every run published so far is a run B: the extended
+seven-day window over preseason games, whose notes start `NOT PROSPECTIVE` and can
+never contain the label. The store holds zero rows a look report would select.
+
+So `v2` is a **clean start, not a mid-test change.** 13.2's rule is that a change
+made after opening night ends the test; a change made before it re-freezes the test,
+and this one lands 19 days early. There is no `v1` data to splice, discard or explain
+away. The bump is required because two of the fixes below (1 and 2) change an emitted
+number, which 13.2's last paragraph classes as a change to what is served.
+
+### 17.2 The seven defects
+
+**1. A recovered player stayed out forever.** The override layer took each player's
+newest report known at the boundary, with no age limit, and the CBS feed signals a
+recovery by *dropping the player from the page*, which wrote nothing. A player listed
+OUT in March was served at `P(play) = 0.02` in April. Found by an external code review on 2026-09-30 and
+verified against the code: the history table is append-only, so the absence of a row was the
+only clearance signal, and the model cannot read an absence. Fixed twice over. The scraper now appends a `cleared` row for every player
+who was listed last scrape and is not listed now, and a failed fetch or a page that
+parses to zero rows writes nothing at all (an empty page must never read as "everyone
+is healthy"). `overrides.REPORT_MAX_AGE_HOURS = 72.0` drops any report captured more
+than 72 hours before `as_of`, and `cleared` joins `PASSTHROUGH_STATUSES`, so a newer
+clearance supersedes an older OUT and the model stands. **Moves:** `prob_active` for
+every player whose last designation is stale or superseded, and, because the layer
+also runs on the base probabilities before the teammate sums (13.1), the
+expected-context features and `prob_active_model` of his teammates. Tested in
+`test_overrides.py` (a four-day-old OUT has expired, a one-day-old one applies, a
+newer clearance wins, `max_age_hours=None` and a missing boundary disable expiry) and
+in `scraper/test_truth_layer.py` (clearance rows, failed and empty scrapes write
+nothing, dry run writes nothing).
+
+**2. A future back-to-back did not read as one.** `build_prospective_features` builds
+one future date at a time so no future outcome can reach another future row (the
+section 14 rule). That rule was also applied to the *schedule*, which is not an
+outcome: a Nov 4 row built after a known Nov 3 game read its rest from the last
+*played* game, so the second night of a back-to-back carried `IS_B2B = 0` and a rest
+count one or more days too long. Found by the same external review, which reproduced it
+on a synthetic Nov 3 / Nov 4 pair; run B's seven-day windows made it routine. Now every per-date build is handed the whole
+known schedule (`prospective.known_schedule`: the played history plus both sides of
+every future team-game, so an opponent with no rostered player still has rest days),
+and `TEAM_REST_DAYS`, `IS_B2B`, `OPP_REST_DAYS` and `DEF_FORM` / `OPP_DEF_FORM` are
+read from it. Every outcome-derived column still sees exactly one future date.
+**Moves:** every row after the first scored day for a team that plays earlier in the
+window; on run A that is tomorrow's half of the two-day window, on run B most of it.
+`build_features(schedule=None)` is pinned to the old computation, so training and the
+pinned artifact are untouched. Tested in `test_prospective.py::TestScheduleIsReadWhole`
+and `test_features.py`.
+
+**3. `forecast_cutoff_at` understated what the run saw.** It was stored as midnight
+of the window's first date, while the run read injury reports through
+`statuses_as_of`, about 16:00 UTC that day. A column documented as the information
+boundary claimed sixteen hours less visibility than the run had. Now
+`forecast_cutoff_at = max(start of first scored day, information_as_of)`, and the two
+inputs are stored separately in new columns `information_as_of` and
+`history_through` (the last game date whose outcomes fed the features). **Moves:** no
+emitted number; provenance only. Tested in `test_predictions.py` and
+`test_daily_run.py::TestPredictArgv`.
+
+**4. Nothing but a note kept a shadow run off the app.** 13.4 promised that "a shadow
+never reaches the app" and made the note the separator, but every backend reader took
+the newest complete run regardless of its note. The first shadow written to the store
+would have been served. `prediction_runs.channel` (`production` | `shadow`, migration
+015, default `production`) is now written on every run, and every backend reader
+filters `channel = 'production'`. **Moves:** no emitted number. Tested in the backend
+`predictions`, `playerPredictions`, `slate`, `watchlist` and `aiContext` suites, and
+in `test_predictions.py` for the store record.
+
+**5. The look reports had no tool.** 16.6 recorded that 13.6's looks "still have to
+be computed by hand from the store", which for a season of append-only long-format
+rows is a way of guaranteeing a different computation at each look. New pure module
+`fnba_ml/scoring.py` and read-only loader `score_runs.py` score stored runs against
+completed games (17.5). **Moves:** nothing; it only reads. Tested in
+`test_scoring.py`.
+
+**6. `availability_risk` documented the wrong bound.** The weekly docstring called
+`1 - prod(prob_active)` a lower bound on the risk of missing a game. Absences are
+positively correlated, which raises `P(plays every game)` above the product, so it is
+an *upper* bound. Docstring only, plus a test at perfect dependence in
+`test_weekly.py`. Not protocol-relevant.
+
+**7. The betting board invented prices.** Outside the ML package, recorded because it
+shares the store's consumers. ESPN spread and total markets with no published price
+were filled with `-110`, a number nobody quoted. They are now null, and the edge on a
+pick is computed against the no-vig implied probability of the two priced sides and
+labelled a Claude estimate; a pick whose price is missing is dropped. The ESPN event
+id is now named `espn_event_id` rather than `nba_game_id`, because it is not one.
+Tested in `oddsParsing`, `oddsMath`, `betting` and `BettingPicksPanel`. Not
+protocol-relevant.
+
+### 17.3 What did not change
+
+- **Artifact `20260818`**, byte for byte. All six pinned checksums in 13.1 are
+  unchanged and `test_prospective_freeze.py` recomputes them from disk.
+- **`FEATURE_COLS`**: 51 columns, digest `914cdc17…`. Fix 2 changes how three
+  schedule columns are *computed* for future rows, not which columns exist.
+- **Champions, halflives, estimators, rate targets, coherence constraints**, exactly
+  as in 13.1.
+- **The `StatusPolicy` constants**: 0.02, 0.10, 0.6 / 0.60, 0.85 / 0.15.
+  `UNAVAILABLE_STATUSES` is unchanged.
+- **Horizons, the serving horizon (`gameday`), the nine cohorts, the cold-start window,
+  the October gate, the three look dates and row minimums, and every row of the
+  falsification table.** The thresholds were derived from retrospective block
+  variance (13.5), which none of these fixes touch.
+
+The frozen additions are two: `PROSPECTIVE_REPORT_MAX_AGE_HOURS = 72.0` and
+`PROSPECTIVE_PASSTHROUGH_STATUSES = {available, day_to_day, cleared, unknown}`, both
+hand-copied literals in `frozen.py` and both asserted against `overrides`. The 72
+hours is a hand-set constant in the same class as the five in `StatusPolicy`, with
+the same status: unmeasured, and frozen so it cannot drift during the season.
+
+### 17.4 Amendment to 13.4: the channel is the separator
+
+The run note's `shadow=` token is replaced by `channel=<production|shadow>`. A
+qualifying served run carries `prospective_2026_27_v2; feature_set=v3-honest;
+channel=production`, and a shadow carries `...; feature_set=v1; channel=shadow`.
+`daily_run.py` derives the token from the same constant it writes to the column, so
+the two cannot disagree.
+
+**The store's `channel` column is the authoritative separator; the note is a
+readable copy.** 13.4's "the label is what separates them" is superseded. A shadow
+run must be written with `predict.py --channel shadow`; a run written without it is a
+production run whatever its note says, and the app will serve it. `scoring.py` falls
+back to the note tokens only where the column is absent (015 not yet applied). Everything else in
+13.4 stands: same cutoff, same slate, same boundary, same override layer, one table.
+
+### 17.5 Ops: migration 015 and the scoring tool
+
+**Migration 015 must be applied to prod and to the dev branch before the first run of
+this code.** The run insert names the three new columns, so `--write-db` fails without
+them, and the backend readers filter on `channel`. It is applied by hand in the Neon
+SQL editor and recorded in `schema_migrations`, as 014 was. The 16.6 advice holds with
+more force: trigger the first production run by hand with `dry_run: true` before
+opening night.
+
+**Look reports are produced by `score_runs.py`** (13.8.6's markdown plus csv), scored
+per run and pooled per (channel, prospective label), keeping each player-game's latest
+pre-tip forecast once. It computes E1 Brier on both `prob_active` and
+`prob_active_model`, the override increment (F10), E2 slope and intercept (F9), E3,
+E4 for every stat, P10 to P90 coverage, and coverage misses, each split by
+`cold_start` and season type. **It cannot yet compute:** E1 Brier skill against the
+shifted appearance rate (F1), because the baseline rows are not in the store; E5 (F6)
+and the per-stat frozen-baseline rows behind F7 and F8, which need the `ewma_state`
+baselines scored beside the run; F2 to F4, because no shadow run is wired into the
+daily workflow yet; and the tier and event cohorts of 13.3, since it splits only by
+`ALL`, `cold_start` and season type. Until those land, a look report states which
+rows it could not compute rather than leaving them blank.
+
+### 17.6 Open items this phase did not do
+
+- **ESPN to NBA game mapping.** Odds are keyed by ESPN event id and nothing joins them
+  to `nba_schedule`, so odds cannot be joined to the model's predictions.
+- **Odds history.** Odds are cached, not stored, so no line movement or closing-line
+  comparison exists.
+- **`matchup.py` computes rest days a second time** from its own team-game pairing.
+  It is the v4 candidate family and not served, but if promoted it must read the same
+  known schedule as fix 2 or it reintroduces the defect.
+- **Learning the override constants.** All six (five `StatusPolicy` values and the
+  72-hour expiry) are still hand-set. `player_injury_reports` now holds clearance rows,
+  which is the history a learned policy would need; F10 is the measurement.
+- **E5 in the scoring tool**, with the shifted-rate skill and the frozen-baseline rows
+  above. These are needed by the `dec1` look, where F1 and F6 bind.

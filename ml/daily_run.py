@@ -86,6 +86,7 @@ from fnba_ml.config import (  # noqa: E402
     SEASONS,
     SERVED_FEATURE_SET,
 )
+from fnba_ml.store import PRODUCTION_CHANNEL  # noqa: E402
 from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
     build_prospective_features,
@@ -321,7 +322,7 @@ def prospective_conditions(
 ) -> list[str]:
     """the reasons this run does NOT qualify for the frozen label. empty means it does.
 
-    MODEL.md 13.8.4: a run that carries ``prospective_2026_27_v1`` in its notes is
+    MODEL.md 13.8.4: a run that carries the frozen protocol label in its notes is
     part of the prospective test and a run that does not is not, "whatever else it
     did". That makes the label a claim about SEVEN things at once, and this returns
     the ones that are false so the note can say which.
@@ -363,14 +364,16 @@ def prospective_conditions(
 def run_notes(reasons: list[str], stale: str | None = None) -> str:
     """``prediction_runs.notes`` for this run.
 
-    The qualifying form is frozen verbatim in 13.4: the label, then
-    ``feature_set=v3-honest``, then ``shadow=false``. The non-qualifying form must
+    The qualifying form follows 13.4: the label, then ``feature_set=v3-honest``,
+    then ``channel=production``. The channel token is derived from the same
+    constant written to ``prediction_runs.channel``, so notes and column cannot
+    disagree; it replaces 13.4's ``shadow=false``. The non-qualifying form must
     NOT contain the label anywhere - a substring match is how a look report will
-    select the season's runs, and "not prospective_2026_27_v1" would be selected by
+    select the season's runs, and "not <label>" would be selected by
     it. The assertion below is not decoration; it is the only thing standing between
     a reworded reason string and a contaminated season.
     """
-    tail = f"feature_set={SERVED_FEATURE_SET}; shadow=false"
+    tail = f"feature_set={SERVED_FEATURE_SET}; channel={PRODUCTION_CHANNEL}"
     if reasons:
         note = f"NOT PROSPECTIVE ({'; '.join(reasons)}); {tail}"
         if PROSPECTIVE_RUN_NOTE_LABEL in note:
@@ -802,6 +805,8 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
                 raise PhaseFailure("dataset", f"build_dataset exited {code}")
 
         history = history_from_dataset(load_dataset(dataset_path))
+        # the prospective frames carry no played rows, so predict.py is told this.
+        history_through = history["GAME_DATE"].max().date()
         log.info(
             "played history  : %d rows, %s .. %s, %d players",
             len(history), history["GAME_DATE"].min().date(),
@@ -906,7 +911,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
                 args, "prospective", prospective_path,
                 args.out_dir / "predictions.parquet", notes,
                 PROSPECTIVE_SERVING_HORIZON, window_start, statuses_as_of,
-                statuses_path,
+                statuses_path, history_through,
             )
             runs.append({**run_a, "reasons": reasons, "notes": notes})
 
@@ -927,7 +932,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             args, "extended", extended_path,
             args.out_dir / "predictions_extended.parquet", extended,
             predict_script.NO_HORIZON, window_start, statuses_as_of,
-            statuses_path,
+            statuses_path, history_through,
         )
         runs.append({**run_b, "notes": extended})
 
@@ -976,6 +981,39 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
     return 0
 
 
+def predict_argv(
+    dataset_path: Path,
+    models_dir: Path,
+    out_path: Path,
+    notes: str,
+    horizon: str,
+    window_start: date,
+    statuses_as_of: pd.Timestamp,
+    statuses_path: Path | None,
+    history_through: date | None,
+    write_db: bool,
+) -> list[str]:
+    """the predict.py argv for one daily run, always on the production channel."""
+    argv = [
+        "--dataset", str(dataset_path),
+        "--version", PROSPECTIVE_MODEL_VERSION,
+        "--models-dir", str(models_dir),
+        "--out", str(out_path),
+        "--run-at", str(window_start),
+        "--horizon", horizon,
+        "--notes", notes,
+        "--statuses-as-of", statuses_as_of.isoformat(),
+        "--channel", PRODUCTION_CHANNEL,
+    ]
+    if history_through is not None:
+        argv += ["--history-through", str(history_through)]
+    if statuses_path is not None:
+        argv += ["--statuses", str(statuses_path)]
+    if write_db:
+        argv.append("--write-db")
+    return argv
+
+
 def _publish_run(
     args: argparse.Namespace,
     name: str,
@@ -986,6 +1024,7 @@ def _publish_run(
     window_start: date,
     statuses_as_of: pd.Timestamp,
     statuses_path: Path | None,
+    history_through: date | None = None,
 ) -> dict[str, object]:
     """score one frame through predict.py and report where it went."""
     log.info("run %s notes : %s", name, notes)
@@ -993,25 +1032,15 @@ def _publish_run(
     entry = registry.find(PROSPECTIVE_MODEL_VERSION, registry_path)
     runs_before = len(entry.get("prediction_runs", []) if entry else [])
 
-    predict_argv = [
-        "--dataset", str(dataset_path),
-        "--version", PROSPECTIVE_MODEL_VERSION,
-        "--models-dir", str(args.models_dir),
-        "--out", str(out_path),
-        "--run-at", str(window_start),
-        "--horizon", horizon,
-        "--notes", notes,
-        "--statuses-as-of", statuses_as_of.isoformat(),
-    ]
-    if statuses_path is not None:
-        predict_argv += ["--statuses", str(statuses_path)]
-    if not args.dry_run:
-        predict_argv.append("--write-db")
-    else:
+    predict_args = predict_argv(
+        dataset_path, args.models_dir, out_path, notes, horizon, window_start,
+        statuses_as_of, statuses_path, history_through, write_db=not args.dry_run,
+    )
+    if args.dry_run:
         log.warning("--dry-run: predict.py will NOT be given --write-db")
 
-    log.info("predict.py %s", " ".join(predict_argv))
-    code = predict_script.main(predict_argv)
+    log.info("predict.py %s", " ".join(predict_args))
+    code = predict_script.main(predict_args)
     if code != 0:
         raise PhaseFailure("predict", f"predict.py ({name}) exited {code}")
 

@@ -15,6 +15,7 @@ from fnba_ml.overrides import (
     PROBABLE_MODEL_WEIGHT,
     PROBABLE_SHIFT,
     QUESTIONABLE_MODEL_WEIGHT,
+    REPORT_MAX_AGE_HOURS,
     STATUS_CAPTURED_AT,
     STATUS_NORMALIZED,
     StatusPolicy,
@@ -238,6 +239,58 @@ def test_the_newest_admissible_report_wins():
 def test_without_a_boundary_every_report_is_admissible():
     report = statuses([("2544", "out", "2099-01-01 00:00")])
     out = apply_status_overrides(predictions([0.93]), report, DEFAULT_POLICY, None)
+    assert applied(out, "2544")[P_PLAY] == pytest.approx(OUT_PROBABILITY)
+
+
+def test_a_four_day_old_out_report_has_expired():
+    report = statuses([("2544", "out", "2026-02-25 18:00")])
+
+    out = apply_status_overrides(predictions([0.93]), report, DEFAULT_POLICY, AS_OF)
+
+    assert REPORT_MAX_AGE_HOURS == 72.0
+    assert applied(out, "2544")[P_PLAY] == pytest.approx(0.93)
+    assert pd.isna(applied(out, "2544")[OVERRIDE_REASON])
+
+
+def test_a_one_day_old_out_report_still_applies():
+    report = statuses([("2544", "out", "2026-02-28 18:00")])
+
+    out = apply_status_overrides(predictions([0.93]), report, DEFAULT_POLICY, AS_OF)
+
+    assert applied(out, "2544")[P_PLAY] == pytest.approx(OUT_PROBABILITY)
+    assert applied(out, "2544")[OVERRIDE_REASON] == reason_for("out")
+
+
+def test_a_newer_clearance_supersedes_an_older_out():
+    report = statuses([
+        ("2544", "out", "2026-03-01 06:00"),
+        ("2544", "cleared", "2026-03-01 12:00"),
+    ])
+
+    out = apply_status_overrides(predictions([0.93]), report, DEFAULT_POLICY, AS_OF)
+
+    assert applied(out, "2544")[P_PLAY] == pytest.approx(0.93)
+    assert pd.isna(applied(out, "2544")[OVERRIDE_REASON])
+    assert pd.isna(applied(out, "2544")[STATUS_NORMALIZED])
+
+
+def test_max_age_none_disables_expiry():
+    report = statuses([("2544", "out", "2026-02-01 18:00")])
+
+    out = apply_status_overrides(
+        predictions([0.93]), report, DEFAULT_POLICY, AS_OF, max_age_hours=None,
+    )
+
+    assert applied(out, "2544")[P_PLAY] == pytest.approx(OUT_PROBABILITY)
+
+
+def test_without_a_boundary_no_report_expires():
+    report = statuses([("2544", "out", "2020-01-01 00:00")])
+
+    latest = latest_statuses(report, None)
+    out = apply_status_overrides(predictions([0.93]), report, DEFAULT_POLICY, None)
+
+    assert len(latest) == 1
     assert applied(out, "2544")[P_PLAY] == pytest.approx(OUT_PROBABILITY)
 
 

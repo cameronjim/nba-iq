@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from fnba_ml.config import (
+    OPP_FORM_WINDOW,
     PROSPECTIVE_COLD_START_FLAG,
     PROSPECTIVE_COLD_START_THROUGH,
     is_cold_start,
@@ -16,6 +17,7 @@ from fnba_ml.prospective import (
     SOURCE_PROSPECTIVE,
     build_prospective_features,
     history_from_dataset,
+    known_schedule,
     prospective_universe,
     roster_assignments,
 )
@@ -278,10 +280,13 @@ class TestOneDateAtATime:
         self, history, future, built
     ):
         last_date = pd.Timestamp(FUTURE_DATES[-1])
+        day = future[pd.to_datetime(future["GAME_DATE"]) == last_date]
 
-        alone = build_prospective_features(
-            history, future[pd.to_datetime(future["GAME_DATE"]) == last_date]
+        alone = build_features(
+            pd.concat([history, day], ignore_index=True),
+            schedule=known_schedule(history, future),
         )
+        alone = alone[alone["UNIVERSE_SOURCE"] == SOURCE_PROSPECTIVE]
         key = ["PLAYER_ID", "GAME_ID", "TEAM_ID"]
         from_week = (
             built[pd.to_datetime(built["GAME_DATE"]) == last_date]
@@ -290,7 +295,10 @@ class TestOneDateAtATime:
         from_alone = alone.set_index(key).sort_index()
 
         assert from_week.index.equals(from_alone.index)
-        for column in ("avail_rate_10", "avail_rate_20", "roll5_MIN", "ewma_MIN"):
+        for column in (
+            "avail_rate_10", "avail_rate_20", "roll5_MIN", "ewma_MIN",
+            "TEAM_REST_DAYS", "IS_B2B", "OPP_REST_DAYS", "OPP_DEF_FORM",
+        ):
             np.testing.assert_allclose(
                 from_week[column].to_numpy(dtype=float),
                 from_alone[column].to_numpy(dtype=float),
@@ -298,24 +306,183 @@ class TestOneDateAtATime:
                 err_msg=f"{column} depends on an earlier future date",
             )
 
-    def test_the_naive_single_build_really_does_leak(self, history, future):
+    def test_the_naive_single_build_really_does_leak(self, history, future, built):
         naive = build_features(
             pd.concat([history, future], ignore_index=True)
         )
         naive = naive[naive["UNIVERSE_SOURCE"] == SOURCE_PROSPECTIVE]
         last_date = pd.Timestamp(FUTURE_DATES[-1])
         naive_last = naive[pd.to_datetime(naive["GAME_DATE"]) == last_date]
-
-        correct = build_prospective_features(
-            history, future[pd.to_datetime(future["GAME_DATE"]) == last_date]
-        )
+        correct = built[pd.to_datetime(built["GAME_DATE"]) == last_date]
 
         key = ["PLAYER_ID", "GAME_ID", "TEAM_ID"]
         left = naive_last.set_index(key).sort_index()["avail_rate_10"]
         right = correct.set_index(key).sort_index()["avail_rate_10"]
 
         # the naive build has folded two fabricated absences into the window
+        assert left.index.equals(right.index)
         assert (left.to_numpy() < right.to_numpy()).any(), (
             "the naive whole-week build no longer differs from the per-date one; "
             "either the leak is gone or this test can no longer see it"
         )
+
+
+@pytest.fixture(scope="module")
+def b2b_teams(history) -> tuple[str, str, str, str]:
+    a, b, c, e = sorted(history["TEAM_ID"].unique())[:4]
+    return a, b, c, e
+
+
+@pytest.fixture(scope="module")
+def b2b_season(history) -> str:
+    return str(history.loc[history["GAME_DATE"].idxmax(), "SEASON"])
+
+
+@pytest.fixture(scope="module")
+def b2b_day(history) -> pd.Timestamp:
+    return pd.Timestamp(history["GAME_DATE"].max()).normalize() + pd.Timedelta(days=4)
+
+
+@pytest.fixture(scope="module")
+def b2b_future(b2b_teams, b2b_season, b2b_day, rosters) -> pd.DataFrame:
+    a, b, c, e = b2b_teams
+    season, day = b2b_season, b2b_day
+    games = [
+        ("8000001", day - pd.Timedelta(days=1), b, e),
+        ("8000002", day, a, c),
+        ("8000003", day + pd.Timedelta(days=1), a, b),
+    ]
+    schedule = pd.DataFrame([
+        {
+            "GAME_ID": game_id,
+            "SEASON": season,
+            "SEASON_TYPE": "Regular Season",
+            "GAME_DATE": game_date.strftime("%Y-%m-%d"),
+            "HOME_TEAM_ID": home,
+            "AWAY_TEAM_ID": away,
+            "GAME_STATUS": "scheduled",
+        }
+        for game_id, game_date, home, away in games
+    ])
+    return prospective_universe(
+        schedule, rosters, day - pd.Timedelta(days=1), day + pd.Timedelta(days=1)
+    )
+
+
+@pytest.fixture(scope="module")
+def b2b_built(history, b2b_future) -> pd.DataFrame:
+    return build_prospective_features(history, b2b_future)
+
+
+class TestScheduleIsReadWhole:
+    """a back-to-back after the last played game of a season in progress.
+
+    team B plays on D-1, team A plays C on D, and A hosts B on D+1.
+    """
+
+    @staticmethod
+    def _team_rows(frame: pd.DataFrame, team: str, game_date: pd.Timestamp) -> pd.DataFrame:
+        rows = frame[
+            (frame["TEAM_ID"] == team) & (pd.to_datetime(frame["GAME_DATE"]) == game_date)
+        ]
+        assert len(rows) > 0, f"no rostered rows for team {team} on {game_date.date()}"
+        return rows
+
+    @staticmethod
+    def _last_played(history: pd.DataFrame, team: str, season: str) -> pd.Timestamp:
+        games = history[(history["TEAM_ID"] == team) & (history["SEASON"] == season)]
+        return pd.Timestamp(games["GAME_DATE"].max())
+
+    def test_the_second_night_of_a_future_back_to_back_is_a_back_to_back(
+        self, b2b_built, b2b_teams, b2b_day
+    ):
+        a = b2b_teams[0]
+
+        rows = self._team_rows(b2b_built, a, b2b_day + pd.Timedelta(days=1))
+
+        assert (rows["TEAM_REST_DAYS"] == 1).all()
+        assert (rows["IS_B2B"] == 1).all()
+
+    def test_the_first_future_game_measures_rest_from_the_last_played_game(
+        self, b2b_built, history, b2b_teams, b2b_season, b2b_day
+    ):
+        a = b2b_teams[0]
+        expected = (b2b_day - self._last_played(history, a, b2b_season)).days
+
+        rows = self._team_rows(b2b_built, a, b2b_day)
+
+        assert expected > 1
+        assert (rows["TEAM_REST_DAYS"] == expected).all()
+        assert (rows["IS_B2B"] == 0).all()
+
+    def test_the_opponents_rest_reads_the_opponents_own_future_schedule(
+        self, b2b_built, history, b2b_teams, b2b_season, b2b_day
+    ):
+        a, b = b2b_teams[0], b2b_teams[1]
+        target = b2b_day + pd.Timedelta(days=1)
+        from_history = (target - self._last_played(history, b, b2b_season)).days
+
+        rows = self._team_rows(b2b_built, a, target)
+
+        # b last played on D-1, which is a future game, not a historical one
+        assert (rows["OPP_REST_DAYS"] == 2).all()
+        assert from_history != 2
+
+    def test_outcome_features_ignore_the_other_future_dates(
+        self, b2b_built, b2b_future, history, b2b_teams, b2b_day
+    ):
+        a = b2b_teams[0]
+        target = b2b_day + pd.Timedelta(days=1)
+        without_d = b2b_future[pd.to_datetime(b2b_future["GAME_DATE"]) != b2b_day]
+
+        rebuilt = build_prospective_features(history, without_d)
+
+        key = ["PLAYER_ID", "GAME_ID", "TEAM_ID"]
+        with_rows = self._team_rows(b2b_built, a, target).set_index(key).sort_index()
+        without_rows = self._team_rows(rebuilt, a, target).set_index(key).sort_index()
+        assert with_rows.index.equals(without_rows.index)
+        for column in (
+            "avail_rate_10", "avail_rate_20", "avail_rate_std", "games_since_last_app",
+            "roll5_MIN", "roll10_PTS", "ewma_MIN", "ewma_PTS",
+        ):
+            np.testing.assert_allclose(
+                with_rows[column].to_numpy(dtype=float),
+                without_rows[column].to_numpy(dtype=float),
+                equal_nan=True,
+                err_msg=f"{column} depends on another future date",
+            )
+        # the schedule columns are the ones that are meant to differ
+        assert (without_rows["TEAM_REST_DAYS"] > 1).all()
+
+    def test_future_defensive_form_is_the_mean_of_the_last_played_games(
+        self, b2b_built, b2b_future, history, b2b_teams, b2b_season, b2b_day
+    ):
+        a, b = b2b_teams[0], b2b_teams[1]
+        target = b2b_day + pd.Timedelta(days=1)
+        played = (
+            history[(history["TEAM_ID"] == b) & (history["SEASON"] == b2b_season)]
+            .drop_duplicates("GAME_ID")
+            .sort_values("GAME_DATE")
+        )
+        expected = played["TEAM_PTS_ALLOWED"].dropna().tail(OPP_FORM_WINDOW).mean()
+        only_target = b2b_future[pd.to_datetime(b2b_future["GAME_DATE"]) == target]
+
+        rebuilt = build_prospective_features(history, only_target)
+
+        # b's unplayed D-1 game must not dilute the window
+        for frame in (b2b_built, rebuilt):
+            rows = self._team_rows(frame, a, target)
+            np.testing.assert_allclose(
+                rows["OPP_DEF_FORM"].to_numpy(dtype=float), expected, rtol=1e-12
+            )
+
+    def test_a_new_seasons_second_game_reads_rest_from_its_first(self, built):
+        dates = pd.to_datetime(built["GAME_DATE"])
+
+        first = built[dates == pd.Timestamp(FUTURE_DATES[0])]
+        second = built[dates == pd.Timestamp(FUTURE_DATES[1])]
+
+        # no game of the new season precedes the opener, and the boundary is respected
+        assert first["TEAM_REST_DAYS"].isna().all()
+        assert (second["TEAM_REST_DAYS"] == 2).all()
+        assert (second["OPP_REST_DAYS"] == 2).all()

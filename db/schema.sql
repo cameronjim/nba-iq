@@ -459,9 +459,10 @@ CREATE TABLE IF NOT EXISTS player_injury_reports (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- prediction store (migration 014), append-only: a run writes new rows,
+-- prediction store (migrations 014, 015), append-only: a run writes new rows,
 -- never edits old ones, so a backtest measures foresight not hindsight.
--- forecast_cutoff_at is the last instant the run was allowed to see.
+-- forecast_cutoff_at is the latest instant any input was allowed to see:
+-- the later of information_as_of and the start of the first scored day.
 CREATE TABLE IF NOT EXISTS prediction_runs (
     id SERIAL PRIMARY KEY,
     model_version TEXT NOT NULL,
@@ -474,7 +475,14 @@ CREATE TABLE IF NOT EXISTS prediction_runs (
     -- the serving path reads only 'complete'; a killed run leaves a partial slate.
     status TEXT NOT NULL DEFAULT 'complete',
     notes TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    -- the app serves only 'production'; 'shadow' runs are recorded for comparison.
+    channel TEXT NOT NULL DEFAULT 'production'
+        CONSTRAINT prediction_runs_channel_check CHECK (channel IN ('production', 'shadow')),
+    -- the latest injury-report instant the run was allowed to see.
+    information_as_of TIMESTAMPTZ,
+    -- the last game date whose outcomes were in the feature frame.
+    history_through DATE
 );
 
 -- one row per (run, player, game, stat, quantile). Long format because the stat
@@ -527,6 +535,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_player_team_stints_one_open
 CREATE INDEX IF NOT EXISTS idx_player_injury_reports_player_captured
   ON player_injury_reports(nba_player_id, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_predicted_at ON prediction_runs(status, predicted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_prediction_runs_channel_served ON prediction_runs(channel, status, predicted_at DESC);
 -- the UNIQUE constraint above does not bite for expected values: Postgres treats
 -- NULL quantiles as distinct, so this is the index that stops a re-run doubling
 -- a slate. -1 is safe as the sentinel — real quantiles are in (0,1).
