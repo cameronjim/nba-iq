@@ -422,6 +422,12 @@ class TestCli:
         runs = TestScoreRuns().runs().iloc[:1]
         monkeypatch.setattr(score_runs, "_read_sql", self.fake_reader({
             "information_schema": pd.DataFrame({"column_name": list(runs.columns)}),
+            "WITH involved": pd.DataFrame(columns=["nba_player_id", "nba_game_id", "team_id",
+                                                   "game_date", "played", "listed_inactive",
+                                                   "minutes"]),
+            "FROM player_game_logs l": pd.DataFrame(columns=["nba_player_id", "game_date",
+                                                             "minutes", "stl", "reb", "tov",
+                                                             "fg3m"]),
             "WITH predicted": pd.DataFrame([truth_row("1", "g1", True, full_line(10.0))]),
             "FROM player_game_predictions": pd.DataFrame(
                 long_rows(1, "1", "g1", GAME_DATE, 0.9, full_line(10.0))),

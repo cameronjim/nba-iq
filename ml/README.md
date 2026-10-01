@@ -213,10 +213,32 @@ type: E1 Brier on `prob_active` and `prob_active_model`, E2 calibration slope an
 intercept, E3 minutes MAE on appearances, E4 unconditional MAE for all twelve
 stats, the override increment, P10-P90 coverage and mean bias. A pool keeps each
 player-game's latest pre-tip forecast once. A completed game with no status row
-for a predicted player is counted as a coverage miss, not dropped. E1 skill needs
-the shifted appearance rate and E5 needs the frozen `ewma_total` rows; neither is
-in the store, so both are reported as not computed. Nothing to score exits 0.
-The logic is pure (`fnba_ml/scoring.py`, tested in `tests/test_scoring.py`).
+for a predicted player is counted as a coverage miss, not dropped. Nothing to
+score exits 0.
+
+The 13.4 baselines are rebuilt from the truth layer as of each game's date
+(strictly prior rows, `allow_exact_matches=False`), from status and box rows for
+every player in the scored games over `--history-days` (default 400):
+`avail_rate_10` (E1 skill, F1), `ewma_MIN` (F5), `ewma_total_<stat>` (E5, F6),
+`roll10_MIN` (the four minutes tiers plus `unknown`) and the oracle
+`vacated_minutes` (the `>= 30` event and `< 5` control cohorts; a 20-appearance
+rolling prior where `teammates.py` uses season-to-date `std_MIN`). E5 composes
+both sides on `prob_active_model` (`p x E[stat | plays]` vs `p x ewma_total`), so
+the override layer cannot move it. F7 and F8 replay the expanding and h20 rate
+families forward from `models/<--version>/ewma_state.parquet`, seed weight
+counted from the artifact's training start. When a v1 shadow run shares a served
+run's slate and information boundary (within 10 minutes) the pair is scored on
+identical rows for F2 to F4 with the 7-day moving-block bootstrap.
+`--look dec1|all_star|season_end` scores only games before the look date and adds
+a "Look report" with the 13.5 falsification table, thresholds read from
+`config.PROSPECTIVE_FALSIFICATION`, each row pass / fail / non-binding (short of
+the 13.6 row minimum) / report-only / not computable. `star_out` is not split: it
+needs `usg_ewma` from team box totals. The logic is pure (`fnba_ml/scoring.py`,
+tested in `tests/test_scoring.py` and `tests/test_scoring_baselines.py`).
+
+```powershell
+python score_runs.py --look dec1                  # the Dec 1 look report
+```
 
 Every run records its **forecast horizon** (`--horizon early|gameday|lock`, i.e.
 T-24h / T-6h / T-60m) in `prediction_runs.notes` and in the registry entry. The

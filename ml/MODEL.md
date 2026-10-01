@@ -3702,13 +3702,14 @@ per run and pooled per (channel, prospective label), keeping each player-game's 
 pre-tip forecast once. It computes E1 Brier on both `prob_active` and
 `prob_active_model`, the override increment (F10), E2 slope and intercept (F9), E3,
 E4 for every stat, P10 to P90 coverage, and coverage misses, each split by
-`cold_start` and season type. **It cannot yet compute:** E1 Brier skill against the
-shifted appearance rate (F1), because the baseline rows are not in the store; E5 (F6)
-and the per-stat frozen-baseline rows behind F7 and F8, which need the `ewma_state`
-baselines scored beside the run; F2 to F4, because no shadow run is wired into the
-daily workflow yet; and the tier and event cohorts of 13.3, since it splits only by
-`ALL`, `cold_start` and season type. Until those land, a look report states which
-rows it could not compute rather than leaving them blank.
+`cold_start` and season type. **It now also computes** (Phase 3 package D) E1 skill
+against the shifted appearance rate (F1), F5, E5 (F6), the `ewma_state`-seeded rate
+families behind F7 and F8, F2 to F4 from paired served and v1 shadow runs, and the
+tier and vacated-minutes cohorts of 13.3, all rebuilt as of each game's date from
+the truth layer, with `--look` adding the falsification table; **it cannot compute**
+the `star_out = 1` cohort, which needs `usg_ewma` from team box totals, and F2 to F4
+until a shadow run exists, and a look report names every row it could not compute
+rather than leaving it blank.
 
 ### 17.6 Open items this phase did not do
 
