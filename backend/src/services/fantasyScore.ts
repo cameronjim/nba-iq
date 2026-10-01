@@ -130,46 +130,70 @@ export interface CategoryStatLine extends FantasyStatLine {
   free_throw_percentage: number;
 }
 
+const CATEGORY_STAT_KEYS = [
+  'points_per_game',
+  'rebounds_per_game',
+  'assists_per_game',
+  'steals_per_game',
+  'blocks_per_game',
+  'three_pointers_made',
+  'field_goal_percentage',
+  'free_throw_percentage',
+  'turnovers_per_game',
+] as const satisfies ReadonlyArray<keyof CategoryStatLine>;
+
+const REVERSED_CATEGORY_STAT_KEYS: ReadonlySet<keyof CategoryStatLine> = new Set<keyof CategoryStatLine>([
+  'turnovers_per_game',
+]);
+
+// shape (mean, population sd) comes from `reference`, so a candidate can be scored against a pool it is not part of; a null value is neutral and stays out of the shape
+export function categoryZScores<K extends string>(
+  rows: ReadonlyArray<Partial<Record<K, number | null>>>,
+  categories: readonly K[],
+  reversed: ReadonlySet<K> = new Set<K>(),
+  reference: ReadonlyArray<Partial<Record<K, number | null>>> = rows
+): Array<Record<K, number>> {
+  const mean = (xs: number[]): number => xs.reduce((s, x) => s + x, 0) / xs.length;
+  const stddev = (xs: number[]): number => {
+    const m = mean(xs);
+    return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
+  };
+  const present = (value: number | null | undefined): value is number =>
+    value !== null && value !== undefined && Number.isFinite(value);
+
+  const shape = new Map<K, { m: number; sd: number }>();
+  for (const cat of categories) {
+    const values = reference.map((r) => r[cat]).filter(present);
+    if (values.length > 0) shape.set(cat, { m: mean(values), sd: stddev(values) });
+  }
+
+  return rows.map((row) => {
+    const out = {} as Record<K, number>;
+    for (const cat of categories) {
+      const value = row[cat];
+      const s = shape.get(cat);
+      const z = !present(value) || !s || s.sd === 0 ? 0 : (value - s.m) / s.sd;
+      out[cat] = reversed.has(cat) ? -z : z;
+    }
+    return out;
+  });
+}
+
 export function zScoreRank<T extends CategoryStatLine>(
   players: T[]
 ): Array<T & { z_score: number }> {
   if (players.length === 0) return [];
 
-  const mean = (xs: number[]): number => xs.reduce((s, x) => s + x, 0) / xs.length;
-  const stddev = (xs: number[]): number => {
-    const m = mean(xs);
-    const variance = mean(xs.map((x) => (x - m) ** 2));
-    return Math.sqrt(variance);
-  };
-  const safeZ = (val: number, m: number, sd: number): number =>
-    sd === 0 ? 0 : (val - m) / sd;
+  const zs = categoryZScores<keyof CategoryStatLine>(
+    players,
+    CATEGORY_STAT_KEYS,
+    REVERSED_CATEGORY_STAT_KEYS
+  );
 
-  const cats: Array<keyof CategoryStatLine> = [
-    'points_per_game',
-    'rebounds_per_game',
-    'assists_per_game',
-    'steals_per_game',
-    'blocks_per_game',
-    'three_pointers_made',
-    'field_goal_percentage',
-    'free_throw_percentage',
-    'turnovers_per_game',
-  ];
-
-  const stats = new Map<keyof CategoryStatLine, { m: number; sd: number }>();
-  for (const cat of cats) {
-    const values = players.map((p) => p[cat]);
-    stats.set(cat, { m: mean(values), sd: stddev(values) });
-  }
-
-  return players.map((p) => {
+  return players.map((p, i) => {
     let total = 0;
-    for (const cat of cats) {
-      const s = stats.get(cat)!;
-      const z = safeZ(p[cat], s.m, s.sd);
-      total += cat === 'turnovers_per_game' ? -z : z;
-    }
-    return { ...p, z_score: total / cats.length };
+    for (const cat of CATEGORY_STAT_KEYS) total += zs[i][cat];
+    return { ...p, z_score: total / CATEGORY_STAT_KEYS.length };
   });
 }
 
