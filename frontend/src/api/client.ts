@@ -6,6 +6,7 @@ import type {
   Rating2kSummary, Rating2kDetail, Rating2kTeamType,
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, SlateSort, WatchlistResponse,
   WatchlistPositionFilter, WeeklyOutlookResponse,
+  StartSitResponse, StreamersResponse, TradeCheckResponse,
 } from '../types';
 
 const BASE_URL = import.meta.env.VITE_API_URL
@@ -412,6 +413,21 @@ export async function getWeeklyOutlook(
     categories: data.categories ?? [],
     players: data.players ?? [],
   };
+}
+
+export async function getStartSit(): Promise<StartSitResponse> {
+  const { data } = await api.get<StartSitResponse>('/fantasy/start-sit');
+  return { ...data, days: data.days ?? [] };
+}
+
+export async function getStreamers(): Promise<StreamersResponse> {
+  const { data } = await api.get<StreamersResponse>('/fantasy/streamers');
+  return { ...data, streamers: data.streamers ?? [] };
+}
+
+export async function checkTrade(give: number[], get: number[]): Promise<TradeCheckResponse> {
+  const { data } = await api.post<TradeCheckResponse>('/fantasy/trade-check', { give, get });
+  return { ...data, categories: data.categories ?? [] };
 }
 
 export async function addToRoster(playerId: number): Promise<void> {

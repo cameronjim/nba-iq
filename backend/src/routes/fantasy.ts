@@ -4,6 +4,12 @@ import type { AuthRequest } from '../middleware/auth.js';
 import { parsePredictionDate } from '../services/slate.js';
 import { MAX_WINDOW_DAYS } from '../services/watchlist.js';
 import { getWeeklyOutlook, parseOutlookDays } from '../services/weeklyOutlook.js';
+import { MAX_STARTING_SLOTS, getStartSit, parseStartingSlots } from '../services/startSit.js';
+import { getStreamers } from '../services/streamers.js';
+import { checkTrade, parseTradeRequest } from '../services/tradeCheck.js';
+
+const START_ERROR = 'start must be a calendar day formatted YYYY-MM-DD';
+const DAYS_ERROR = `days must be a whole number between 1 and ${MAX_WINDOW_DAYS}`;
 
 const router = Router();
 
@@ -73,12 +79,12 @@ router.get('/weekly-outlook', async (req: Request, res: Response): Promise<void>
   const userId = (req as AuthRequest).userId;
   const start = parsePredictionDate(req.query.start);
   if (start === null) {
-    res.status(400).json({ error: 'start must be a calendar day formatted YYYY-MM-DD' });
+    res.status(400).json({ error: START_ERROR });
     return;
   }
   const days = parseOutlookDays(req.query.days);
   if (days === null) {
-    res.status(400).json({ error: `days must be a whole number between 1 and ${MAX_WINDOW_DAYS}` });
+    res.status(400).json({ error: DAYS_ERROR });
     return;
   }
 
@@ -86,6 +92,83 @@ router.get('/weekly-outlook', async (req: Request, res: Response): Promise<void>
     res.json(await getWeeklyOutlook(userId, start, days));
   } catch {
     res.status(500).json({ error: 'Failed to build weekly outlook' });
+  }
+});
+
+router.get('/start-sit', async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as AuthRequest).userId;
+  const start = parsePredictionDate(req.query.start);
+  if (start === null) {
+    res.status(400).json({ error: START_ERROR });
+    return;
+  }
+  const days = parseOutlookDays(req.query.days);
+  if (days === null) {
+    res.status(400).json({ error: DAYS_ERROR });
+    return;
+  }
+  const slots = parseStartingSlots(req.query.slots);
+  if (slots === null) {
+    res.status(400).json({ error: `slots must be a whole number between 1 and ${MAX_STARTING_SLOTS}` });
+    return;
+  }
+
+  try {
+    res.json(await getStartSit(userId, start, days, slots));
+  } catch {
+    res.status(500).json({ error: 'Failed to build the start/sit lineup' });
+  }
+});
+
+router.get('/streamers', async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as AuthRequest).userId;
+  const start = parsePredictionDate(req.query.start);
+  if (start === null) {
+    res.status(400).json({ error: START_ERROR });
+    return;
+  }
+  const days = parseOutlookDays(req.query.days);
+  if (days === null) {
+    res.status(400).json({ error: DAYS_ERROR });
+    return;
+  }
+
+  try {
+    res.json(await getStreamers(userId, start, days));
+  } catch {
+    res.status(500).json({ error: 'Failed to rank streaming pickups' });
+  }
+});
+
+router.post('/trade-check', async (req: Request, res: Response): Promise<void> => {
+  const userId = (req as AuthRequest).userId;
+  const body: unknown = req.body;
+  const parsed = parseTradeRequest(body);
+  if (!parsed.ok) {
+    res.status(400).json({ error: parsed.error });
+    return;
+  }
+  const fields = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+  const start = parsePredictionDate(fields.start);
+  if (start === null) {
+    res.status(400).json({ error: START_ERROR });
+    return;
+  }
+  const days = parseOutlookDays(fields.days);
+  if (days === null) {
+    res.status(400).json({ error: DAYS_ERROR });
+    return;
+  }
+
+  try {
+    const outcome = await checkTrade(userId, parsed.request, start, days);
+    if (outcome.kind === 'invalid') {
+      res.status(400).json({ error: outcome.error });
+      return;
+    }
+    res.json(outcome.response);
+  } catch {
+    res.status(500).json({ error: 'Failed to check the trade' });
   }
 });
 
