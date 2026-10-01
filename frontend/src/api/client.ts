@@ -1,7 +1,7 @@
 import axios from 'axios';
 import type {
   Player, Team, Game, RosterPlayer, ChatMessage, TeamAnalysis,
-  BettingGame, PropPicksResponse, Bet, NewBet, LedgerSummary, BetStatus,
+  BettingGame, PropPicksResponse, PropRefreshResult, PropSettleResult, PropMarketSummary, Bet, NewBet, LedgerSummary, BetStatus,
   PlayerSeasonRow, TeamSeasonRow,
   Rating2kSummary, Rating2kDetail, Rating2kTeamType,
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, SlateSort, WatchlistResponse,
@@ -453,6 +453,21 @@ export async function getBettingOdds(): Promise<{ games: BettingGame[]; fetched_
 
 export async function getPropPicks(): Promise<PropPicksResponse> {
   const { data } = await api.get('/betting/props');
+  return data;
+}
+
+export async function refreshPropPicks(): Promise<PropRefreshResult> {
+  const { data } = await api.post('/betting/props/refresh');
+  return data;
+}
+
+export async function settlePropPicks(): Promise<PropSettleResult> {
+  const { data } = await api.post('/betting/props/settle');
+  return data;
+}
+
+export async function getPropPicksSummary(): Promise<{ markets: PropMarketSummary[] }> {
+  const { data } = await api.get('/betting/props/summary');
   return data;
 }
 
