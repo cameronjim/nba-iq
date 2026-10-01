@@ -232,6 +232,9 @@ def test_main_writes_every_report_and_refuses_a_second_look(
         *config.P3_V5_GATED_ENDPOINTS, *config.P3_RATE_GATED_ENDPOINTS,
     }
     markdown = (tmp_path / "fx_p3.md").read_text(encoding="utf-8")
-    assert "coherence_endpoints" in markdown
+    assert "coherence_endpoints: available" in markdown
+    coherence = pd.read_csv(tmp_path / "fx_p3_coherence.csv")
+    assert {"variant", "endpoint", "cohort", "n", "mae", "origin", "family"} <= set(coherence.columns)
+    assert set(coherence["family"]) == {"champion", p3.COMPARISON_RATE}
     with pytest.raises(SystemExit, match="one look per version"):
         p3.main(argv)
