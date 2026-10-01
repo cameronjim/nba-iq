@@ -42,6 +42,8 @@ export interface SlatePlayer {
   prob_active: NumericLike | null;
   // unconditional: availability is already priced in.
   proj_pts: NumericLike | null;
+  // conditional: given he plays, the same basis as proj_min_p50 and projected.
+  proj_pts_cond: NumericLike | null;
   proj_min_p50: NumericLike | null;
   projected: SlateProjectedCategories;
   // null means he has too little history to have a usual, which is not "unchanged".
@@ -75,6 +77,8 @@ export interface SlateGame {
   home_team_abbr: string | null;
   away_team_id: string | null;
   away_team_abbr: string | null;
+  // the model is trained on regular-season minutes, so preseason rows run high.
+  preseason: boolean;
   top_impact: NumericLike | null;
   top_edge: NumericLike | null;
   players: SlatePlayer[];

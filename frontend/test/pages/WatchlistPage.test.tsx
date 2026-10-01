@@ -20,6 +20,7 @@ const breakout: WatchlistPlayer = {
   team_abbr: 'OKC',
   position: 'SG/SF',
   opponent_team_abbr: 'LAL',
+  preseason: false,
   nba_game_id: '0022500555',
   game_date: '2026-02-04',
   games_count: 1,
@@ -28,6 +29,7 @@ const breakout: WatchlistPlayer = {
       game_date: '2026-02-04',
       nba_game_id: '0022500555',
       opponent_team_abbr: 'LAL',
+      preseason: false,
       minutes_p50: 31,
       proj_pts: 20,
       impact: 3.4,
@@ -64,6 +66,7 @@ const returnee: WatchlistPlayer = {
   team_abbr: 'LAL',
   position: 'C',
   opponent_team_abbr: 'OKC',
+  preseason: false,
   nba_game_id: '0022500555',
   game_date: '2026-02-04',
   games_count: 1,
@@ -72,6 +75,7 @@ const returnee: WatchlistPlayer = {
       game_date: '2026-02-04',
       nba_game_id: '0022500555',
       opponent_team_abbr: 'OKC',
+      preseason: false,
       minutes_p50: 25.5,
       proj_pts: 15.4,
       impact: 0.9,
@@ -105,6 +109,7 @@ const weekLong: WatchlistPlayer = {
       game_date: '2026-02-04',
       nba_game_id: '0022500555',
       opponent_team_abbr: 'LAL',
+      preseason: false,
       minutes_p50: 31,
       proj_pts: 20,
       impact: 3.4,
@@ -114,6 +119,7 @@ const weekLong: WatchlistPlayer = {
       game_date: '2026-02-05',
       nba_game_id: '0022500601',
       opponent_team_abbr: 'DEN',
+      preseason: false,
       minutes_p50: 29,
       proj_pts: 18.2,
       impact: 2.8,
@@ -123,6 +129,7 @@ const weekLong: WatchlistPlayer = {
       game_date: '2026-02-07',
       nba_game_id: '0022500612',
       opponent_team_abbr: 'PHX',
+      preseason: false,
       minutes_p50: 30,
       proj_pts: 19,
       impact: 2.9,
@@ -132,6 +139,7 @@ const weekLong: WatchlistPlayer = {
       game_date: '2026-02-09',
       nba_game_id: '0022500620',
       opponent_team_abbr: 'SAC',
+      preseason: false,
       minutes_p50: 24,
       proj_pts: 12.1,
       impact: 2.1,
@@ -218,6 +226,18 @@ describe('WatchlistPage', () => {
     const minutes = screen.getByTitle(/Usually 22\.0 min/);
     expect(minutes.textContent?.replace(/\s+/g, ' ')).toBe('22 → 31 min');
     expect(screen.getByText(/\+8\.4 pts vs usual/)).toBeInTheDocument();
+  });
+
+  it('marks a preseason game on the row', async () => {
+    watchlistMock.mockResolvedValue(payload({ players: [{ ...breakout, preseason: true }, returnee] }));
+
+    renderPage();
+    await screen.findByText('Breakout Wing');
+
+    const preseasonRow = screen.getByText('Breakout Wing').closest('li') as HTMLElement;
+    const regularRow = screen.getByText('Returning Vet').closest('li') as HTMLElement;
+    expect(within(preseasonRow).getByText('Preseason')).toBeInTheDocument();
+    expect(within(regularRow).queryByText('Preseason')).not.toBeInTheDocument();
   });
 
   it('names the team and the opponent', async () => {

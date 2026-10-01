@@ -13,6 +13,16 @@ export const SlateLegend = (): JSX.Element => (
       <span>projected impact, 0 = average night</span>
     </span>
     <span className="flex items-center gap-1.5">
+      <span className="tabular-nums">
+        <span className="font-semibold">21.4</span> pts if he plays
+      </span>
+      <span>points, minutes and the category line, given he takes the floor</span>
+    </span>
+    <span className="flex items-center gap-1.5">
+      <span className="tabular-nums opacity-70">88% to play, 18.9 over the schedule</span>
+      <span>the same points with the chance he sits priced in</span>
+    </span>
+    <span className="flex items-center gap-1.5">
       <span className="badge badge-success badge-sm tabular-nums">87%</span>
       <span>chance he plays</span>
     </span>

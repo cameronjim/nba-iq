@@ -10,6 +10,9 @@ import type { SlateSort } from '../types';
 
 const NO_RUN_NOTICE = 'No prediction run yet. Check back after the next model run.';
 
+const PRESEASON_NOTE =
+  "Preseason minutes are not modelled: the model is trained on regular-season games, so starters' minutes and totals here run high.";
+
 const ORDER_NOTE: Record<SlateSort, string> = {
   impact:
     'Players and games are ordered by projected impact across all nine categories. 0 is an average night.',
@@ -21,6 +24,7 @@ export const SlatePage = (): JSX.Element => {
   const { date, setDate, sort, setSort, data, loading, error, reload } = useSlate();
 
   const predictedAt = formatTimestamp(data?.run?.predicted_at ?? null);
+  const hasPreseason = data?.games.some((game) => game.preseason) ?? false;
 
   return (
     <div className="max-w-[900px] mx-auto px-4 py-6 pb-20">
@@ -108,9 +112,13 @@ export const SlatePage = (): JSX.Element => {
       <footer className="text-[11px] opacity-40 mt-6 pt-3 border-t border-base-300 flex flex-col gap-1">
         <span data-testid="slate-order-note">{ORDER_NOTE[sort]}</span>
         <span>
-          Every projection already accounts for the chance he sits, as of when it was
-          published. The injury chip is the report right now.
+          The headline points, minutes and category line are what he projects if he plays.
         </span>
+        <span>
+          The muted line is the same points with his chance of sitting priced in, as of when the
+          run was published; the injury chip is the report right now.
+        </span>
+        {hasPreseason && <span data-testid="slate-preseason-note">{PRESEASON_NOTE}</span>}
       </footer>
     </div>
   );
