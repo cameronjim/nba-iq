@@ -1,4 +1,5 @@
 import { RefreshCw } from 'lucide-react';
+import { formatTimestampWithZone } from '../../utils/analytics';
 import type { WeeklyOutlookState } from '../../hooks/useWeeklyOutlook';
 import type {
   OutlookCategory,
@@ -102,13 +103,16 @@ function MissRiskChip({ player }: { player: OutlookPlayer }): JSX.Element {
 
 function Provenance({ data }: { data: WeeklyOutlookResponse }): JSX.Element {
   const fallbacks = data.provenance.fallback_spread_players;
+  const publishedAt = formatTimestampWithZone(data.provenance.predicted_at);
   return (
     <div className="text-xs opacity-50 space-y-1">
-      <p>
-        Model {data.provenance.model_version ?? 'unknown'}
-        {data.provenance.predicted_at && `, predicted ${new Date(data.provenance.predicted_at).toLocaleString()}`}
-        {data.simulation &&
-          `. ${data.simulation.n.toLocaleString()} simulated weeks, availability dependence ${data.simulation.dependence_rho}.`}
+      <p data-testid="weekly-outlook-provenance">
+        {[
+          publishedAt ? `Published ${publishedAt}` : null,
+          'illustrative outlook: category win odds are against a fixed typical opponent',
+        ]
+          .filter(Boolean)
+          .join(' · ')}
       </p>
       {data.opponent && <p>Typical opponent: {data.opponent.definition}.</p>}
       {fallbacks.length > 0 && (

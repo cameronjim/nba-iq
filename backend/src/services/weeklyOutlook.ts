@@ -9,7 +9,7 @@ import {
   rowsOrEmpty,
   uncondStat,
   type ImpactInput,
-  type SlateRun,
+  type RunSummary,
 } from './slate.js';
 import { pivotUpcomingRows, type UpcomingPredictionRow } from './playerPredictions.js';
 import { MAX_WINDOW_DAYS, windowRange, type WatchlistWindow } from './watchlist.js';
@@ -62,7 +62,7 @@ export interface WeeklyOutlookResponse {
   status: WeeklyOutlookStatus;
   window: WatchlistWindow;
   roster_size: number;
-  run: SlateRun | null;
+  run: RunSummary | null;
   simulation: { n: number; seed: number; dependence_rho: number } | null;
   opponent: OutlookOpponent | null;
   categories: CategoryOutlook[];
@@ -230,7 +230,7 @@ export async function getWeeklyOutlook(
 
   const base = (
     status: WeeklyOutlookStatus,
-    run: SlateRun | null,
+    run: RunSummary | null,
     players: OutlookPlayer[]
   ): WeeklyOutlookResponse => ({
     status,
@@ -270,7 +270,7 @@ export async function getWeeklyOutlook(
 
   const run = await getLatestCompleteRun();
   if (!run) return base('no_run', null, idle());
-  const runSummary: SlateRun = { model_version: run.model_version, predicted_at: run.predicted_at };
+  const runSummary: RunSummary = { model_version: run.model_version, predicted_at: run.predicted_at };
 
   const nbaIds = rosterPlayers
     .map((player) => player.nba_player_id)

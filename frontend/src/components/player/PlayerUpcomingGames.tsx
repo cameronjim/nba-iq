@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CalendarRange } from 'lucide-react';
-import { statLabel, formatTimestamp } from '../../utils/analytics';
+import { statLabel, formatTimestampWithZone } from '../../utils/analytics';
 import { UpcomingGameRow } from './UpcomingGameRow';
 import type { PlayerPredictionsResponse } from '../../types';
 
@@ -117,12 +117,11 @@ export const PlayerUpcomingGames = ({ data }: PlayerUpcomingGamesProps): JSX.Ele
 
             <p className="text-[10px] opacity-40">
               {[
-                run.model_version ? `model ${run.model_version}` : null,
-                formatTimestamp(run.predicted_at)
-                  ? `projected ${formatTimestamp(run.predicted_at)}`
+                formatTimestampWithZone(run.predicted_at)
+                  ? `published ${formatTimestampWithZone(run.predicted_at)}`
                   : null,
-                formatTimestamp(run.forecast_cutoff_at)
-                  ? `data through ${formatTimestamp(run.forecast_cutoff_at)}`
+                formatTimestampWithZone(run.forecast_cutoff_at)
+                  ? `data through ${formatTimestampWithZone(run.forecast_cutoff_at)}`
                   : null,
               ]
                 .filter(Boolean)

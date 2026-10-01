@@ -5,6 +5,8 @@ import {
   COMPLETE_RUN_STATUS,
   PRODUCTION_CHANNEL,
   getLatestCompleteRun,
+  getLatestSlateRun,
+  isDateCovered,
   IMPACT_CATEGORIES,
   PLACEHOLDER_NAME_SUFFIX,
   POINTS_UNCOND_STAT,
@@ -36,6 +38,7 @@ import {
   type ImpactInput,
   type SlateGame,
   type SlatePlayer,
+  type SlateRun,
 } from '../../src/services/slate.js';
 import type { ReasonInput } from '../../src/services/projectionReasons.js';
 
@@ -527,6 +530,87 @@ describe('getLatestCompleteRun', () => {
   });
 });
 
+describe('getLatestSlateRun', () => {
+  const queryMock = vi.mocked(query);
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('reads the provenance and the dates the run covers from one production-only query', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(
+      pgResult([
+        {
+          id: 7,
+          model_version: 'v3',
+          predicted_at: new Date('2026-10-01T17:11:00.000Z'),
+          information_as_of: new Date('2026-10-01T17:05:00.000Z'),
+          covers_from: new Date(2026, 9, 1),
+          covers_to: new Date(2026, 9, 7),
+        },
+      ])
+    );
+
+    // act
+    const run = await getLatestSlateRun();
+
+    // assert
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(queryMock.mock.calls[0][1]).toEqual([COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
+    expect(run).toEqual({
+      id: 7,
+      model_version: 'v3',
+      predicted_at: '2026-10-01T17:11:00.000Z',
+      information_as_of: '2026-10-01T17:05:00.000Z',
+      covers_from: '2026-10-01',
+      covers_to: '2026-10-07',
+    });
+  });
+
+  it('returns null when no production run exists', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const run = await getLatestSlateRun();
+
+    // assert
+    expect(run).toBeNull();
+  });
+});
+
+describe('isDateCovered', () => {
+  const run: SlateRun = {
+    model_version: 'v3',
+    predicted_at: '2026-10-01T17:11:00.000Z',
+    information_as_of: null,
+    covers_from: '2026-10-01',
+    covers_to: '2026-10-07',
+  };
+
+  it('is true for a date inside the run, ends included', () => {
+    // act + assert
+    expect([isDateCovered('2026-10-01', run), isDateCovered('2026-10-07', run)]).toEqual([
+      true,
+      true,
+    ]);
+  });
+
+  it('is false for a date past the week the run looks ahead', () => {
+    // act + assert
+    expect(isDateCovered('2026-10-20', run)).toBe(false);
+  });
+
+  it('is false with no run, or a run that projected nothing', () => {
+    // act + assert
+    expect([
+      isDateCovered('2026-10-01', null),
+      isDateCovered('2026-10-01', { ...run, covers_from: null, covers_to: null }),
+    ]).toEqual([false, false]);
+  });
+});
+
 describe('parseSlateSort', () => {
   it('defaults to impact so the old request still gets the old page', () => {
     // act + assert
@@ -713,7 +797,16 @@ describe('getSlate', () => {
         ])
       )
       .mockResolvedValueOnce(
-        pgResult([{ id: 9, model_version: 'v3', predicted_at: new Date('2026-10-02T12:00:00.000Z') }])
+        pgResult([
+          {
+            id: 9,
+            model_version: 'v3',
+            predicted_at: new Date('2026-10-02T12:00:00.000Z'),
+            information_as_of: null,
+            covers_from: new Date(2026, 9, 2),
+            covers_to: new Date(2026, 9, 8),
+          },
+        ])
       )
       .mockResolvedValueOnce(pgResult([{ team_id: '1', team_abbr: 'GSW' }]))
       .mockResolvedValueOnce(
@@ -741,6 +834,7 @@ describe('getSlate', () => {
 
     // assert
     const [game] = slate.games;
+    expect(slate.covered).toBe(true);
     expect(game.preseason).toBe(true);
     expect(game.players[0]).toMatchObject({
       proj_pts: 18.9,

@@ -79,7 +79,14 @@ export function slateFixture(params: URLSearchParams): SlateResponse {
   return {
     date: params.get('date') ?? '2026-02-04',
     sort,
-    run: { model_version: 'v1-decomposed', predicted_at: '2026-02-04T11:00:00Z' },
+    run: {
+      model_version: 'v1-decomposed',
+      predicted_at: '2026-02-04T11:00:00Z',
+      information_as_of: '2026-02-04T10:45:00Z',
+      covers_from: '2026-02-04',
+      covers_to: '2026-02-10',
+    },
+    covered: true,
     pool: {
       key: 'slate',
       label: "Tonight's slate",
@@ -113,5 +120,18 @@ export function slateFixture(params: URLSearchParams): SlateResponse {
         players: [],
       },
     ],
+  };
+}
+
+// the date sits past the week the latest run looks ahead, so only the schedule is known.
+export function uncoveredSlateFixture(params: URLSearchParams): SlateResponse {
+  const base = slateFixture(params);
+  return {
+    ...base,
+    date: '2026-10-20',
+    covered: false,
+    run: base.run && { ...base.run, covers_from: '2026-10-01', covers_to: '2026-10-07' },
+    pool: { ...base.pool, sample_size: 0 },
+    games: base.games.map((game) => ({ ...game, top_impact: null, top_edge: null, players: [] })),
   };
 }

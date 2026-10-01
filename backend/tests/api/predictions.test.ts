@@ -79,6 +79,18 @@ const runRow = {
   id: 42,
   model_version: 'v1-decomposed',
   predicted_at: new Date('2026-02-04T11:00:00.000Z'),
+  information_as_of: new Date('2026-02-04T10:45:00.000Z'),
+  // pg hands DATE columns back as local-midnight Dates.
+  covers_from: new Date(2026, 1, 4),
+  covers_to: new Date(2026, 1, 10),
+};
+
+const runSummary = {
+  model_version: 'v1-decomposed',
+  predicted_at: '2026-02-04T11:00:00.000Z',
+  information_as_of: '2026-02-04T10:45:00.000Z',
+  covers_from: '2026-02-04',
+  covers_to: '2026-02-10',
 };
 
 function predictionRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -141,10 +153,8 @@ describe('GET /api/predictions/slate', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.date).toBe('2026-02-04');
-    expect(res.body.run).toEqual({
-      model_version: 'v1-decomposed',
-      predicted_at: '2026-02-04T11:00:00.000Z',
-    });
+    expect(res.body.run).toEqual(runSummary);
+    expect(res.body.covered).toBe(true);
     expect(res.body.pool).toEqual(poolOf(2));
     expect(res.body.games).toHaveLength(1);
     expect(res.body.games[0]).toMatchObject({
@@ -433,6 +443,49 @@ describe('GET /api/predictions/slate', () => {
     expect(queryMock).toHaveBeenCalledTimes(3);
   });
 
+  it('still lists the games, flagged uncovered, for a date past the week the run covers', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult(scheduleRows))
+      .mockResolvedValueOnce(pgResult([runRow]))
+      .mockResolvedValueOnce(pgResult(teamRows))
+      .mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const res = await request(app).get('/api/predictions/slate').query({ date: '2026-02-20' });
+
+    // assert
+    expect(res.status).toBe(200);
+    expect(res.body.covered).toBe(false);
+    expect(res.body.run).toMatchObject({ covers_from: '2026-02-04', covers_to: '2026-02-10' });
+    expect(res.body.games).toHaveLength(1);
+    expect(res.body.games[0].players).toEqual([]);
+  });
+
+  it('falls back to null provenance when the run row carries none', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult(scheduleRows))
+      .mockResolvedValueOnce(
+        pgResult([{ ...runRow, information_as_of: null, covers_from: null, covers_to: null }])
+      )
+      .mockResolvedValueOnce(pgResult(teamRows))
+      .mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const res = await request(app).get('/api/predictions/slate').query({ date: '2026-02-04' });
+
+    // assert
+    expect(res.status).toBe(200);
+    expect(res.body.run).toEqual({
+      ...runSummary,
+      information_as_of: null,
+      covers_from: null,
+      covers_to: null,
+    });
+    expect(res.body.covered).toBe(false);
+  });
+
   it('returns an empty slate for a day with no games', async () => {
     queryMock.mockResolvedValueOnce(pgResult([])).mockResolvedValueOnce(pgResult([runRow]));
 
@@ -442,7 +495,8 @@ describe('GET /api/predictions/slate', () => {
     expect(res.body).toEqual({
       date: '2026-07-04',
       sort: 'impact',
-      run: { model_version: 'v1-decomposed', predicted_at: '2026-02-04T11:00:00.000Z' },
+      run: runSummary,
+      covered: false,
       pool: poolOf(0),
       baseline,
       games: [],
@@ -459,6 +513,7 @@ describe('GET /api/predictions/slate', () => {
       date: '2026-02-04',
       sort: 'impact',
       run: null,
+      covered: false,
       pool: poolOf(0),
       baseline,
       games: [],

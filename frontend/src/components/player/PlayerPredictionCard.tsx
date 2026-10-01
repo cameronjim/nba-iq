@@ -1,7 +1,7 @@
 import { Sparkles } from 'lucide-react';
 import type { AnalyticsStat, NumericLike, PlayerPrediction, ProjectedRange } from '../../types';
 import { formatStat, toStatNumber } from '../../utils/stats';
-import { formatTimestamp, statLabel } from '../../utils/analytics';
+import { formatTimestampWithZone, statLabel } from '../../utils/analytics';
 import { signedStat } from '../../utils/vsUsual';
 
 interface PlayerPredictionCardProps {
@@ -47,7 +47,7 @@ export const PlayerPredictionCard = ({
   const projected = (
     Object.entries(prediction.projected ?? {}) as Array<[AnalyticsStat, ProjectedValue]>
   ).filter(([, value]) => value !== null && value !== undefined);
-  const asOf = formatTimestamp(prediction.as_of ?? null);
+  const asOf = formatTimestampWithZone(prediction.as_of ?? null);
   const probActive =
     prediction.prob_active === null || prediction.prob_active === undefined
       ? null
@@ -115,9 +115,8 @@ export const PlayerPredictionCard = ({
 
         <p className="text-[10px] opacity-40">
           {[
-            asOf ? `Projected ${asOf}` : null,
+            asOf ? `Published ${asOf}` : null,
             prediction.conditional ? 'stat lines assume he plays' : null,
-            prediction.model_version ? `model ${prediction.model_version}` : null,
           ]
             .filter(Boolean)
             .join(' · ')}

@@ -200,7 +200,16 @@ export function normalizeSlate(data: Partial<SlateResponse>, sort: SlateSort): S
   return {
     date: data.date ?? '',
     sort: data.sort ?? sort,
-    run: data.run ?? null,
+    run: data.run
+      ? {
+          ...data.run,
+          information_as_of: data.run.information_as_of ?? null,
+          covers_from: data.run.covers_from ?? null,
+          covers_to: data.run.covers_to ?? null,
+        }
+      : null,
+    // a backend that predates coverage never flags a gap, so the page behaves as before.
+    covered: data.covered ?? true,
     pool: data.pool ?? { key: '', label: '', definition: '', sample_size: 0 },
     baseline: data.baseline ?? EMPTY_BASELINE,
     games: (data.games ?? []).map((game) => ({

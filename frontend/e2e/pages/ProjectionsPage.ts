@@ -44,6 +44,18 @@ export class ProjectionsPage {
     return this.page.getByTestId('slate-preseason-note');
   }
 
+  get subtitle(): Locator {
+    return this.page.getByTestId('slate-subtitle');
+  }
+
+  get coverageNotice(): Locator {
+    return this.page.getByTestId('slate-coverage-notice');
+  }
+
+  scheduleOnly(matchup: RegExp): Locator {
+    return this.gameCard(matchup).getByTestId('slate-schedule-only');
+  }
+
   get orderNote(): Locator {
     return this.page.getByTestId('slate-order-note');
   }
