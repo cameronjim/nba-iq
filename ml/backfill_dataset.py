@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fnba_ml.cli import add_common_args, add_source_args, build_source, setup_logging  # noqa: E402
 from fnba_ml.config import DATA_DIR, FEATURE_VERSION, RATE_TARGETS  # noqa: E402
-from fnba_ml.data.schema import STAT_COLS, normalise_ids  # noqa: E402
+from fnba_ml.data.schema import STAT_COLS, normalise_ids, training_rows  # noqa: E402
 from fnba_ml.features import (  # noqa: E402
     expanding_rate_column,
     per_minute_rate_features,
@@ -151,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
 
     source = build_source(args)
     features, coverage = attach_missing_stats(
-        features, source.load_player_game_logs(), stats
+        features, training_rows(source.load_player_game_logs()), stats
     )
     features = rebuild_rate_columns(features)
 

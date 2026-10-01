@@ -9,7 +9,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ..config import ID_COLS
+from ..config import (
+    COMPETITION_BY_SEASON_TYPE,
+    COMPETITION_COL,
+    ID_COLS,
+    POSTSEASON_COMPETITIONS,
+    TRAINING_COMPETITIONS,
+)
 
 # stats carried from the game log onto the universe row. a scheduled row where
 # the player did not appear gets 0.0 for all of them.
@@ -76,6 +82,33 @@ STATUS_COLS: tuple[str, ...] = (
 )
 
 _SCHEDULE_ID_COLS = ("GAME_ID", "HOME_TEAM_ID", "AWAY_TEAM_ID")
+
+
+def competition_of(season_type: pd.Series) -> pd.Series:
+    """season type -> COMPETITION label. an unknown type is null, never "regular"."""
+    return season_type.map(COMPETITION_BY_SEASON_TYPE).astype(object)
+
+
+def keep_competitions(frame: pd.DataFrame, competitions: tuple[str, ...]) -> pd.DataFrame:
+    """the rows of ``frame`` in ``competitions``; a frame with no COMPETITION is kept whole."""
+    if COMPETITION_COL not in frame.columns:
+        return frame
+    mask = frame[COMPETITION_COL].isin(competitions)
+    if bool(mask.all()):
+        return frame
+    return frame[mask].reset_index(drop=True)
+
+
+def training_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """the rows the universe and every training frame are built from."""
+    return keep_competitions(frame, TRAINING_COMPETITIONS)
+
+
+def postseason_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """play-in and playoff rows; none at all when the frame carries no COMPETITION."""
+    if COMPETITION_COL not in frame.columns:
+        return frame.iloc[0:0]
+    return frame[frame[COMPETITION_COL].isin(POSTSEASON_COMPETITIONS)].reset_index(drop=True)
 
 
 def normalise_ids(df: pd.DataFrame) -> pd.DataFrame:

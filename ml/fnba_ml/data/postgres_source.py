@@ -28,7 +28,7 @@ import os
 
 import pandas as pd
 
-from ..config import SEASON_TYPES, SEASONS
+from ..config import COMPETITION_COL, HISTORY_SEASON_TYPES, SEASONS
 from .schema import (
     PLAYER_LOG_COLS,
     POSITION_COLS,
@@ -37,6 +37,7 @@ from .schema import (
     STATUS_COLS,
     TEAM_LOG_COLS,
     TEAM_LOG_OPTIONAL_COLS,
+    competition_of,
     normalise_dates,
     normalise_ids,
     require_columns,
@@ -100,6 +101,7 @@ SELECT
     tgl.team_id            AS "TEAM_ID",
     tgl.nba_game_id        AS "GAME_ID",
     tgl.season             AS "SEASON",
+    tgl.season_type        AS "SEASON_TYPE",
     tgl.game_date          AS "GAME_DATE",
     tgl.pts                AS "PTS",
     tgl.minutes            AS "MIN",
@@ -265,7 +267,8 @@ class PostgresSource:
         database_url: str | None = None,
     ) -> None:
         self.seasons = list(seasons or SEASONS)
-        self.season_types = list(season_types or SEASON_TYPES)
+        # history, not training: the universe builder drops what training must not see.
+        self.season_types = list(season_types or HISTORY_SEASON_TYPES)
         self.cutoff = cutoff
         self._database_url = database_url
 
@@ -309,12 +312,14 @@ class PostgresSource:
         df["PLAYER_NAME"] = pd.NA
         for col in STAT_COLS:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+        df[COMPETITION_COL] = competition_of(df["SEASON_TYPE"])
         df = normalise_ids(normalise_dates(df))
         require_columns(df, PLAYER_LOG_COLS, "canonical player log")
         return df.reset_index(drop=True)
 
     def load_team_game_logs(self) -> pd.DataFrame:
         df = normalise_ids(normalise_dates(self._read(self._sql(TEAM_LOGS_SQL, "tgl.game_date"))))
+        df[COMPETITION_COL] = competition_of(df["SEASON_TYPE"])
         for col in ("PTS", "MIN", "FGA", "FTA", "TOV", *TEAM_LOG_OPTIONAL_COLS):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
@@ -337,6 +342,7 @@ class PostgresSource:
 
     def load_schedule(self) -> pd.DataFrame:
         df = normalise_ids(normalise_dates(self._read(self._sql(SCHEDULE_SQL, None))))
+        df[COMPETITION_COL] = competition_of(df["SEASON_TYPE"])
         require_columns(df, SCHEDULE_COLS, "canonical schedule")
         return df.reset_index(drop=True)
 

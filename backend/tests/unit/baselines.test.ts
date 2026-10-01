@@ -1,17 +1,25 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { pgResult } from '../helpers/mockDb.js';
+import { query } from '../../src/db.js';
 import {
+  BASELINE_DEFINITION,
   BASELINE_RECENT_GAMES,
   BASELINE_STATS,
   BASELINE_WINDOW_GAMES,
   MIN_BASELINE_GAMES,
   NOTABLE_MINUTES_DELTA,
   baselineDescriptor,
+  baselineIncludesPostseason,
+  baselineSeasonTypes,
   daysSince,
   deltaOf,
+  fetchBaselines,
   hasUsableBaseline,
   type BaselineStat,
   type PlayerBaseline,
 } from '../../src/services/baselines.js';
+
+const queryMock = vi.mocked(query);
 
 function baseline(overrides: Partial<PlayerBaseline> = {}): PlayerBaseline {
   const avg = {} as Record<BaselineStat, number | null>;
@@ -97,5 +105,88 @@ describe('the baseline window', () => {
     expect([...BASELINE_STATS]).toEqual(
       expect.arrayContaining(['minutes', 'pts', 'reb', 'ast', 'stl', 'blk', 'fg3m', 'fga'])
     );
+  });
+});
+
+describe('baselineIncludesPostseason', () => {
+  it('is off when the flag is unset', () => {
+    expect(baselineIncludesPostseason({})).toBe(false);
+  });
+
+  it('is on for the usual truthy spellings', () => {
+    for (const value of ['true', 'TRUE', '1', 'on', ' yes ']) {
+      expect(baselineIncludesPostseason({ BASELINE_INCLUDES_POSTSEASON: value })).toBe(true);
+    }
+  });
+
+  it('stays off for anything else', () => {
+    for (const value of ['false', '0', 'off', '']) {
+      expect(baselineIncludesPostseason({ BASELINE_INCLUDES_POSTSEASON: value })).toBe(false);
+    }
+  });
+});
+
+describe('the baseline season types', () => {
+  it('is the regular season alone with the flag off', () => {
+    // act
+    const descriptor = baselineDescriptor(false);
+
+    // assert
+    expect(baselineSeasonTypes(false)).toEqual(['Regular Season']);
+    expect(descriptor.season_types).toEqual(['Regular Season']);
+    expect(descriptor.includes_postseason).toBe(false);
+    expect(descriptor.definition).toContain('regular-season games');
+    expect(descriptor.definition).toBe(BASELINE_DEFINITION);
+  });
+
+  it('adds the play-in and the playoffs with the flag on, and says so', () => {
+    // act
+    const descriptor = baselineDescriptor(true);
+
+    // assert
+    expect(descriptor.season_types).toEqual(['Regular Season', 'PlayIn', 'Playoffs']);
+    expect(descriptor.includes_postseason).toBe(true);
+    expect(descriptor.definition).toContain('regular-season, play-in and playoff games');
+  });
+
+  it('reads the flag from the environment by default', () => {
+    // arrange
+    const previous = process.env.BASELINE_INCLUDES_POSTSEASON;
+    delete process.env.BASELINE_INCLUDES_POSTSEASON;
+
+    // act
+    const descriptor = baselineDescriptor();
+
+    // assert
+    expect(descriptor.includes_postseason).toBe(false);
+    if (previous !== undefined) process.env.BASELINE_INCLUDES_POSTSEASON = previous;
+  });
+});
+
+describe('fetchBaselines', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+    queryMock.mockResolvedValue(pgResult([]));
+  });
+
+  it('filters the logs to the regular season with the flag off', async () => {
+    // act
+    await fetchBaselines('2026-11-10', null, false);
+
+    // assert
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(sql).toContain('g.season_type = ANY($5)');
+    expect(params?.[4]).toEqual(['Regular Season']);
+  });
+
+  it('reads play-in and playoff logs with the flag on', async () => {
+    // act
+    await fetchBaselines('2026-11-10', ['1628369'], true);
+
+    // assert
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(params?.[4]).toEqual(['Regular Season', 'PlayIn', 'Playoffs']);
+    expect(sql).toContain('g.nba_player_id = ANY($6)');
+    expect(params?.[5]).toEqual(['1628369']);
   });
 });

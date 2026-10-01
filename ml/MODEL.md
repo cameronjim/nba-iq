@@ -4153,9 +4153,113 @@ and `test_scoring_baselines.py`.
 
 ## 20. v3 candidates (2026-10-02)
 
-Changes built for the v3 re-freeze. Each one ships behind a switch whose default is
-today's frozen behaviour, so `prospective_2026_27_v2` keeps serving exactly what 17
-froze. Flipping the switches is the v3 re-freeze (13.2 item 5), not a bug fix.
+**Nothing in this section changes a served number.** `prospective_2026_27_v2` is
+untouched and sections 13, 17, 18 and 19 are not edited. Each candidate below lands
+behind a config switch whose default is the current behaviour, so
+`tests/test_prospective_freeze.py` and every emitted column stay as they were. A later
+package flips the switches it adopts and re-freezes as `prospective_2026_27_v3`.
+
+### 20.1 Postseason appearances in the rate history
+
+**The gap.** Only Regular Season games were scraped, and only Regular Season rows
+reached the model, so a player's play-in and playoff games were invisible. Those are
+the most recent and highest-leverage games before a new season, and every career-scoped
+EWMA served in October is anchored on them being absent. Scottie Barnes is served a
+0.51 points-per-minute rate from his last regular-season games while his playoff rate
+was far higher.
+
+**What changed, all of it inert until the switch flips:**
+
+- **Scraper.** `config.SEASON_TYPES_INGESTED = ("Regular Season", "PlayIn",
+  "Playoffs")`. The incremental game-log phase loops the per-season-type fetchers
+  (`playergamelogs`, the `leaguegamelog` team log and player supplement) over it with
+  the existing request delays and **one watermark per season type**;
+  `rows.season_types_to_fetch` skips the two postseason types before April 1 of the
+  season's second year, so an October run pays no extra requests. `--backfill-game-logs`
+  covers all three types and keeps play-in and playoff rows from `scheduleleaguev2`
+  (`rows.ingested_schedule_rows`); the schedule's team-log fallback reads all three.
+  The status and box-score path needed no change: it selects games from
+  `team_game_logs` by season, so a playoff game gets status rows once its logs land.
+  `season_type` is written from the game id prefix (`004` Playoffs, `005` PlayIn), as
+  it always was. The validation gate "completed schedule games have logs" is scoped to
+  the Regular Season, because a scheduled "if necessary" playoff game that was never
+  played is not a missing log; the other gates hold for every type.
+- **Sources.** `config.HISTORY_SEASON_TYPES` is what both sources load; the postgres
+  source's default moved from `SEASON_TYPES` to it. Every frame carries
+  `COMPETITION` (`regular` / `playin` / `playoffs`). The parquet source reads a file's
+  own `COMPETITION` column and defaults to `regular`, which is what the nba_api exports
+  are.
+- **Training frames.** `config.TRAINING_SEASON_TYPES = ("Regular Season",)`, and
+  `config.SEASON_TYPES` keeps its value as that same training set. The universe builders
+  (status and approximation), `coverage_report`, the matchup team context and
+  `backfill_dataset.py` keep training rows only (`data.schema.training_rows`), and
+  `build_features` **refuses** a universe holding a non-regular row: postseason rows
+  enter only through `build_features(postseason=...)`, never as modelled rows.
+  `universe.postseason_appearances` builds them in the universe shape (a log row with a
+  dnp reason is a dressed DNP, as the status universe treats it), and
+  `build_dataset.py` writes them beside the dataset as `<stem>_postseason.parquet` so
+  `daily_run.py` and `project_preseason.py` serve from the same history the dataset was
+  built from. The dataset itself stays a training frame.
+- **Features.** `config.RATE_HISTORY_INCLUDES_POSTSEASON = False`. On, the postseason
+  appearances join the **career-scoped** as-of joins: `roll{3,5,10}_*`, `ewma_*`,
+  `n_appearances`, `LAST_APP_DATE` (so `days_since_last_app`), both per-minute rate
+  families, `usg_ewma` and the teammate magnitudes. The **season-scoped** columns
+  (`std_*`, `season_appearances`) and every scheduled-row window (`avail_rate_*`,
+  `avail_rate_std`, `uncond_std_*`, `games_since_last_app`) stay regular season only,
+  either way. A playoff game carries the same season label as the regular season before
+  it, so the season-to-date frame is computed from the universe alone rather than
+  filtered by label; and a playoff game is not a scheduled row a player could have
+  missed, so availability never reads it.
+- **Scoring tool.** `scoring.build_baselines` and `seeded_rate_baselines` scope the
+  history the same way when it carries `season_type` (which `score_runs.py` now
+  selects): `avail_rate_10` reads Regular Season scheduled rows, the appearance
+  baselines (`roll10_MIN`, `ewma_MIN`, `ewma_total_*`, the F7/F8 rate families) follow
+  the switch. The look report's header names the history it used, so a report scored
+  with the switch on is never compared with one scored with it off.
+- **Backend.** `BASELINE_INCLUDES_POSTSEASON` (env, default off) widens the "usual"
+  form baseline from Regular Season to Regular Season, PlayIn and Playoffs, and the
+  baseline descriptor carries `season_types`, `includes_postseason` and a definition
+  that names which. It is flipped together with the model switch, so "usual" and the
+  forecast read the same games.
+
+**Why training stays regular season.** A playoff row as a *modelled* row would put a
+second regime into every availability and minutes fit: rotations shorten, starters
+play 40 minutes, nobody rests on a back-to-back, and DNP-CD means something different
+in a seven-game series. The season types also sit in different calendar blocks, so
+`ORIGINS` validation months would be trained on rows unlike anything they score. What
+the gap costs is *history*, not training rows: the October forecast reads a stale rate.
+So the postseason enters only where it is information about the player (career form),
+and the served models are fitted on exactly the rows they were before.
+
+**The re-freeze trigger.** Flipping `RATE_HISTORY_INCLUDES_POSTSEASON` changes emitted
+feature values for every player with a postseason game, which 13.2's last paragraph
+classes as a change to the artifact (item 7: the training window rule and a refit). It
+is therefore the trigger for `prospective_2026_27_v3`, not a footnote, and it must land
+before opening night or wait for the next season.
+
+**The measurement plan, written before any number exists.**
+
+1. Backfill the postseason from the home PC: `run_scraper.py --backfill-game-logs
+   --from 2022-23` (all three types), then `--validate-game-logs` and check the
+   per-season-type game counts it now prints.
+2. Build both datasets from one database state:
+   `build_dataset.py --source postgres --out data/dataset.parquet --no-v4-candidate`
+   and the same with `--out data/dataset_postseason.parquet --postseason-history`.
+3. `run_postseason_bracket.py`: the served `v3-honest` incumbent with unchanged
+   champions, fitted on each dataset over the five `ORIGINS`, identical validation rows,
+   cohorts taken from the switch-off dataset for both passes (a tier is assigned from
+   `roll10_MIN`, which the switch moves). The bar is the P3 bar: paired 7-day
+   moving-block bootstrap, 95% CI excluding zero and at least 1% relative improvement on
+   a gated endpoint, `minutes_mae`, `uncond_pts_mae` or `cond_pts_mae`, and no gated
+   cohort regressing by more than 1%. Everything else is reported only.
+4. The October origins are where the effect should live and `ORIGINS` has none (O1 is
+   December). The per-origin table is read for direction, and the 14.3 October replay
+   gate is rerun with the switch on before the re-freeze is signed.
+
+**Known limit.** `parsing.season_end_date` closes a season on June 30, so the July
+playoff games of 2020-21 (and the 2019-20 bubble) would be dropped by the stray-row
+guard. Every season from the 2022-23 backfill default on finishes in June, so this
+costs nothing now and is recorded rather than fixed.
 
 ### 20.2 Injury-report resolution: scope, source and which statuses expire
 

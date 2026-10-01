@@ -18,15 +18,18 @@ from fnba_ml.config import (  # noqa: E402
     MAGNITUDE_SHRINK_K,
     MAGNITUDE_WINDOW,
     P_CONTEXT,
+    RATE_HISTORY_INCLUDES_POSTSEASON,
     V4_FEATURE_COLS,
 )
 from fnba_ml.features import attach_cross_fit_context, build_features  # noqa: E402
 from fnba_ml.matchup import attach_v4_features  # noqa: E402
+from fnba_ml.prospective import postseason_sidecar_path  # noqa: E402
 from fnba_ml.teammates import (  # noqa: E402
     position_group_counts,
     teammate_feature_summary,
 )
 from fnba_ml.universe import (  # noqa: E402
+    build_postseason_appearances,
     build_universe,
     coverage_report,
     universe_composition,
@@ -44,6 +47,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-v4-candidate", action="store_true",
         help=f"skip the {len(V4_FEATURE_COLS)} P2 candidate columns",
     )
+    parser.add_argument(
+        "--postseason-history", action="store_true", default=None,
+        help="build the career-scoped rate history with play-in and playoff "
+             "appearances, whatever config.RATE_HISTORY_INCLUDES_POSTSEASON says "
+             "(the MODEL.md 20.1 candidate)",
+    )
     return parser.parse_args(argv)
 
 
@@ -53,15 +62,24 @@ def main(argv: list[str] | None = None) -> int:
 
     source = build_source(args)
     universe = build_universe(source)
+    postseason = build_postseason_appearances(source)
     coverage = coverage_report(universe, source.load_player_game_logs())
     composition = universe_composition(universe)
-    features = build_features(universe)
+    features = build_features(
+        universe, postseason=postseason, include_postseason=args.postseason_history
+    )
     features = attach_cross_fit_context(features)
     if not args.no_v4_candidate:
         features = attach_v4_features(features, source.load_team_game_logs())
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     features.to_parquet(args.out, index=False)
+    # beside the dataset, not in it, so serving can rebuild the same history.
+    sidecar = postseason_sidecar_path(args.out)
+    if len(postseason):
+        postseason.to_parquet(sidecar, index=False)
+    elif sidecar.exists():
+        sidecar.unlink()
 
     universe_source = str(universe["UNIVERSE_SOURCE"].iloc[0])
     print("--- DATASET ---")
@@ -80,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"feature version  : {FEATURE_VERSION}")
     print(f"feature columns  : {len(FEATURE_COLS)}")
     print(f"rows             : {len(features):,}")
+    print(f"postseason apps  : {len(postseason):,} "
+          f"({'in' if args.postseason_history or RATE_HISTORY_INCLUDES_POSTSEASON else 'not in'}"
+          f" the rate history)")
     print(f"saved            -> {args.out}")
 
     if "P_CONTEXT_SOURCE" in features.columns:

@@ -54,6 +54,7 @@ columns off a prospective frame and believes them.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -225,7 +226,9 @@ def known_schedule(history: pd.DataFrame, future: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_prospective_features(
-    history: pd.DataFrame, future: pd.DataFrame
+    history: pd.DataFrame,
+    future: pd.DataFrame,
+    postseason: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """features for every future row, built ONE GAME DATE AT A TIME.
 
@@ -244,6 +247,9 @@ def build_prospective_features(
     it from the base availability model (and the injury report) before scoring,
     which is the serving path; running the offline cross-fit here would fit models
     on a frame whose future rows have no labels to be out of fold about.
+
+    ``postseason`` is passed straight to ``build_features``, which reads it only
+    when ``config.RATE_HISTORY_INCLUDES_POSTSEASON`` is on.
     """
     from .features import build_features  # noqa: PLC0415 - avoids an import cycle
 
@@ -263,7 +269,7 @@ def build_prospective_features(
     for index, game_date in enumerate(dates, start=1):
         day = future[future["GAME_DATE"] == game_date]
         combined = pd.concat([history, day], ignore_index=True)
-        built = build_features(combined, schedule=schedule)
+        built = build_features(combined, schedule=schedule, postseason=postseason)
         out.append(built[built["UNIVERSE_SOURCE"] == SOURCE_PROSPECTIVE])
         log.info(
             "  %d/%d  %s  %d rows", index, len(dates),
@@ -274,6 +280,25 @@ def build_prospective_features(
     return frame.sort_values(
         ["GAME_DATE", "GAME_ID", "TEAM_ID", "PLAYER_ID"]
     ).reset_index(drop=True)
+
+
+def postseason_sidecar_path(dataset_path: Path) -> Path:
+    """where build_dataset.py writes the postseason appearances beside a dataset."""
+    return dataset_path.with_name(f"{dataset_path.stem}_postseason.parquet")
+
+
+def load_postseason_sidecar(dataset_path: Path) -> pd.DataFrame | None:
+    """the postseason appearances built with a dataset, or None for a dataset without them.
+
+    kept out of the dataset itself: the dataset is a training frame and every row
+    in it is a modelled row.
+    """
+    path = postseason_sidecar_path(dataset_path)
+    if not path.exists():
+        return None
+    frame = pd.read_parquet(path)
+    frame["GAME_DATE"] = pd.to_datetime(frame["GAME_DATE"])
+    return frame
 
 
 def history_from_dataset(dataset: pd.DataFrame) -> pd.DataFrame:

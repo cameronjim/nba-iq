@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from fnba_ml import config
 from fnba_ml.config import (
     PROSPECTIVE_FALSIFICATION,
     PROSPECTIVE_MODEL_VERSION,
@@ -495,3 +496,74 @@ class TestLookCli:
         assert (scored["endpoint"] == "v3_vs_v1_delta_pct").any()
         assert pd.to_datetime(predictions["game_date"]).max() > pd.Timestamp("2026-12-01")
         assert not scored[scored["endpoint"] == "coverage"]["n"].gt(1).any()
+
+
+class TestBaselinesFollowThePostseasonSwitch:
+    def history(self) -> pd.DataFrame:
+        # ten scheduled regular-season games, the first a DNP, then two playoff
+        # games at 40 minutes just before the target; the target is regular season.
+        rows = [{**status("1", f"g{i}", days_before(20 - i), i > 0, 20.0, pts=10.0),
+                 "season_type": "Regular Season"} for i in range(10)]
+        rows += [{**status("1", f"p{i}", days_before(3 - i), True, 40.0, pts=36.0),
+                  "season_type": "Playoffs"} for i in range(2)]
+        rows += [{**status("1", "gT", TARGET_DATE, False), "season_type": "Regular Season"}]
+        return pd.DataFrame(rows)
+
+    def test_off_reads_the_regular_season_only(self):
+        # act
+        baselines = build_baselines(target(), self.history(), include_postseason=False)
+
+        # assert
+        assert baselines.iloc[0]["ewma_MIN"] == pytest.approx(20.0)
+        assert baselines.iloc[0][ROLL10_MIN] == pytest.approx(20.0)
+
+    def test_on_reads_the_playoff_appearances_as_features_py_does(self):
+        # arrange
+        minutes = pd.Series([20.0] * 9 + [40.0, 40.0])
+        expected = float(minutes.ewm(halflife=5.0, adjust=True).mean().iloc[-1])
+
+        # act
+        baselines = build_baselines(target(), self.history(), include_postseason=True)
+
+        # assert
+        assert baselines.iloc[0]["ewma_MIN"] == pytest.approx(expected)
+        assert baselines.iloc[0][ROLL10_MIN] == pytest.approx((8 * 20.0 + 2 * 40.0) / 10)
+
+    def test_availability_stays_on_scheduled_regular_season_rows_either_way(self):
+        # act
+        off = build_baselines(target(), self.history(), include_postseason=False)
+        on = build_baselines(target(), self.history(), include_postseason=True)
+
+        # assert
+        assert off.iloc[0][AVAIL_RATE] == pytest.approx(9 / 10)
+        assert on.iloc[0][AVAIL_RATE] == pytest.approx(9 / 10)
+
+    def test_the_default_follows_the_model_switch(self):
+        # act
+        default = build_baselines(target(), self.history())
+        off = build_baselines(target(), self.history(), include_postseason=False)
+
+        # assert
+        assert config.RATE_HISTORY_INCLUDES_POSTSEASON is False
+        assert default.iloc[0]["ewma_MIN"] == off.iloc[0]["ewma_MIN"]
+
+    def test_the_rate_families_drop_playoff_appearances_when_off(self):
+        # arrange
+        app = pd.DataFrame({
+            "nba_player_id": ["1", "1", "1"],
+            "game_date": pd.to_datetime([days_before(5), days_before(3), days_before(1)]),
+            "season_type": ["Regular Season", "Regular Season", "Playoffs"],
+            "minutes": [20.0, 20.0, 20.0],
+            "stl": [1.0, 1.0, 5.0],
+        })
+        snapshot = pd.DataFrame(columns=["PLAYER_ID", "AS_OF"])
+
+        # act
+        off = seeded_rate_baselines(target(), app, snapshot, "2025-10-01", stats=("stl",),
+                                    include_postseason=False)
+        on = seeded_rate_baselines(target(), app, snapshot, "2025-10-01", stats=("stl",),
+                                   include_postseason=True)
+
+        # assert
+        assert off.iloc[0][rate_family_column("stl", "exp")] == pytest.approx(1.0 / 20.0)
+        assert on.iloc[0][rate_family_column("stl", "exp")] == pytest.approx(7.0 / 60.0)

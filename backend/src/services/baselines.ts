@@ -25,10 +25,30 @@ export const BASELINE_LOOKBACK_DAYS = 400;
 
 export const NOTABLE_MINUTES_DELTA = 4;
 
+export const REGULAR_SEASON = 'Regular Season';
+export const POSTSEASON_SEASON_TYPES = ['PlayIn', 'Playoffs'] as const;
+
+// off until the model's own rate history reads the postseason (MODEL.md 20.1).
+export function baselineIncludesPostseason(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.BASELINE_INCLUDES_POSTSEASON ?? '').trim().toLowerCase();
+  return raw === 'true' || raw === '1' || raw === 'on' || raw === 'yes';
+}
+
+export function baselineSeasonTypes(includePostseason: boolean): string[] {
+  return includePostseason ? [REGULAR_SEASON, ...POSTSEASON_SEASON_TYPES] : [REGULAR_SEASON];
+}
+
 export const BASELINE_LABEL = 'his own recent form';
-export const BASELINE_DEFINITION =
-  `per-game averages over his last ${BASELINE_WINDOW_GAMES} games played before this date, ` +
-  `requiring at least ${MIN_BASELINE_GAMES}`;
+
+export function baselineDefinition(includePostseason: boolean): string {
+  const games = includePostseason ? 'regular-season, play-in and playoff games' : 'regular-season games';
+  return (
+    `per-game averages over his last ${BASELINE_WINDOW_GAMES} ${games} played before this date, ` +
+    `requiring at least ${MIN_BASELINE_GAMES}`
+  );
+}
+
+export const BASELINE_DEFINITION = baselineDefinition(false);
 
 export interface BaselineDescriptor {
   window_games: number;
@@ -36,15 +56,21 @@ export interface BaselineDescriptor {
   notable_min_delta: number;
   label: string;
   definition: string;
+  season_types: string[];
+  includes_postseason: boolean;
 }
 
-export function baselineDescriptor(): BaselineDescriptor {
+export function baselineDescriptor(
+  includePostseason: boolean = baselineIncludesPostseason()
+): BaselineDescriptor {
   return {
     window_games: BASELINE_WINDOW_GAMES,
     min_games: MIN_BASELINE_GAMES,
     notable_min_delta: NOTABLE_MINUTES_DELTA,
     label: BASELINE_LABEL,
-    definition: BASELINE_DEFINITION,
+    definition: baselineDefinition(includePostseason),
+    season_types: baselineSeasonTypes(includePostseason),
+    includes_postseason: includePostseason,
   };
 }
 
@@ -87,10 +113,11 @@ interface BaselineRow {
 
 export async function fetchBaselines(
   date: string,
-  nbaPlayerIds: string[] | null = null
+  nbaPlayerIds: string[] | null = null,
+  includePostseason: boolean = baselineIncludesPostseason()
 ): Promise<Map<string, PlayerBaseline>> {
   const playerFilter =
-    nbaPlayerIds === null ? '' : '\n             AND g.nba_player_id = ANY($5)';
+    nbaPlayerIds === null ? '' : '\n             AND g.nba_player_id = ANY($6)';
   const rows = await rowsOrEmpty<BaselineRow & Record<BaselineStat, unknown>>(() =>
     query(
       `WITH played AS (
@@ -103,7 +130,7 @@ export async function fetchBaselines(
                     ORDER BY g.game_date DESC, g.nba_game_id DESC
                   ) AS rn
            FROM player_game_logs g
-           WHERE g.season_type = 'Regular Season'
+           WHERE g.season_type = ANY($5)
              AND g.game_date < $1
              AND g.game_date >= $1::date - $2::int
              AND g.minutes IS NOT NULL
@@ -123,6 +150,7 @@ export async function fetchBaselines(
         BASELINE_LOOKBACK_DAYS,
         BASELINE_WINDOW_GAMES,
         BASELINE_RECENT_GAMES,
+        baselineSeasonTypes(includePostseason),
         ...(nbaPlayerIds === null ? [] : [nbaPlayerIds]),
       ]
     )

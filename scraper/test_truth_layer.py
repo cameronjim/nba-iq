@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 import requests
 
+import backfill
 import database
 import fetching
 import injury_report
@@ -19,6 +20,7 @@ from config import (
     PROPS_MARKET_MAP,
     ROSTER_SNAPSHOT_SOURCE,
     SEASON,
+    SEASON_TYPES_INGESTED,
     STATS_HEADERS,
     STATS_PROBE_TIMEOUT_SECONDS,
     V2_INACTIVE_UNRELIABLE_FROM,
@@ -55,6 +57,7 @@ from rows import (
     build_team_game_log_row,
     derive_game_status_rows,
     game_log_fetch_from,
+    ingested_schedule_rows,
     merge_dnp_reason,
     normalize_inactive_rows,
     plan_roster_snapshot,
@@ -65,6 +68,7 @@ from rows import (
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
+    season_types_to_fetch,
     split_rows_on_season_boundary,
     stint_is_newer_than_game_log,
     supplement_player_log_rows,
@@ -3320,3 +3324,333 @@ class TestPropsCli:
         monkeypatch.setattr(run_scraper, "scrape_prop_odds", boom)
 
         run_scraper._odds_lane(object(), dry_run=True)
+
+
+PLAYOFF_GAME_ID = "0042400101"
+PLAYIN_GAME_ID = "0052400111"
+
+
+def _log_row(game_id, game_date, player_id=1628369):
+    return {
+        **PLAYER_GAME_LOG_ROW,
+        "PLAYER_ID": player_id,
+        "GAME_ID": game_id,
+        "GAME_DATE": f"{game_date}T00:00:00",
+    }
+
+
+def _team_rows(game_id, game_date):
+    return [{**row, "GAME_ID": game_id, "GAME_DATE": game_date} for row in TEAM_GAME_LOG_ROWS]
+
+
+class TestSeasonTypesIngested:
+    def test_every_competition_a_player_logs_minutes_in_is_ingested(self):
+        # act + assert
+        assert SEASON_TYPES_INGESTED == ("Regular Season", "PlayIn", "Playoffs")
+
+    def test_the_stored_labels_match_what_the_game_id_says(self):
+        # arrange
+        derived = {
+            season_type_from_game_id("0022400061"),
+            season_type_from_game_id(PLAYIN_GAME_ID),
+            season_type_from_game_id(PLAYOFF_GAME_ID),
+        }
+
+        # act + assert
+        assert derived == set(SEASON_TYPES_INGESTED)
+
+
+class TestSeasonTypesToFetch:
+    def test_an_october_run_fetches_the_regular_season_only(self):
+        # act
+        result = season_types_to_fetch("2026-27", date(2026, 10, 25))
+
+        # assert
+        assert result == ("Regular Season",)
+
+    def test_from_april_every_ingested_type_is_fetched_in_order(self):
+        # act
+        result = season_types_to_fetch("2025-26", date(2026, 4, 1))
+
+        # assert
+        assert result == ("Regular Season", "PlayIn", "Playoffs")
+
+    def test_a_past_season_fetches_its_postseason(self):
+        # act
+        result = season_types_to_fetch("2024-25", date(2026, 10, 1))
+
+        # assert
+        assert result == ("Regular Season", "PlayIn", "Playoffs")
+
+    def test_the_last_day_of_march_is_still_regular_season_only(self):
+        # act
+        result = season_types_to_fetch("2025-26", date(2026, 3, 31))
+
+        # assert
+        assert result == ("Regular Season",)
+
+
+class TestPostseasonRowsAreLabelledFaithfully:
+    def test_a_playoff_player_row_is_stored_as_playoffs(self):
+        # arrange
+        raw = _log_row(PLAYOFF_GAME_ID, "2025-04-20")
+
+        # act
+        row = build_player_game_log_row(raw, "2024-25", run_id=1)
+
+        # assert
+        assert row[3] == "Playoffs"
+
+    def test_a_play_in_team_row_is_stored_as_play_in(self):
+        # arrange
+        raw = _team_rows(PLAYIN_GAME_ID, "2025-04-15")[0]
+
+        # act
+        row = build_team_game_log_row(raw, "2024-25", run_id=1)
+
+        # assert
+        assert row[3] == "PlayIn"
+
+    def test_a_playoff_game_rebuilt_from_team_logs_keeps_its_type(self):
+        # arrange
+        team_rows = _team_rows(PLAYOFF_GAME_ID, "2025-04-20")
+
+        # act
+        games = schedule_rows_from_team_logs(team_rows, "2024-25")
+
+        # assert
+        assert [g["season_type"] for g in games] == ["Playoffs"]
+
+
+class TestIngestedScheduleRows:
+    def test_preseason_and_all_star_rows_are_dropped(self):
+        # arrange
+        rows = [
+            {"nba_game_id": "0012400002", "season_type": "Pre Season"},
+            {"nba_game_id": "0022400061", "season_type": "Regular Season"},
+            {"nba_game_id": "0032400001", "season_type": "All Star"},
+            {"nba_game_id": PLAYIN_GAME_ID, "season_type": "PlayIn"},
+            {"nba_game_id": PLAYOFF_GAME_ID, "season_type": "Playoffs"},
+        ]
+
+        # act
+        kept = ingested_schedule_rows(rows)
+
+        # assert
+        assert [r["nba_game_id"] for r in kept] == [
+            "0022400061", PLAYIN_GAME_ID, PLAYOFF_GAME_ID,
+        ]
+
+
+def _stub_ingestion(monkeypatch, module, finished):
+    monkeypatch.setattr(module, "_start_ingestion_run", lambda *a, **k: 7)
+    monkeypatch.setattr(
+        module,
+        "_finish_ingestion_run",
+        lambda conn, run_id, status, written, **kwargs: finished.append(
+            {"status": status, "written": written, **kwargs}
+        ),
+    )
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+
+
+class TestScrapeGameLogsSeasonTypeLoop:
+    def _wire(self, monkeypatch, failing=()):
+        calls = []
+        upserts = []
+        finished = []
+        watermarks = {"Regular Season": date(2025, 4, 13), "PlayIn": None, "Playoffs": None}
+        games = {
+            "Regular Season": ("0022401200", "2025-04-13"),
+            "PlayIn": (PLAYIN_GAME_ID, "2025-04-15"),
+            "Playoffs": (PLAYOFF_GAME_ID, "2025-04-20"),
+        }
+
+        def player_logs(season, date_from, season_type):
+            calls.append(("player", season_type, date_from))
+            if season_type in failing:
+                raise ConnectionError("tarpit")
+            return [_log_row(*games[season_type])]
+
+        def team_logs(season, date_from, season_type):
+            calls.append(("team", season_type, date_from))
+            return _team_rows(*games[season_type])
+
+        def league_logs(season, date_from, season_type):
+            calls.append(("league", season_type, date_from))
+            return []
+
+        _stub_ingestion(monkeypatch, truth_layer, finished)
+        monkeypatch.setattr(truth_layer, "_fetch_player_game_logs", player_logs)
+        monkeypatch.setattr(truth_layer, "_fetch_team_game_logs", team_logs)
+        monkeypatch.setattr(truth_layer, "_fetch_league_player_game_logs", league_logs)
+        monkeypatch.setattr(
+            truth_layer,
+            "_latest_logged_game_date",
+            lambda conn, season, season_type: watermarks[season_type],
+        )
+        monkeypatch.setattr(
+            truth_layer,
+            "_batch_upsert",
+            lambda cur, sql, rows: upserts.extend(rows) or len(rows),
+        )
+        monkeypatch.setattr(truth_layer, "_sync_player_team_stints", lambda *a, **k: None)
+        return calls, upserts, finished
+
+    def test_every_season_type_is_fetched_with_its_own_watermark(self, monkeypatch):
+        # arrange
+        calls, _, _ = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        player_calls = [(kind, t, d) for kind, t, d in calls if kind == "player"]
+        assert player_calls == [
+            ("player", "Regular Season",
+             date(2025, 4, 13) - timedelta(days=GAME_LOG_CORRECTION_WINDOW_DAYS)),
+            ("player", "PlayIn", season_start_date("2024-25")),
+            ("player", "Playoffs", season_start_date("2024-25")),
+        ]
+        assert {t for kind, t, _ in calls if kind == "team"} == set(SEASON_TYPES_INGESTED)
+
+    def test_postseason_rows_are_written_with_their_season_type(self, monkeypatch):
+        # arrange
+        _, upserts, finished = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        stored = {(row[1], row[3]) for row in upserts}
+        assert (PLAYOFF_GAME_ID, "Playoffs") in stored
+        assert (PLAYIN_GAME_ID, "PlayIn") in stored
+        assert ("0022401200", "Regular Season") in stored
+        assert finished[-1]["status"] == "succeeded"
+
+    def test_one_failing_season_type_still_writes_the_others(self, monkeypatch):
+        # arrange
+        _, upserts, finished = self._wire(monkeypatch, failing=("Playoffs",))
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        assert PLAYOFF_GAME_ID not in {row[1] for row in upserts}
+        assert PLAYIN_GAME_ID in {row[1] for row in upserts}
+        assert finished[-1]["status"] == "partial"
+        assert "Playoffs" in finished[-1]["notes"]
+
+    def test_every_season_type_failing_fails_the_run(self, monkeypatch):
+        # arrange
+        _, upserts, finished = self._wire(monkeypatch, failing=SEASON_TYPES_INGESTED)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2025, 5, 1))
+
+        # assert
+        assert upserts == []
+        assert finished[-1]["status"] == "failed"
+
+    def test_an_october_run_makes_no_postseason_requests(self, monkeypatch):
+        # arrange
+        calls, _, _ = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2024, 10, 30))
+
+        # assert
+        assert {t for _, t, _ in calls} == {"Regular Season"}
+
+
+class TestScheduleTeamLogFallback:
+    def test_the_fallback_reads_every_season_type(self, monkeypatch):
+        # arrange
+        seen = []
+        monkeypatch.setattr(truth_layer.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(
+            truth_layer,
+            "_fetch_team_game_logs",
+            lambda season, date_from, season_type: seen.append(season_type) or [],
+        )
+
+        # act
+        truth_layer.fetch_all_season_type_team_logs("2024-25")
+
+        # assert
+        assert seen == list(SEASON_TYPES_INGESTED)
+
+
+class TestBackfillGameLogsSeasonTypeLoop:
+    def test_logs_for_every_season_type_and_postseason_schedule_rows_are_written(
+        self, monkeypatch
+    ):
+        # arrange
+        fetched = []
+        upserts = []
+        schedules = []
+        finished = []
+        games = {
+            "Regular Season": ("0022401200", "2025-04-13"),
+            "PlayIn": (PLAYIN_GAME_ID, "2025-04-15"),
+            "Playoffs": (PLAYOFF_GAME_ID, "2025-04-20"),
+        }
+        _stub_ingestion(monkeypatch, backfill, finished)
+        monkeypatch.setattr(
+            backfill, "_fetch_team_game_logs",
+            lambda season, date_from, season_type: fetched.append(("team", season_type))
+            or _team_rows(*games[season_type]),
+        )
+        monkeypatch.setattr(
+            backfill, "_fetch_player_game_logs",
+            lambda season, date_from, season_type: fetched.append(("player", season_type))
+            or [_log_row(*games[season_type])],
+        )
+        monkeypatch.setattr(
+            backfill, "_fetch_league_player_game_logs",
+            lambda season, date_from, season_type: [],
+        )
+        monkeypatch.setattr(
+            backfill, "_fetch_league_schedule",
+            lambda season: [
+                {**SEASON_GAME_ROW, "gameId": "0012400002"},
+                {**SEASON_GAME_ROW, "gameId": PLAYOFF_GAME_ID},
+            ],
+        )
+        monkeypatch.setattr(
+            backfill, "_upsert_schedule_rows",
+            lambda cur, rows: schedules.extend(rows) or len(rows),
+        )
+        monkeypatch.setattr(
+            backfill, "_batch_upsert", lambda cur, sql, rows: upserts.extend(rows) or len(rows)
+        )
+        monkeypatch.setattr(backfill, "scrape_game_status", lambda *a, **k: 0)
+
+        # act
+        backfill.backfill_game_logs_season(FakeConn(), "2024-25")
+
+        # assert
+        assert [t for kind, t in fetched if kind == "player"] == list(SEASON_TYPES_INGESTED)
+        assert {row[3] for row in upserts} == set(SEASON_TYPES_INGESTED)
+        assert [r["season_type"] for r in schedules] == ["Playoffs"]
+
+
+class TestValidationCoverageGate:
+    def test_schedule_coverage_is_checked_for_the_regular_season_only(self, monkeypatch):
+        # arrange
+        queries = []
+        monkeypatch.setattr(backfill, "_scalar", lambda conn, sql, params=(): 1)
+        monkeypatch.setattr(
+            backfill, "_rows",
+            lambda conn, sql, params=(): queries.append((sql, params)) or [],
+        )
+
+        # act
+        backfill.validate_game_logs(FakeConn(), "2024-25", "2024-25")
+
+        # assert
+        coverage = [
+            params for sql, params in queries
+            if "FROM nba_schedule s" in sql and "NOT EXISTS" in sql
+        ]
+        assert coverage == [("2024-25", "Regular Season")]

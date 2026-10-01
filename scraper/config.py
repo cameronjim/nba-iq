@@ -95,7 +95,17 @@ NBA_2K_TEAM_TYPES = ("curr", "class", "allt")
 NBA_2K_DEFAULT_TEAM_TYPES = "curr"
 
 SEASON_TYPE_REGULAR = "Regular Season"
+SEASON_TYPE_PLAYIN = "PlayIn"
+SEASON_TYPE_PLAYOFFS = "Playoffs"
 SEASON_TYPE_UNKNOWN = "Unknown"
+
+# the game-log endpoints answer one season type per request, so each is fetched
+# in turn; playoff games are the latest form a player shows before a new season.
+SEASON_TYPES_INGESTED = (SEASON_TYPE_REGULAR, SEASON_TYPE_PLAYIN, SEASON_TYPE_PLAYOFFS)
+
+# no play-in or playoff game is ever dated before april, so earlier runs skip
+# those requests instead of paying the delay for an empty answer.
+POSTSEASON_EARLIEST_MONTH = 4
 
 # stats.nba.com revises box scores after the fact, so every incremental run
 # re-reads this many days behind the stored watermark.

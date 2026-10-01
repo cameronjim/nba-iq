@@ -35,6 +35,13 @@ POSITIONAL_REDISTRIBUTION_SHARE = 0.5
 
 ABSENCE_PERSISTENCE = 0.5
 
+# play-in/playoff appearances appended after each regular season. no rng: the
+# regular-season numbers stay exactly what seed 17 draws.
+POSTSEASON_GAME_OFFSETS_DAYS = (4, 6)
+POSTSEASON_PLAYING_SLOTS = range(5)
+POSTSEASON_MINUTES = 38.0
+POSTSEASON_PTS_PER_MIN = 0.9
+
 SLOT_POSITIONS: dict[int, str] = {
     0: "PG,SG", 1: "SG,SF", 2: "SF,PF", 3: "PF,C", 4: "C",
     5: "PG,SG", 6: "SF,PF", 7: "C", 8: "SG,SF", 9: "PF,C",
@@ -300,16 +307,86 @@ def _build(seed: int) -> dict[str, pd.DataFrame]:
     }
 
 
-def generate(out_dir: Path | None = None, seed: int = 17) -> Path:
+def _postseason_line(minutes: float) -> dict[str, float]:
+    pts = round(minutes * POSTSEASON_PTS_PER_MIN, 1)
+    return {
+        "MIN": minutes, "PTS": pts, "AST": round(minutes * 0.2, 1),
+        "REB": round(minutes * 0.25, 1), "FGA": 24.0, "FTA": 8.0, "FG3M": 3.0,
+        "FG3A": 8.0, "FGM": 13.0, "FTM": 6.0, "TOV": 2.0, "STL": 1.0, "BLK": 1.0,
+        "PLUS_MINUS": 5.0,
+    }
+
+
+def _postseason(frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """two playoff games per season between the first two teams, appended last."""
+    teams = _team_ids()
+    home, away = teams[0], teams[1]
+    rosters = _rosters()
+    logs, team_rows, status = [], [], []
+    for season in SEASON_STARTS:
+        last = _dates(season)[-1]
+        for n, offset in enumerate(POSTSEASON_GAME_OFFSETS_DAYS, start=1):
+            game_id = f"004{int(season[:4]) % 100:02d}{n:05d}"
+            game_date = last + pd.Timedelta(days=offset)
+            line = _postseason_line(POSTSEASON_MINUTES)
+            for team, opponent in ((home, away), (away, home)):
+                for slot, player_id in enumerate(rosters[(season, team)]):
+                    played = slot in POSTSEASON_PLAYING_SLOTS
+                    status.append({
+                        "PLAYER_ID": player_id, "GAME_ID": game_id, "TEAM_ID": team,
+                        "ROSTERED": True, "LISTED_INACTIVE": False,
+                        "STARTED": played, "PLAYED": played,
+                        "DNP_REASON": None if played else "DNP - Coach's Decision",
+                        "MIN": line["MIN"] if played else None,
+                        "SEASON_KEY": season,
+                    })
+                    if played:
+                        logs.append({
+                            "PLAYER_ID": player_id, "PLAYER_NAME": f"Player {player_id}",
+                            "TEAM_ID": team, "TEAM_ABBREVIATION": _team_abbr(team),
+                            "GAME_ID": game_id, "GAME_DATE": game_date,
+                            "SEASON_KEY": season, **line,
+                        })
+                n_played = len(POSTSEASON_PLAYING_SLOTS)
+                team_rows.append({
+                    "TEAM_ID": team, "TEAM_ABBREVIATION": _team_abbr(team),
+                    "GAME_ID": game_id, "GAME_DATE": game_date, "SEASON_KEY": season,
+                    "MATCHUP": (
+                        f"{_team_abbr(team)} vs. {_team_abbr(opponent)}" if team == home
+                        else f"{_team_abbr(team)} @ {_team_abbr(opponent)}"
+                    ),
+                    "WL": "W" if team == home else "L",
+                    "PTS": int(round(line["PTS"] * n_played)) + (1 if team == home else 0),
+                    "MIN": TEAM_MINUTES,
+                    "FGA": line["FGA"] * n_played, "FTA": line["FTA"] * n_played,
+                    "TOV": line["TOV"] * n_played, "FG3A": line["FG3A"] * n_played,
+                })
+
+    out = dict(frames)
+    for name, extra in (("player_logs", logs), ("team_logs", team_rows),
+                        ("player_game_status", status)):
+        regular = frames[name].assign(COMPETITION="regular")
+        out[name] = pd.concat(
+            [regular, pd.DataFrame(extra).assign(COMPETITION="playoffs")],
+            ignore_index=True,
+        )
+    return out
+
+
+def generate(
+    out_dir: Path | None = None, seed: int = 17, with_postseason: bool = True
+) -> Path:
     """write the fixture parquet files and return the directory."""
     out_dir = Path(out_dir or FIXTURE_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
     frames = _build(seed)
+    if with_postseason:
+        frames = _postseason(frames)
 
     status_games = frames["team_logs"][["GAME_ID", "SEASON_KEY"]].drop_duplicates()
-    frames["player_game_status"] = frames["player_game_status"].merge(
-        status_games, on="GAME_ID", how="left"
-    )
+    frames["player_game_status"] = frames["player_game_status"].drop(
+        columns=["SEASON_KEY"], errors="ignore"
+    ).merge(status_games, on="GAME_ID", how="left")
 
     # positions are reference data: one file, no season split
     frames.pop("player_positions").to_parquet(
