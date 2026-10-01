@@ -85,7 +85,12 @@ interface BaselineRow {
   last_played_date: unknown;
 }
 
-export async function fetchBaselines(date: string): Promise<Map<string, PlayerBaseline>> {
+export async function fetchBaselines(
+  date: string,
+  nbaPlayerIds: string[] | null = null
+): Promise<Map<string, PlayerBaseline>> {
+  const playerFilter =
+    nbaPlayerIds === null ? '' : '\n             AND g.nba_player_id = ANY($5)';
   const rows = await rowsOrEmpty<BaselineRow & Record<BaselineStat, unknown>>(() =>
     query(
       `WITH played AS (
@@ -102,7 +107,7 @@ export async function fetchBaselines(date: string): Promise<Map<string, PlayerBa
              AND g.game_date < $1
              AND g.game_date >= $1::date - $2::int
              AND g.minutes IS NOT NULL
-             AND g.minutes > 0
+             AND g.minutes > 0${playerFilter}
          )
          SELECT nba_player_id,
                 COUNT(*)::int AS games,
@@ -113,7 +118,13 @@ export async function fetchBaselines(date: string): Promise<Map<string, PlayerBa
          FROM played
          WHERE rn <= $3
          GROUP BY nba_player_id`,
-      [date, BASELINE_LOOKBACK_DAYS, BASELINE_WINDOW_GAMES, BASELINE_RECENT_GAMES]
+      [
+        date,
+        BASELINE_LOOKBACK_DAYS,
+        BASELINE_WINDOW_GAMES,
+        BASELINE_RECENT_GAMES,
+        ...(nbaPlayerIds === null ? [] : [nbaPlayerIds]),
+      ]
     )
   );
 

@@ -47,9 +47,10 @@ function slatePlayerLine(p: SlatePlayer): string {
       ? ''
       : ` | ${p.injury_status}: ${p.injury_detail ?? 'no detail'}${p.injury_changed_after_run ? ', changed after run' : ''}`;
   const spotlight = p.slate_spotlight ? ' *slate spotlight*' : '';
+  const reasons = p.reasons.length > 0 ? ` | why: ${p.reasons.join(', ')}` : '';
   return (
     `${p.name} (${p.team_abbr ?? '—'}) impact ${fmt(p.impact)} | ${fmt(p.proj_pts)} pts, ${fmt(p.proj_min_p50)} min proj` +
-    ` | ${pct(p.prob_active)} active | ${usual}${injury}${spotlight}`
+    ` | ${pct(p.prob_active)} active | ${usual}${reasons}${injury}${spotlight}`
   );
 }
 

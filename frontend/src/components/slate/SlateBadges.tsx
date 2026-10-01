@@ -1,4 +1,3 @@
-import { ArrowDownRight, ArrowUpRight } from 'lucide-react';
 import { formatStat, toStatNumber, STAT_PLACEHOLDER } from '../../utils/stats';
 import type { SlatePlayer } from '../../types';
 
@@ -75,43 +74,5 @@ export const CategoryLine = ({ player }: { player: SlatePlayer }): JSX.Element |
   if (parts.length === 0) return null;
   return (
     <span className="text-[11px] opacity-50 tabular-nums">{parts.join(' · ')}</span>
-  );
-};
-
-// minutes only: `min_vs_usual` compares two per-appearance numbers so it is about his
-// ROLE, while `pts_vs_usual` also carries availability and would read as lost points
-// for a game-time decision. the threshold comes from the server so this page can never
-// disagree with the Watchlist's own role-increase bar.
-export const VsUsualChip = ({
-  player,
-  threshold,
-}: {
-  player: SlatePlayer;
-  threshold: number;
-}): JSX.Element | null => {
-  const delta = toStatNumber(player.min_vs_usual);
-  const usual = toStatNumber(player.usual_min);
-  if (delta === null || usual === null || threshold <= 0) return null;
-  if (Math.abs(delta) < threshold) return null;
-
-  const up = delta > 0;
-  const ptsDelta = toStatNumber(player.pts_vs_usual);
-  const ptsPart =
-    ptsDelta === null
-      ? ''
-      : ` Points ${ptsDelta > 0 ? '+' : ''}${ptsDelta.toFixed(1)} vs usual.`;
-
-  return (
-    <span
-      className={
-        'badge badge-xs tabular-nums gap-0.5 ' +
-        (up ? 'badge-success badge-outline' : 'badge-warning badge-outline')
-      }
-      title={`Usually ${usual.toFixed(1)} min, tonight ${formatStat(player.proj_min_p50)}.${ptsPart}`}
-    >
-      {up ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}
-      {up ? '+' : ''}
-      {delta.toFixed(1)} min vs usual
-    </span>
   );
 };

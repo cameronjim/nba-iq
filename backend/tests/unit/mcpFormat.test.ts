@@ -41,6 +41,10 @@ function slatePlayer(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
     pts_vs_usual: 1.2,
     baseline_games: 15,
     impact: 8.42,
+    edge: 0.2,
+    vs_usual: null,
+    reasons: [],
+    evidence: {},
     spotlight: false,
     slate_spotlight: false,
     injury_status: null,
@@ -61,6 +65,7 @@ function slateGame(overrides: Partial<SlateGame> = {}): SlateGame {
     away_team_id: '1',
     away_team_abbr: 'DEN',
     top_impact: 8.42,
+    top_edge: 0.2,
     players: [slatePlayer()],
     ...overrides,
   };
@@ -69,6 +74,7 @@ function slateGame(overrides: Partial<SlateGame> = {}): SlateGame {
 function slateResponse(overrides: Partial<SlateResponse> = {}): SlateResponse {
   return {
     date: '2026-08-26',
+    sort: 'impact',
     run: { model_version: 'v3.2.1', predicted_at: '2026-08-26T11:02:00Z' },
     pool: { key: 'slate', label: "Tonight's slate", definition: 'every player projected', sample_size: 212 },
     baseline: {
@@ -137,6 +143,19 @@ describe('formatSlate', () => {
     // assert
     expect(text).toContain('Questionable: ankle, changed after run');
     expect(text).toContain('*slate spotlight*');
+  });
+
+  it('names the reasons a row departs from his usual, and stays quiet when none fired', () => {
+    // arrange
+    const flagged = slatePlayer({ reasons: ['ROLE_INCREASE', 'TEAMMATE_ABSENCE'] });
+
+    // act
+    const withReasons = formatSlate(slateResponse({ games: [slateGame({ players: [flagged] })] }), 5);
+    const without = formatSlate(slateResponse(), 5);
+
+    // assert
+    expect(withReasons).toContain('why: ROLE_INCREASE, TEAMMATE_ABSENCE');
+    expect(without).not.toContain('why:');
   });
 
   it('renders the no-run notice and marks each game as having no projections', () => {

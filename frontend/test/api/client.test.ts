@@ -2,10 +2,12 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   setAuthToken,
   getAuthToken,
+  normalizeSlate,
   normalizeWatchlist,
+  slateParams,
   watchlistParams,
 } from '../../src/api/client';
-import type { WatchlistPlayer, WatchlistResponse } from '../../src/types';
+import type { SlateGame, SlatePlayer, WatchlistPlayer, WatchlistResponse } from '../../src/types';
 
 describe('watchlistParams', () => {
   it('omits the default window and every position from the URL', () => {
@@ -73,6 +75,36 @@ describe('normalizeWatchlist', () => {
     const res = normalizeWatchlist({});
     expect(res.players).toEqual([]);
     expect(res.window.days).toBe(1);
+  });
+});
+
+describe('slateParams', () => {
+  it('leaves the default sort off the url', () => {
+    expect(slateParams('2026-02-04', 'impact')).toEqual({ date: '2026-02-04' });
+    expect(slateParams('2026-02-04')).toEqual({ date: '2026-02-04' });
+  });
+
+  it('sends the edge sort', () => {
+    expect(slateParams('2026-02-04', 'edge')).toEqual({ date: '2026-02-04', sort: 'edge' });
+  });
+});
+
+describe('normalizeSlate', () => {
+  it('fills the explanation fields an older server does not send', () => {
+    // a row from before vs_usual and reasons existed.
+    const legacy = { nba_player_id: '1', name: 'Old Row' } as unknown as SlatePlayer;
+    const game = { nba_game_id: 'g', players: [legacy] } as unknown as SlateGame;
+
+    const res = normalizeSlate({ date: '2026-02-04', games: [game] }, 'edge');
+
+    expect(res.sort).toBe('edge');
+    expect(res.games[0].top_edge).toBeNull();
+    expect(res.games[0].players[0]).toMatchObject({
+      edge: null,
+      vs_usual: null,
+      reasons: [],
+      evidence: {},
+    });
   });
 });
 

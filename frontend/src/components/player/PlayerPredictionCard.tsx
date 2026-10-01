@@ -2,6 +2,7 @@ import { Sparkles } from 'lucide-react';
 import type { AnalyticsStat, NumericLike, PlayerPrediction, ProjectedRange } from '../../types';
 import { formatStat, toStatNumber } from '../../utils/stats';
 import { formatTimestamp, statLabel } from '../../utils/analytics';
+import { signedStat } from '../../utils/vsUsual';
 
 interface PlayerPredictionCardProps {
   prediction: PlayerPrediction;
@@ -18,6 +19,25 @@ type ProjectedValue = NumericLike | ProjectedRange | null;
 function isRange(value: ProjectedValue): value is ProjectedRange {
   return typeof value === 'object' && value !== null && 'p50' in value;
 }
+
+const VsUsualLine = ({ prediction }: PlayerPredictionCardProps): JSX.Element | null => {
+  const vs = prediction.vs_usual;
+  if (!vs) return null;
+  const parts = [
+    toStatNumber(vs.minutes.delta) === null ? null : `MIN ${signedStat(vs.minutes.delta)}`,
+    toStatNumber(vs.points.delta) === null ? null : `PTS ${signedStat(vs.points.delta)}`,
+  ].filter((part): part is string => part !== null);
+  if (parts.length === 0) return null;
+  return (
+    <p
+      className="text-xs tabular-nums opacity-70"
+      data-testid="prediction-vs-usual"
+      title={`Usually ${formatStat(vs.minutes.usual)} min and ${formatStat(vs.points.usual)} pts, if he plays`}
+    >
+      vs usual: <span className="font-semibold">{parts.join(', ')}</span>
+    </p>
+  );
+};
 
 // a value arrives either as a plain number or as a {p10, p50, p90} band; a band renders
 // as its median with the spread underneath, never as one falsely precise number.
@@ -83,6 +103,8 @@ export const PlayerPredictionCard = ({
             ))}
           </div>
         )}
+
+        <VsUsualLine prediction={prediction} />
 
         {unconditionalPts !== null && (
           <p className="text-xs opacity-60">

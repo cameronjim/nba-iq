@@ -1,10 +1,11 @@
 import type { Page, Route } from '@playwright/test';
 import { ALL_PLAYERS, type PlayerFixture } from './players';
+import { slateFixture } from './slate';
 import { watchlistFixture } from './watchlist';
 import type {
   Team, Game, TeamAnalysis,
   BettingGame, BettingPicksResponse, Bet, LedgerSummary,
-  PlayerAnalytics, PlayerPredictionsResponse, WatchlistResponse,
+  PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, WatchlistResponse,
 } from '../../src/types';
 
 export interface DataStatus {
@@ -36,6 +37,7 @@ export interface MockOptions {
   bettingPicks?: BettingPicksResponse;
   bets?: { bets: Bet[]; summary: LedgerSummary };
   watchlist?: WatchlistResponse | ((params: URLSearchParams) => WatchlistResponse);
+  slate?: SlateResponse | ((params: URLSearchParams) => SlateResponse);
   custom?: Array<{ url: RegExp | string; handler: (route: Route) => Promise<void> | void }>;
 }
 
@@ -100,6 +102,13 @@ export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void>
       typeof opts.watchlist === 'function'
         ? opts.watchlist(params)
         : opts.watchlist ?? watchlistFixture(params);
+    route.fulfill({ json: payload });
+  });
+
+  await page.route('**/api/predictions/slate*', (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const payload =
+      typeof opts.slate === 'function' ? opts.slate(params) : opts.slate ?? slateFixture(params);
     route.fulfill({ json: payload });
   });
 

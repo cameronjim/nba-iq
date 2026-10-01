@@ -1,4 +1,5 @@
 import { Flame } from 'lucide-react';
+import { ReasonBadge } from '../watchlist/ReasonBadge';
 
 export const SlateLegend = (): JSX.Element => (
   <div
@@ -18,6 +19,10 @@ export const SlateLegend = (): JSX.Element => (
     <span className="flex items-center gap-1.5">
       <Flame size={13} className="text-primary" />
       <span>slate standout</span>
+    </span>
+    <span className="flex items-center gap-1.5">
+      <ReasonBadge reason="ROLE_INCREASE" />
+      <span>why tonight differs from his usual; tap &quot;vs usual&quot; for the numbers</span>
     </span>
     <span className="flex items-center gap-1.5">
       <span className="badge badge-xs badge-error uppercase tracking-wide">
