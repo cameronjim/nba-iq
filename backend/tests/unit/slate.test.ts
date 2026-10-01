@@ -19,6 +19,9 @@ import {
   parsePredictionDate,
   poolRates,
   edgeOf,
+  getSlate,
+  isPreseason,
+  PRESEASON_SEASON_TYPE,
   parseSlateSort,
   playerVsUsualOf,
   rankSlatePlayers,
@@ -44,6 +47,7 @@ function player(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
     team_abbr: 'LAL',
     prob_active: 0.9,
     proj_pts: 10,
+    proj_pts_cond: 11,
     proj_min_p50: 25,
     projected: { reb: 5, ast: 4, stl: 1, blk: 0.5, tov: 2, fg3m: 1.5 },
     usual_min: 24,
@@ -656,6 +660,7 @@ describe('sortSlateGames', () => {
       home_team_abbr: null,
       away_team_id: null,
       away_team_abbr: null,
+      preseason: false,
       top_impact: topImpact,
       top_edge: topEdge,
       players: [],
@@ -673,5 +678,74 @@ describe('sortSlateGames', () => {
     // assert
     expect(byImpact).toEqual(['a', 'b', 'c']);
     expect(byEdge).toEqual(['b', 'a', 'c']);
+  });
+});
+
+describe('isPreseason', () => {
+  it('is true only for the preseason schedule type', () => {
+    // act + assert
+    expect(isPreseason(PRESEASON_SEASON_TYPE)).toBe(true);
+    expect(isPreseason('Regular Season')).toBe(false);
+    expect(isPreseason('Playoffs')).toBe(false);
+    expect(isPreseason(null)).toBe(false);
+  });
+});
+
+describe('getSlate', () => {
+  const queryMock = vi.mocked(query);
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('pivots the conditional points next to the unconditional ones and flags preseason games', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(
+        pgResult([
+          {
+            nba_game_id: '0012600010',
+            season_type: PRESEASON_SEASON_TYPE,
+            game_status: 'Scheduled',
+            home_team_id: '1',
+            away_team_id: '2',
+          },
+        ])
+      )
+      .mockResolvedValueOnce(
+        pgResult([{ id: 9, model_version: 'v3', predicted_at: new Date('2026-10-02T12:00:00.000Z') }])
+      )
+      .mockResolvedValueOnce(pgResult([{ team_id: '1', team_abbr: 'GSW' }]))
+      .mockResolvedValueOnce(
+        pgResult([
+          {
+            nba_game_id: '0012600010',
+            nba_player_id: '201939',
+            name: 'Stephen Curry',
+            team_abbr: 'GSW',
+            prob_active: 0.88,
+            proj_min_p50: 30,
+            pts: 18.86,
+            reb: 3.5,
+            c_pts: 21.43,
+            c_reb: 4.0,
+            c_tov: 2.94,
+          },
+        ])
+      )
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const slate = await getSlate('2026-10-02');
+
+    // assert
+    const [game] = slate.games;
+    expect(game.preseason).toBe(true);
+    expect(game.players[0]).toMatchObject({
+      proj_pts: 18.9,
+      proj_pts_cond: 21.4,
+      projected: { reb: 4, tov: 2.9, ast: null },
+    });
   });
 });

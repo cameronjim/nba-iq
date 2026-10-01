@@ -58,6 +58,15 @@ export const ImpactBadge = ({ player }: { player: SlatePlayer }): JSX.Element =>
   );
 };
 
+export const PreseasonBadge = (): JSX.Element => (
+  <span
+    className="badge badge-warning badge-outline badge-sm shrink-0"
+    title="The model is trained on regular-season games, so preseason minutes run high"
+  >
+    Preseason
+  </span>
+);
+
 const CATEGORY_LABELS: ReadonlyArray<[keyof SlatePlayer['projected'], string]> = [
   ['reb', 'REB'],
   ['ast', 'AST'],

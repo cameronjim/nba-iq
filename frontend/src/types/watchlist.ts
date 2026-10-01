@@ -46,6 +46,7 @@ export interface WatchlistGame {
   game_date: string;
   nba_game_id: string;
   opponent_team_abbr: string | null;
+  preseason: boolean;
   minutes_p50: NumericLike | null;
   proj_pts: NumericLike | null;
   impact: NumericLike | null;
@@ -64,6 +65,7 @@ export interface WatchlistPlayer {
   game_date: string;
   nba_game_id: string;
   opponent_team_abbr: string | null;
+  preseason: boolean;
   games_count: number;
   games: WatchlistGame[];
   // the window TOTAL, summed over games, so more games can outrank a better player.

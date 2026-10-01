@@ -1,5 +1,6 @@
 import { formatStat, toStatNumber, STAT_PLACEHOLDER } from '../../utils/stats';
 import { reasonEvidenceLines } from '../../utils/vsUsual';
+import { PreseasonBadge } from '../slate/SlateBadges';
 import { ReasonBadge } from './ReasonBadge';
 import { WatchlistGameBreakdown } from './WatchlistGameBreakdown';
 import { windowOption } from './WatchlistFilters';
@@ -59,6 +60,7 @@ export const WatchlistRow = ({
   const impact = toStatNumber(player.impact);
   const option = windowOption(days);
   const multi = days > 1;
+  const preseason = player.preseason || player.games.some((game) => game.preseason);
 
   return (
     <li className="border border-base-300 rounded-box bg-base-200">
@@ -96,6 +98,7 @@ export const WatchlistRow = ({
                   </>
                 )}
               </span>
+              {preseason && <PreseasonBadge />}
             </span>
             {/* the game count shares the deltas' line rather than the name's, so a
                 phone does not truncate the name to make room for it. */}

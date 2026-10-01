@@ -58,6 +58,12 @@ export const POINTS_UNCOND_STAT = uncondStat(POINTS_STAT);
 
 export const MINUTES_QUANTILE = 0.5;
 
+export const PRESEASON_SEASON_TYPE = 'Pre Season';
+
+export function isPreseason(seasonType: unknown): boolean {
+  return seasonType === PRESEASON_SEASON_TYPE;
+}
+
 export const PROJECTED_STATS = [
   'pts',
   'reb',
@@ -147,6 +153,7 @@ export interface SlatePlayer {
   team_abbr: string | null;
   prob_active: number | null;
   proj_pts: number | null;
+  proj_pts_cond: number | null;
   proj_min_p50: number | null;
   projected: SlateProjectedCategories;
   usual_min: number | null;
@@ -175,6 +182,7 @@ export interface SlateGame {
   home_team_abbr: string | null;
   away_team_id: string | null;
   away_team_abbr: string | null;
+  preseason: boolean;
   top_impact: number | null;
   top_edge: number | null;
   players: SlatePlayer[];
@@ -289,6 +297,7 @@ export async function getLatestCompleteRun(): Promise<(SlateRun & { id: number }
 
 interface ScheduleRow {
   nba_game_id: unknown;
+  season_type: unknown;
   game_status: unknown;
   home_team_id: unknown;
   away_team_id: unknown;
@@ -297,7 +306,7 @@ interface ScheduleRow {
 async function fetchSchedule(date: string): Promise<ScheduleRow[]> {
   return rowsOrEmpty<ScheduleRow>(() =>
     query(
-      `SELECT nba_game_id, game_status, home_team_id, away_team_id
+      `SELECT nba_game_id, season_type, game_status, home_team_id, away_team_id
        FROM nba_schedule
        WHERE game_date = $1
        ORDER BY nba_game_id`,
@@ -416,16 +425,17 @@ type PredictionRow = {
   team_abbr: unknown;
   prob_active: unknown;
   proj_min_p50: unknown;
-} & { [K in ProjectedStat]: unknown } & { [K in ConditionalStat as `c_${K}`]: unknown };
+} & { [K in ProjectedStat]: unknown } & { [K in ProjectedStat as `c_${K}`]: unknown };
 
 const PROJECTED_STAT_PARAM_OFFSET = 6;
 const CONDITIONAL_STAT_PARAM_OFFSET = PROJECTED_STAT_PARAM_OFFSET + PROJECTED_STATS.length;
-const PLAYER_FILTER_PARAM = CONDITIONAL_STAT_PARAM_OFFSET + CONDITIONAL_STATS.length;
+const PLAYER_FILTER_PARAM = CONDITIONAL_STAT_PARAM_OFFSET + PROJECTED_STATS.length;
 
-// the bare stat names are the conditional ("if he plays") twins a vs-usual delta compares
-const CONDITIONAL_PIVOT_SQL = CONDITIONAL_STATS.map(
+// the bare stat names are the conditional ("if he plays") twins the headline and vs-usual read
+const CONDITIONAL_PIVOT_SQL = PROJECTED_STATS.map(
   (stat, i) =>
     `MAX(CASE WHEN pgp.stat = $${CONDITIONAL_STAT_PARAM_OFFSET + i} AND pgp.quantile IS NULL
+                         AND pgp.conditional
                        THEN pgp.value END)::float AS c_${stat}`
 ).join(',\n              ');
 
@@ -466,7 +476,7 @@ async function fetchPredictions(
         MINUTES_STAT,
         MINUTES_QUANTILE,
         ...PROJECTED_STATS.map(uncondStat),
-        ...CONDITIONAL_STATS,
+        ...PROJECTED_STATS,
         ...(nbaPlayerId === null ? [] : [nbaPlayerId]),
       ]
     )
@@ -757,7 +767,7 @@ export async function getSlate(
     const nbaPlayerId = String(row.nba_player_id);
     const { name, placeholder } = resolvePlayerName(row.name, nbaPlayerId);
     const projected = {} as SlateProjectedCategories;
-    for (const cat of DISPLAY_CATEGORIES) projected[cat] = round(inputs[i][cat], 1);
+    for (const cat of DISPLAY_CATEGORIES) projected[cat] = round(num(row[`c_${cat}`]), 1);
 
     const own = baselines.get(nbaPlayerId);
     const usable = hasUsableBaseline(own) ? (own as PlayerBaseline) : null;
@@ -773,6 +783,7 @@ export async function getSlate(
       team_abbr: text(row.team_abbr),
       prob_active: round(num(row.prob_active), 3),
       proj_pts: round(projPts, 1),
+      proj_pts_cond: round(num(row.c_pts), 1),
       proj_min_p50: round(projMin, 1),
       projected,
       usual_min: round(usable?.avg.minutes ?? null, 1),
@@ -828,6 +839,7 @@ export async function getSlate(
       home_team_abbr: homeId ? teamAbbrs.get(homeId) ?? null : null,
       away_team_id: awayId,
       away_team_abbr: awayId ? teamAbbrs.get(awayId) ?? null : null,
+      preseason: isPreseason(row.season_type),
       top_impact: maxOf(ranked.map((p) => p.impact)),
       top_edge: maxOf(ranked.map((p) => p.edge)),
       players: ranked,

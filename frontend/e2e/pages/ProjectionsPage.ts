@@ -34,6 +34,16 @@ export class ProjectionsPage {
     await this.vsUsual(playerId).locator('summary').click();
   }
 
+  gameCard(matchup: RegExp): Locator {
+    return this.page
+      .locator('section.card')
+      .filter({ has: this.page.getByRole('heading', { name: matchup }) });
+  }
+
+  get preseasonNote(): Locator {
+    return this.page.getByTestId('slate-preseason-note');
+  }
+
   get orderNote(): Locator {
     return this.page.getByTestId('slate-order-note');
   }

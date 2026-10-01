@@ -20,6 +20,7 @@ function slatePlayer(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
     team_abbr: 'GSW',
     prob_active: 0.99,
     proj_pts: 28.4,
+    proj_pts_cond: 28.7,
     proj_min_p50: 33.1,
     projected: { reb: 4.6, ast: 6.1, stl: 1.2, blk: 0.3, tov: 2.8, fg3m: 4.4 },
     usual_min: 32.4,
@@ -68,6 +69,7 @@ function payload(overrides: Partial<SlateResponse> = {}): SlateResponse {
         home_team_abbr: 'LAL',
         away_team_id: '1610612744',
         away_team_abbr: 'GSW',
+        preseason: false,
         top_impact: 6.2,
         top_edge: 1.3,
         players: [
@@ -78,6 +80,7 @@ function payload(overrides: Partial<SlateResponse> = {}): SlateResponse {
             team_abbr: 'LAL',
             prob_active: 0.42,
             proj_pts: 18.6,
+            proj_pts_cond: 26,
             proj_min_p50: 30.5,
             projected: { reb: 7.2, ast: 8.4, stl: 0.9, blk: 0.5, tov: 3.4, fg3m: 1.6 },
             usual_min: 24.3,
@@ -138,10 +141,66 @@ describe('SlatePage', () => {
     renderPage();
     await screen.findByText('Stephen Curry');
 
-    expect(screen.getByText('28.4')).toBeInTheDocument();
+    expect(screen.getByText('28.7')).toBeInTheDocument();
     expect(screen.getByText(/33\.1 min/)).toBeInTheDocument();
     expect(screen.getByText('99%')).toBeInTheDocument();
     expect(screen.getByText('42%')).toBeInTheDocument();
+  });
+
+  it('headlines the points he scores if he plays, beside his minutes', async () => {
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    const headline = screen.getByTestId('slate-headline-2544');
+    expect(headline.textContent?.replace(/\s+/g, ' ')).toBe('26.0 pts if he plays · 30.5 min');
+  });
+
+  it('prices the chance he sits into a muted line under the headline', async () => {
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    expect(screen.getByTestId('slate-schedule-2544')).toHaveTextContent(
+      '42% to play, 18.6 over the schedule'
+    );
+    expect(screen.getByTestId('slate-schedule-201939')).toHaveTextContent(
+      '99% to play, 28.4 over the schedule'
+    );
+  });
+
+  it('drops the muted line when availability is not modelled', async () => {
+    slateMock.mockResolvedValue(
+      payload({
+        games: [{ ...payload().games[0], players: [slatePlayer({ prob_active: null })] }],
+      })
+    );
+
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    expect(screen.queryByTestId('slate-schedule-201939')).not.toBeInTheDocument();
+  });
+
+  it('badges a preseason game and explains why its minutes run high', async () => {
+    slateMock.mockResolvedValue(
+      payload({ games: [{ ...payload().games[0], preseason: true }] })
+    );
+
+    renderPage();
+    const heading = await screen.findByRole('heading', { name: /GSW.*@.*LAL/ });
+
+    const card = heading.closest('section') as HTMLElement;
+    expect(within(card).getByText('Preseason')).toBeInTheDocument();
+    expect(screen.getByTestId('slate-preseason-note')).toHaveTextContent(
+      'trained on regular-season games'
+    );
+  });
+
+  it('shows no preseason badge or note on a regular-season slate', async () => {
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    expect(screen.queryByText('Preseason')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('slate-preseason-note')).not.toBeInTheDocument();
   });
 
   it('names the model run behind the projections', async () => {

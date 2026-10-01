@@ -65,6 +65,7 @@ function candidate(overrides: Partial<WatchlistCandidate> = {}): WatchlistCandid
     opponent_team_abbr: 'GSW',
     nba_game_id: '0022500555',
     game_date: '2026-02-04',
+    preseason: false,
     prob_active: 0.9,
     impact: 1,
     proj_pts_uncond: 14,
