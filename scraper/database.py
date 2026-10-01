@@ -134,13 +134,15 @@ def maybe_write_cursor(
     return DryRunCursor(cur) if dry_run else cur
 
 
-def _batch_upsert(cur: object, sql: str, rows: Sequence[tuple]) -> int:
+def _batch_upsert(
+    cur: object, sql: str, rows: Sequence[tuple], template: str | None = None
+) -> int:
     if not rows:
         return 0
     if isinstance(cur, DryRunCursor):
         cur.execute_values(sql, rows)
         return len(rows)
-    execute_values(cur, sql, rows, page_size=500)
+    execute_values(cur, sql, rows, template=template, page_size=500)
     return len(rows)
 
 

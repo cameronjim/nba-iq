@@ -1,11 +1,13 @@
 import sqlite3
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 import requests
 
 import database
 import fetching
+import injury_report
+import run_scraper
 import odds
 import scrapes
 import truth_layer
@@ -1826,7 +1828,7 @@ class TestScrapeOddsSnapshots:
         batches: list[tuple[str, list]] = []
         monkeypatch.setattr(
             database, "execute_values",
-            lambda cur, sql, rows, page_size: batches.append((sql, list(rows))),
+            lambda cur, sql, rows, page_size, template=None: batches.append((sql, list(rows))),
         )
         return batches
 
@@ -1907,3 +1909,624 @@ class TestOddsCli:
 
         assert args.odds_only is True
         assert args.dry_run is True
+
+
+
+
+OFFICIAL_REPORT_PAGES = [
+    "Injury Report: 01/20/26 05:00 PM\n"
+    "Game Date Game Time Matchup Team Player Name Current Status Reason\n"
+    "01/20/2026 07:00 (ET) BOS@NYK Boston Celtics Brown, Jaylen Questionable "
+    "Injury/Illness - Left Knee; Soreness\n"
+    "Injury/Illness - Right Achilles; Repair\n"
+    "Tatum, Jayson Out\n"
+    "Management\n"
+    "New York Knicks NOT YET SUBMITTED\n"
+    "07:30 (ET) LAL@MIA Los Angeles Lakers Doncic, Luka Probable "
+    "Injury/Illness - Left Hamstring;\n"
+    "Page 1 of 2\n",
+    "Injury Report: 01/20/26 05:00 PM\n"
+    "Strain\n"
+    "Hayes, Jaxson Out G League - Two-Way\n"
+    "Miami Heat Jaquez Jr., Jaime Available Injury/Illness - Low Back; Spasm\n"
+    "01/21/2026 07:00 (ET) LAC@CHA LA Clippers Beal, Bradley Out Not With Team\n"
+    "Page 2 of 2\n",
+]
+OFFICIAL_PUBLISHED_AT = datetime(2026, 1, 20, 22, 0, tzinfo=timezone.utc)
+
+
+def _official_rows() -> list[dict]:
+    return injury_report.parse_injury_report_text(
+        OFFICIAL_REPORT_PAGES, OFFICIAL_PUBLISHED_AT
+    )
+
+
+def _by_player(rows: list[dict]) -> dict[str, dict]:
+    return {r["player_name"]: r for r in rows if r["player_name"]}
+
+
+class TestParseOfficialInjuryReport:
+    def test_every_player_and_unfiled_team_becomes_one_row(self):
+        # act
+        rows = _official_rows()
+
+        # assert
+        assert [r["player_name"] for r in rows] == [
+            "Jaylen Brown", "Jayson Tatum", None, "Luka Doncic",
+            "Jaxson Hayes", "Jaime Jaquez Jr.", "Bradley Beal",
+        ]
+
+    def test_columns_left_of_the_player_are_forward_filled(self):
+        # act
+        tatum = _by_player(_official_rows())["Jayson Tatum"]
+
+        # assert
+        assert tatum["game_date"] == date(2026, 1, 20)
+        assert tatum["game_time_et"] == "07:00"
+        assert tatum["matchup"] == "BOS@NYK"
+        assert tatum["team_abbr"] == "BOS"
+
+    def test_a_new_team_keeps_the_matchup_and_time(self):
+        # act
+        jaquez = _by_player(_official_rows())["Jaime Jaquez Jr."]
+
+        # assert
+        assert (jaquez["matchup"], jaquez["team_abbr"]) == ("LAL@MIA", "MIA")
+        assert jaquez["game_time_et"] == "07:30"
+        assert jaquez["status_normalized"] == "available"
+
+    def test_a_new_game_date_replaces_the_old_one(self):
+        # act
+        beal = _by_player(_official_rows())["Bradley Beal"]
+
+        # assert
+        assert beal["game_date"] == date(2026, 1, 21)
+        assert beal["team_abbr"] == "LAC"
+        assert beal["reason"] == "Not With Team"
+
+    def test_a_reason_wrapped_around_the_player_line_is_rejoined(self):
+        # act
+        tatum = _by_player(_official_rows())["Jayson Tatum"]
+
+        # assert
+        assert tatum["reason"] == "Injury/Illness - Right Achilles; Repair Management"
+        assert tatum["status_raw"] == "Out"
+        assert tatum["status_normalized"] == "out"
+
+    def test_a_reason_continued_across_a_page_break_stays_with_its_player(self):
+        # act
+        players = _by_player(_official_rows())
+
+        # assert
+        assert players["Luka Doncic"]["reason"] == "Injury/Illness - Left Hamstring; Strain"
+        assert players["Jaxson Hayes"]["reason"] == "G League - Two-Way"
+        assert players["Jaxson Hayes"]["matchup"] == "LAL@MIA"
+
+    def test_an_unfiled_team_is_flagged_with_no_player(self):
+        # act
+        unfiled = [r for r in _official_rows() if r["not_yet_submitted"]]
+
+        # assert
+        assert len(unfiled) == 1
+        assert (unfiled[0]["matchup"], unfiled[0]["team_abbr"]) == ("BOS@NYK", "NYK")
+        assert unfiled[0]["player_name"] is None
+
+    def test_rows_carry_the_report_time_and_the_original_name(self):
+        # act
+        brown = _by_player(_official_rows())["Jaylen Brown"]
+
+        # assert
+        assert brown["report_as_of"] == OFFICIAL_PUBLISHED_AT
+        assert brown["player_name_last_first"] == "Brown, Jaylen"
+
+    def test_no_pages_parse_to_no_rows(self):
+        # act + assert
+        assert injury_report.parse_injury_report_text([], OFFICIAL_PUBLISHED_AT) == []
+
+
+class TestOfficialReportNames:
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("Brown, Jaylen", "Jaylen Brown"),
+            ("Jaquez Jr., Jaime", "Jaime Jaquez Jr."),
+            ("Bagley III, Marvin", "Marvin Bagley III"),
+            ("Jones Garcia, David", "David Jones Garcia"),
+            ("Nene", "Nene"),
+        ],
+    )
+    def test_last_first_becomes_first_last(self, raw, expected):
+        # act + assert
+        assert injury_report.last_first_to_first_last(raw) == expected
+
+
+class TestOfficialReportMatchup:
+    def test_away_is_left_of_the_at_sign(self):
+        # act + assert
+        assert injury_report.parse_report_matchup("BOS@NYK") == ("BOS", "NYK")
+
+    @pytest.mark.parametrize("raw", [None, "", "BOS NYK", "@NYK", "BOS@"])
+    def test_an_unreadable_matchup_is_none_not_a_guess(self, raw):
+        # act + assert
+        assert injury_report.parse_report_matchup(raw) == (None, None)
+
+
+class TestOfficialReportPublishedAt:
+    @pytest.mark.parametrize(
+        "name, expected",
+        [
+            # eastern standard time, utc-5
+            ("Injury-Report_2026-01-20_05_00PM.pdf", datetime(2026, 1, 20, 22, 0)),
+            ("Injury-Report_2026-01-20_12_15AM.pdf", datetime(2026, 1, 20, 5, 15)),
+            ("Injury-Report_2026-01-20_12_00PM.pdf", datetime(2026, 1, 20, 17, 0)),
+            # eastern daylight time, utc-4
+            ("Injury-Report_2026-04-10_05_00PM.pdf", datetime(2026, 4, 10, 21, 0)),
+            # either side of the 2026-03-08 spring-forward
+            ("Injury-Report_2026-03-08_01_30AM.pdf", datetime(2026, 3, 8, 6, 30)),
+            ("Injury-Report_2026-03-08_03_30AM.pdf", datetime(2026, 3, 8, 7, 30)),
+            # the hourly names older seasons used
+            ("Injury-Report_2025-03-10_05PM.pdf", datetime(2025, 3, 10, 21, 0)),
+        ],
+    )
+    def test_the_filename_time_is_eastern_converted_to_utc(self, name, expected):
+        # act
+        published = injury_report.parse_report_published_at(
+            injury_report.NBA_INJURY_REPORT_BASE_URL + name
+        )
+
+        # assert
+        assert published == expected.replace(tzinfo=timezone.utc)
+
+    @pytest.mark.parametrize(
+        "name", ["", "Injury-Report.pdf", "Injury-Report_2026-01-20_13_00PM.pdf"]
+    )
+    def test_an_unreadable_name_is_none(self, name):
+        # act + assert
+        assert injury_report.parse_report_published_at(name) is None
+
+
+class TestOfficialReportCandidateUrls:
+    def test_newest_slot_first_back_to_midnight_eastern(self):
+        # arrange
+        now = datetime(2026, 1, 20, 22, 7, tzinfo=timezone.utc)
+
+        # act
+        urls = injury_report.candidate_report_urls(now)
+
+        # assert
+        assert urls[0].endswith("Injury-Report_2026-01-20_05_00PM.pdf")
+        assert urls[1].endswith("Injury-Report_2026-01-20_04_45PM.pdf")
+        assert urls[-1].endswith("Injury-Report_2026-01-20_12_00AM.pdf")
+        assert len(urls) == 17 * 4 + 1
+
+    def test_the_day_is_the_eastern_day_not_the_utc_one(self):
+        # arrange
+        now = datetime(2026, 1, 21, 3, 0, tzinfo=timezone.utc)
+
+        # act
+        urls = injury_report.candidate_report_urls(now)
+
+        # assert
+        assert urls[0].endswith("Injury-Report_2026-01-20_10_00PM.pdf")
+        assert all("2026-01-20" in url for url in urls)
+
+
+OFFICIAL_SCHEDULE = [
+    {"nba_game_id": "0022500601", "game_date": date(2026, 1, 20),
+     "home_team_abbr": "NYK", "away_team_abbr": "BOS"},
+    {"nba_game_id": "0022500602", "game_date": date(2026, 1, 20),
+     "home_team_abbr": "MIA", "away_team_abbr": "LAL"},
+]
+OFFICIAL_PLAYERS = [
+    ("1628369", "Jayson Tatum", "BOS"),
+    ("1627759", "Jaylen Brown", "BOS"),
+    ("1629029", "Luka Doncic", "LAL"),
+    ("1629637", "Jaxson Hayes", "LAL"),
+    # stale team: the report lists him under MIA
+    ("1630173", "Jaime Jaquez Jr.", "LAL"),
+    ("203078", "Bradley Beal", "LAC"),
+]
+
+
+def _official_match() -> injury_report.ReportMatch:
+    index = injury_report.index_players(OFFICIAL_PLAYERS)
+    return injury_report.match_report_rows(_official_rows(), index, OFFICIAL_SCHEDULE)
+
+
+class TestMatchOfficialReportRows:
+    def test_players_and_games_are_attached(self):
+        # act
+        match = _official_match()
+
+        # assert
+        ids = {r["player_name"]: (r["nba_player_id"], r["nba_game_id"]) for r in match.matched}
+        assert ids["Jayson Tatum"] == ("1628369", "0022500601")
+        assert ids["Luka Doncic"] == ("1629029", "0022500602")
+        assert match.matched[0]["team_id"] == "1610612738"
+
+    def test_a_unique_name_on_another_team_still_matches(self):
+        # act
+        match = _official_match()
+
+        # assert
+        jaquez = next(r for r in match.matched if r["player_name"] == "Jaime Jaquez Jr.")
+        assert jaquez["nba_player_id"] == "1630173"
+        assert jaquez["team_abbr"] == "MIA"
+
+    def test_a_game_missing_from_the_schedule_is_counted_not_dropped(self):
+        # act
+        match = _official_match()
+
+        # assert
+        beal = next(r for r in match.matched if r["player_name"] == "Bradley Beal")
+        assert beal["nba_game_id"] is None
+        assert match.unmatched_games == 1
+
+    def test_an_unfiled_team_is_kept_aside_with_its_game(self):
+        # act
+        match = _official_match()
+
+        # assert
+        assert [(r["team_abbr"], r["nba_game_id"]) for r in match.not_submitted] == [
+            ("NYK", "0022500601")
+        ]
+
+    def test_duplicate_names_are_told_apart_by_team(self):
+        # arrange
+        index = injury_report.index_players(
+            [("1", "Jalen Williams", "OKC"), ("2", "Jalen Williams", "DEN")]
+        )
+        rows = [
+            {"player_name": "Jalen Williams", "team_abbr": "OKC", "matchup": "OKC@DEN",
+             "game_date": date(2026, 1, 20), "not_yet_submitted": False},
+            {"player_name": "Jalen Williams", "team_abbr": "DEN", "matchup": "OKC@DEN",
+             "game_date": date(2026, 1, 20), "not_yet_submitted": False},
+        ]
+
+        # act
+        match = injury_report.match_report_rows(rows, index, [])
+
+        # assert
+        assert [(r["team_abbr"], r["nba_player_id"]) for r in match.matched] == [
+            ("OKC", "1"), ("DEN", "2")
+        ]
+
+    def test_a_duplicate_name_on_neither_team_is_skipped_and_counted(self):
+        # arrange
+        index = injury_report.index_players(
+            [("1", "Jalen Williams", "OKC"), ("2", "Jalen Williams", "DEN")]
+        )
+        rows = [
+            {"player_name": "Jalen Williams", "team_abbr": "BOS", "matchup": "BOS@NYK",
+             "game_date": date(2026, 1, 20), "not_yet_submitted": False},
+            {"player_name": "Nobody Known", "team_abbr": "BOS", "matchup": "BOS@NYK",
+             "game_date": date(2026, 1, 20), "not_yet_submitted": False},
+        ]
+
+        # act
+        match = injury_report.match_report_rows(rows, index, [])
+
+        # assert
+        assert match.matched == []
+        assert len(match.unmatched_players) == 2
+
+
+T1 = datetime(2026, 1, 20, 17, 0, tzinfo=timezone.utc)
+T0 = T1 - timedelta(hours=2)
+
+
+def _prev(player: str, game: str, team: str, as_of: datetime, status: str = "out") -> dict:
+    return {"nba_player_id": player, "nba_game_id": game, "team_abbr": team,
+            "status_normalized": status, "report_as_of": as_of}
+
+
+def _current(
+    matched: list[tuple[str, str, str]], unfiled: list[tuple[str, str]]
+) -> injury_report.ReportMatch:
+    return injury_report.ReportMatch(
+        matched=[{"nba_player_id": p, "nba_game_id": g, "team_abbr": t} for p, g, t in matched],
+        not_submitted=[{"nba_game_id": g, "team_abbr": t} for g, t in unfiled],
+    )
+
+
+class TestOfficialClearances:
+    def test_a_player_dropped_from_a_filed_team_is_cleared_for_that_game(self):
+        # arrange
+        previous = [_prev("A", "G1", "BOS", T1), _prev("B", "G1", "BOS", T1)]
+        current = _current([("A", "G1", "BOS")], [])
+
+        # act
+        cleared = injury_report.official_clearances(previous, current)
+
+        # assert
+        assert cleared == [{"nba_player_id": "B", "nba_game_id": "G1", "team_abbr": "BOS"}]
+
+    def test_an_unfiled_team_clears_nobody(self):
+        # arrange
+        previous = [_prev("A", "G1", "BOS", T1), _prev("C", "G1", "NYK", T1)]
+        current = _current([("A", "G1", "BOS")], [("G1", "NYK")])
+
+        # act
+        cleared = injury_report.official_clearances(previous, current)
+
+        # assert
+        assert cleared == []
+
+    def test_a_game_gone_from_the_report_clears_nobody(self):
+        # arrange
+        previous = [_prev("E", "G2", "LAL", T1)]
+        current = _current([("A", "G1", "BOS")], [])
+
+        # act
+        cleared = injury_report.official_clearances(previous, current)
+
+        # assert
+        assert cleared == []
+
+    def test_only_the_latest_earlier_report_for_the_team_is_compared(self):
+        # arrange
+        previous = [_prev("D", "G1", "BOS", T0), _prev("A", "G1", "BOS", T1)]
+        current = _current([("A", "G1", "BOS")], [])
+
+        # act
+        cleared = injury_report.official_clearances(previous, current)
+
+        # assert
+        assert cleared == []
+
+    def test_an_already_cleared_player_is_not_cleared_again(self):
+        # arrange
+        previous = [_prev("A", "G1", "BOS", T1), _prev("B", "G1", "BOS", T1, "cleared")]
+        current = _current([("A", "G1", "BOS")], [])
+
+        # act
+        cleared = injury_report.official_clearances(previous, current)
+
+        # assert
+        assert cleared == []
+
+    def test_a_team_absent_from_a_game_still_on_the_report_counts_as_filed(self):
+        # arrange
+        previous = [_prev("C", "G1", "NYK", T1)]
+        current = _current([("A", "G1", "BOS")], [])
+
+        # act
+        cleared = injury_report.official_clearances(previous, current)
+
+        # assert
+        assert [c["nba_player_id"] for c in cleared] == ["C"]
+
+
+OFFICIAL_URL = (
+    injury_report.NBA_INJURY_REPORT_BASE_URL + "Injury-Report_2026-01-20_05_00PM.pdf"
+)
+
+
+class OfficialCursor:
+    def __init__(self, previous: list[tuple], already_ingested: bool = False):
+        self.previous = previous
+        self.already_ingested = already_ingested
+        self.statements: list[tuple[str, object]] = []
+        self._result: list[tuple] = []
+
+    def execute(self, sql, params=None):
+        self.statements.append((sql, params))
+        if "FROM nba_schedule" in sql:
+            self._result = [
+                (g["nba_game_id"], g["game_date"], g["home_team_abbr"], g["away_team_abbr"])
+                for g in OFFICIAL_SCHEDULE
+            ]
+        elif "FROM players" in sql:
+            self._result = list(OFFICIAL_PLAYERS)
+        elif "report_url = %s" in sql:
+            self._result = [(1,)] if self.already_ingested else []
+        elif "report_as_of < %s" in sql:
+            self._result = self.previous
+        else:
+            self._result = []
+
+    def fetchall(self):
+        return self._result
+
+    def close(self):
+        pass
+
+    def player_updates(self):
+        return [p for sql, p in self.statements if sql.strip().startswith("UPDATE players")]
+
+
+class OfficialConn:
+    def __init__(self, previous: list[tuple] | None = None, already_ingested: bool = False):
+        self.cursor_ = OfficialCursor(previous or [], already_ingested)
+
+    def cursor(self):
+        return self.cursor_
+
+
+class TestScrapeOfficialInjuries:
+    NOW = datetime(2026, 1, 20, 22, 7, tzinfo=timezone.utc)
+
+    @pytest.fixture(autouse=True)
+    def _offline(self, monkeypatch):
+        self.inserted: list[tuple] = []
+        self.finished: list[dict] = []
+
+        def record_insert(cur, sql, rows, template=None):
+            self.inserted.extend(rows)
+            return len(rows)
+
+        def record_finish(conn, run_id, status, rows, notes=None, watermark_to=None):
+            self.finished.append({"status": status, "rows": rows, "notes": notes})
+
+        monkeypatch.setattr(
+            injury_report, "fetch_latest_report", lambda now: (OFFICIAL_URL, b"%PDF")
+        )
+        monkeypatch.setattr(
+            injury_report, "extract_pdf_pages", lambda data: OFFICIAL_REPORT_PAGES
+        )
+        monkeypatch.setattr(injury_report, "_start_ingestion_run", lambda *a, **k: 7)
+        monkeypatch.setattr(injury_report, "_finish_ingestion_run", record_finish)
+        monkeypatch.setattr(injury_report, "_batch_upsert", record_insert)
+
+    def test_rows_are_game_scoped_and_timestamped_by_the_report(self):
+        # arrange
+        conn = OfficialConn()
+
+        # act
+        ok = injury_report.scrape_official_injuries(conn, now=self.NOW)
+
+        # assert
+        assert ok is True
+        tatum = next(row for row in self.inserted if row[0] == "1628369")
+        assert tatum == (
+            "1628369", "0022500601", OFFICIAL_PUBLISHED_AT, "Out", "out",
+            "Injury/Illness - Right Achilles; Repair Management", "nba_official",
+            "1610612738", OFFICIAL_URL,
+        )
+
+    def test_an_unfiled_team_writes_nothing_and_is_noted(self):
+        # arrange
+        conn = OfficialConn()
+
+        # act
+        injury_report.scrape_official_injuries(conn, now=self.NOW)
+
+        # assert
+        assert len(self.inserted) == 6
+        assert all(row[7] != "1610612752" for row in self.inserted)
+        assert "not_yet_submitted_teams=1" in self.finished[-1]["notes"]
+
+    def test_a_dropped_player_gets_a_game_scoped_clearance(self):
+        # arrange
+        previous = [
+            ("1628369", "0022500601", "1610612738", "out", T1),
+            ("1627759", "0022500601", "1610612738", "questionable", T1),
+            ("201950", "0022500601", "1610612738", "out", T1),
+        ]
+        conn = OfficialConn(previous)
+
+        # act
+        injury_report.scrape_official_injuries(conn, now=self.NOW)
+
+        # assert
+        clearances = [row for row in self.inserted if row[3] == "cleared"]
+        assert clearances == [(
+            "201950", "0022500601", OFFICIAL_PUBLISHED_AT, "cleared", "cleared", None,
+            "nba_official", "1610612738", OFFICIAL_URL,
+        )]
+        assert ("201950",) in conn.cursor_.player_updates()
+
+    def test_players_get_the_official_designation(self):
+        # arrange
+        conn = OfficialConn()
+
+        # act
+        injury_report.scrape_official_injuries(conn, now=self.NOW)
+
+        # assert
+        assert ("Out", "Not With Team", "203078") in conn.cursor_.player_updates()
+
+    def test_a_report_already_ingested_is_not_appended_again(self):
+        # arrange
+        conn = OfficialConn(already_ingested=True)
+
+        # act
+        injury_report.scrape_official_injuries(conn, now=self.NOW)
+
+        # assert
+        assert self.inserted == []
+        assert conn.cursor_.player_updates()
+
+    def test_no_report_found_writes_nothing_and_reports_failure(self, monkeypatch):
+        # arrange
+        monkeypatch.setattr(injury_report, "fetch_latest_report", lambda now: None)
+        conn = OfficialConn()
+
+        # act
+        ok = injury_report.scrape_official_injuries(conn, now=self.NOW)
+
+        # assert
+        assert ok is False
+        assert self.inserted == []
+        assert conn.cursor_.player_updates() == []
+
+    def test_no_games_scheduled_skips_the_fetch(self, monkeypatch):
+        # arrange
+        def must_not_fetch(now):
+            raise AssertionError("fetched with no games scheduled")
+
+        monkeypatch.setattr(injury_report, "fetch_latest_report", must_not_fetch)
+        conn = OfficialConn()
+
+        # act
+        ok = injury_report.scrape_official_injuries(
+            conn, now=datetime(2026, 7, 15, 18, 0, tzinfo=timezone.utc)
+        )
+
+        # assert
+        assert ok is True
+        assert self.inserted == []
+
+    def test_dry_run_reads_but_writes_nothing(self, monkeypatch):
+        # arrange
+        monkeypatch.undo()
+        monkeypatch.setattr(
+            injury_report, "fetch_latest_report", lambda now: (OFFICIAL_URL, b"%PDF")
+        )
+        monkeypatch.setattr(
+            injury_report, "extract_pdf_pages", lambda data: OFFICIAL_REPORT_PAGES
+        )
+        conn = OfficialConn([("201950", "0022500601", "1610612738", "out", T1)])
+
+        # act
+        injury_report.scrape_official_injuries(conn, dry_run=True, now=self.NOW)
+
+        # assert
+        executed = [sql for sql, _ in conn.cursor_.statements]
+        assert executed and all(not is_write_statement(sql) for sql in executed)
+
+
+class TestInjuryPhases:
+    def test_an_official_failure_does_not_cost_the_cbs_pass(self, monkeypatch):
+        # arrange
+        calls: list[str] = []
+
+        def official(conn, dry_run=False):
+            raise RuntimeError("pdf down")
+
+        monkeypatch.setattr(
+            run_scraper, "scrape_injuries", lambda conn, dry_run=False: calls.append("cbs")
+        )
+        monkeypatch.setattr(run_scraper, "scrape_official_injuries", official)
+
+        # act
+        run_scraper._injury_phases(object(), False)
+
+        # assert
+        assert calls == ["cbs"]
+
+    def test_a_cbs_failure_does_not_cost_the_official_pass_which_runs_second(
+        self, monkeypatch
+    ):
+        # arrange
+        calls: list[str] = []
+
+        def cbs(conn, dry_run=False):
+            calls.append("cbs")
+            raise RuntimeError("cbs down")
+
+        monkeypatch.setattr(run_scraper, "scrape_injuries", cbs)
+        monkeypatch.setattr(
+            run_scraper, "scrape_official_injuries",
+            lambda conn, dry_run=False: calls.append("official"),
+        )
+
+        # act
+        run_scraper._injury_phases(object(), False)
+
+        # assert
+        assert calls == ["cbs", "official"]
+
+    def test_the_official_only_flag_is_parsed(self):
+        # act + assert
+        assert _parse_args(["--official-injuries-only"]).official_injuries_only is True

@@ -3,6 +3,7 @@ psycopg2-binary
 python-dotenv
 requests
 beautifulsoup4
+pdfplumber==0.11.10
 # truth-layer unit tests (scraper/test_truth_layer.py). Pure functions only —
 # no database, no network — so this is the whole test dependency.
 pytest
