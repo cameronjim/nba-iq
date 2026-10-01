@@ -96,6 +96,12 @@ BIASED_UNIVERSE = "approximation"
 # a multi-day run has no single horizon bucket; this records none rather than a false one
 NO_HORIZON = "none"
 
+# why a run was made, recorded on its registry entry. provenance only: it changes
+# nothing the run computes.
+TRIGGER_SCHEDULE = "schedule"
+TRIGGER_STATUS_CHANGE = "status_change"
+RUN_TRIGGERS: tuple[str, ...] = (TRIGGER_SCHEDULE, TRIGGER_STATUS_CHANGE)
+
 KEY_COLS = ["PLAYER_ID", "PLAYER_NAME", "GAME_ID", "TEAM_ID", "OPP_TEAM_ID",
             "GAME_DATE", "SEASON", "IS_HOME", "MIN_TIER"]
 
@@ -128,6 +134,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "the dataset)")
     parser.add_argument("--channel", choices=RUN_CHANNELS, default=PRODUCTION_CHANNEL,
                         help="prediction_runs.channel; only 'production' is served")
+    parser.add_argument("--trigger", choices=RUN_TRIGGERS, default=TRIGGER_SCHEDULE,
+                        help="why this run was made, recorded on the registry entry")
     parser.add_argument("--horizon", choices=(*HORIZONS, NO_HORIZON),
                         default=DEFAULT_HORIZON,
                         help="when this run is being made relative to tipoff; 'none' "
@@ -498,6 +506,7 @@ def write_run(
     information_as_of: pd.Timestamp | None = None,
     history_through_date: date | None = None,
     coherence: str = COHERENCE_NONE,
+    trigger: str = TRIGGER_SCHEDULE,
 ) -> tuple[int, int]:
     """build the rows, insert them in one transaction, link the run back."""
     rows = build_prediction_rows(predictions, TARGETS, QUANTILE_LEVELS)
@@ -533,6 +542,7 @@ def write_run(
             "predicted_at": predicted_at.isoformat(timespec="seconds"),
             "forecast_cutoff_at": pd.Timestamp(run_record["forecast_cutoff_at"]).isoformat(),
             "channel": channel,
+            "trigger": trigger,
             "information_as_of": information.isoformat() if information else None,
             "history_through": str(history_through_date) if history_through_date else None,
             # the horizon lands in both places on purpose: prediction_runs.notes is
@@ -688,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
             information_as_of=statuses_as_of,
             history_through_date=run_history_through,
             coherence=args.coherence,
+            trigger=args.trigger,
         )
 
     summary = override_summary(predictions)

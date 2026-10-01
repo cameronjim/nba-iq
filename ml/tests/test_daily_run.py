@@ -783,6 +783,7 @@ def _drive(
     models_dir: Path,
     extra: list[str],
     failing_version: str | None = None,
+    overrides: dict[str, object] | None = None,
 ) -> tuple[int, list[list[str]]]:
     """daily_run.main end to end, with every database read and predict.py faked."""
     games = ["0022600501", "0022600502"]
@@ -817,6 +818,7 @@ def _drive(
         "build_prospective_features": lambda *_: features,
         "load_statuses": lambda *_: pd.DataFrame(),
         "_rows_per_player_game": lambda *_: 1,
+        **(overrides or {}),
     }
     for name, fake in fakes.items():
         monkeypatch.setattr(daily_run, name, fake)
@@ -923,3 +925,349 @@ class TestShadowRun:
         assert len(calls) == 3
         assert _flag(calls[-1], "--channel") == "production"
         assert code == 1
+
+
+def _statuses(**by_player: str) -> pd.DataFrame:
+    """resolved designations, one row per player, as latest_statuses returns them."""
+    return pd.DataFrame({
+        "nba_player_id": list(by_player),
+        "status_normalized": list(by_player.values()),
+        "captured_at": pd.Timestamp("2026-10-20T15:30:00Z"),
+    })
+
+
+def _rescore_schedule() -> pd.DataFrame:
+    """team 1 hosts team 2 at 7pm ET; team 3 hosts team 4 at 3pm ET."""
+    return pd.DataFrame({
+        "GAME_ID": ["0022600011", "0022600012"],
+        "GAME_DATE": pd.to_datetime(["2026-10-20", "2026-10-20"]),
+        "SCHEDULED_AT": pd.to_datetime(["2026-10-20T23:00:00Z", "2026-10-20T19:00:00Z"]),
+        "HOME_TEAM_ID": ["1", "3"],
+        "AWAY_TEAM_ID": ["2", "4"],
+    })
+
+
+def _rescore_rosters() -> pd.DataFrame:
+    return pd.DataFrame({
+        "nba_player_id": [10, 20, 30, 50],
+        "team_id": [1, 2, 3, 5],
+    })
+
+
+class TestDesignationClass:
+    @pytest.mark.parametrize("status, expected", [
+        ("out", "out"), ("suspended", "out"), ("G-League", "out"), ("doubtful", "out"),
+        ("questionable", "questionable"), ("GTD", "questionable"),
+        ("probable", "questionable"),
+        ("available", "available"), ("cleared", "available"),
+        ("day_to_day", "available"), ("", "available"), ("something new", "available"),
+    ])
+    def test_the_class_follows_the_override_policy(self, status: str, expected: str) -> None:
+        # act + assert
+        assert daily_run.designation_class(status) == expected
+
+
+class TestStatusChanges:
+    NOW = pd.Timestamp("2026-10-20T20:45:00Z")
+
+    def _changes(self, previous: pd.DataFrame, current: pd.DataFrame) -> pd.DataFrame:
+        roster = daily_run.slate_rosters(_rescore_rosters(), _rescore_schedule(), self.NOW)
+        return daily_run.status_changes(previous, current, roster)
+
+    def test_available_to_out_counts(self) -> None:
+        # arrange
+        previous, current = _statuses(), _statuses(**{"10": "out"})
+
+        # act
+        changes = self._changes(previous, current)
+
+        # assert
+        assert list(changes["nba_player_id"]) == ["10"]
+        assert changes.loc[0, "previous_class"] == "available"
+        assert changes.loc[0, "current_class"] == "out"
+
+    def test_questionable_to_out_counts(self) -> None:
+        # arrange
+        previous = _statuses(**{"20": "questionable"})
+        current = _statuses(**{"20": "out"})
+
+        # act
+        changes = self._changes(previous, current)
+
+        # assert
+        assert list(changes["nba_player_id"]) == ["20"]
+        assert list(changes["team_id"]) == ["2"]
+
+    def test_out_to_cleared_counts(self) -> None:
+        # arrange
+        previous = _statuses(**{"10": "out"})
+        current = _statuses(**{"10": "cleared"})
+
+        # act
+        changes = self._changes(previous, current)
+
+        # assert
+        assert list(changes["current_class"]) == ["available"]
+
+    def test_an_unchanged_class_does_not_count(self) -> None:
+        # arrange
+        previous = _statuses(**{"10": "out", "20": "questionable"})
+        current = _statuses(**{"10": "inactive", "20": "probable"})
+
+        # act
+        changes = self._changes(previous, current)
+
+        # assert
+        assert changes.empty
+
+    def test_a_player_whose_team_has_no_game_in_window_does_not_count(self) -> None:
+        # arrange
+        previous, current = _statuses(), _statuses(**{"50": "out", "99": "out"})
+
+        # act
+        changes = self._changes(previous, current)
+
+        # assert
+        assert changes.empty
+
+    def test_a_player_whose_game_already_tipped_does_not_count(self) -> None:
+        # arrange
+        previous, current = _statuses(), _statuses(**{"30": "out"})
+
+        # act
+        changes = self._changes(previous, current)
+
+        # assert
+        assert changes.empty
+
+    def test_no_reports_at_either_boundary_is_no_change(self) -> None:
+        # act
+        changes = self._changes(pd.DataFrame(), pd.DataFrame())
+
+        # assert
+        assert changes.empty
+
+
+class TestRescoreNotes:
+    TOKEN = daily_run.rescore_note(3)
+
+    def test_the_token_names_the_trigger_and_the_count(self) -> None:
+        # act + assert
+        assert self.TOKEN == "rescore=status_change; changed_players=3"
+
+    def test_a_qualifying_rescore_keeps_the_label_and_carries_the_token(self) -> None:
+        # act
+        note = daily_run.run_notes([], rescore=self.TOKEN)
+
+        # assert
+        assert note.startswith(config.PROSPECTIVE_RUN_NOTE_LABEL)
+        assert note.endswith(self.TOKEN)
+
+    def test_the_extended_rescore_carries_the_token_and_never_the_label(self) -> None:
+        # act
+        note = daily_run.extended_notes(7, [], "STALE truth layer", self.TOKEN)
+
+        # assert
+        assert self.TOKEN in note
+        assert config.PROSPECTIVE_RUN_NOTE_LABEL not in note
+        assert note.endswith("STALE truth layer")
+
+    def test_the_label_assertion_still_applies_to_a_rescore(self) -> None:
+        # act + assert
+        with pytest.raises(AssertionError):
+            daily_run.extended_notes(7, [config.PROSPECTIVE_RUN_NOTE_LABEL], None, self.TOKEN)
+
+    def test_a_scheduled_run_carries_no_token(self) -> None:
+        # act + assert
+        assert "rescore=" not in daily_run.run_notes([])
+
+
+class TestTrigger:
+    def test_the_flag_is_off_by_default(self) -> None:
+        # act + assert
+        assert daily_run.parse_args([]).if_status_changed is False
+        assert daily_run.parse_args(["--if-status-changed"]).if_status_changed is True
+
+    def test_the_trigger_reaches_predict(self) -> None:
+        # arrange
+        import predict  # noqa: PLC0415
+
+        common: dict[str, object] = dict(
+            dataset_path=Path("p.parquet"), models_dir=Path("models"),
+            out_path=Path("o.parquet"), notes="n", horizon="gameday",
+            window_start=date(2026, 10, 20),
+            statuses_as_of=pd.Timestamp("2026-10-20T20:45:00Z"),
+            statuses_path=None, history_through=None, write_db=True,
+        )
+
+        # act
+        scheduled = predict.parse_args(daily_run.predict_argv(**common))
+        rescored = predict.parse_args(
+            daily_run.predict_argv(**common, trigger=predict.TRIGGER_STATUS_CHANGE)
+        )
+
+        # assert
+        assert scheduled.trigger == "schedule"
+        assert rescored.trigger == "status_change"
+
+    def test_the_registry_entry_records_the_trigger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        import predict  # noqa: PLC0415
+
+        recorded: list[dict[str, object]] = []
+        monkeypatch.setattr(predict, "build_prediction_rows", lambda *_: [{}])
+        monkeypatch.setattr(predict, "write_predictions", lambda *_: 7)
+        monkeypatch.setattr(predict.registry, "git_commit", lambda *_: None)
+        monkeypatch.setattr(
+            predict.registry, "record_prediction_run",
+            lambda version, run, *_: recorded.append(run),
+        )
+
+        # act
+        predict.write_run(
+            pd.DataFrame({"PLAYER_ID": ["10"]}), {"model_version": "m"},
+            pd.Timestamp("2026-10-20"), "n", None,
+            trigger=predict.TRIGGER_STATUS_CHANGE,
+        )
+
+        # assert
+        assert recorded[0]["trigger"] == "status_change"
+        assert recorded[0]["run_id"] == 7
+
+
+def _gate(
+    boundary: pd.Timestamp | None, previous: pd.DataFrame, current: pd.DataFrame
+) -> dict[str, object]:
+    """fakes for the rescore phase: the boundary, rosters, and statuses by as_of."""
+    rosters = pd.DataFrame({"nba_player_id": ["10", "20"], "team_id": ["1", "2"]})
+
+    def load_statuses(as_of: pd.Timestamp) -> pd.DataFrame:
+        return previous if boundary is not None and as_of == boundary else current
+
+    return {
+        "load_previous_boundary": lambda: boundary,
+        "load_rosters": lambda *_: (rosters, "fake rosters"),
+        "load_statuses": load_statuses,
+    }
+
+
+class TestRescoreRun:
+    # relative to the wall clock, so the 72-hour report expiry never ages a fixture out.
+    BOUNDARY = pd.Timestamp.now("UTC").floor("s") - pd.Timedelta(hours=1)
+
+    def _status(self, status: str) -> pd.DataFrame:
+        return pd.DataFrame({
+            "nba_player_id": ["10"], "status_normalized": [status],
+            "captured_at": [self.BOUNDARY - pd.Timedelta(hours=1)],
+        })
+
+    def test_no_status_change_exits_zero_and_never_calls_predict(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # arrange
+        unchanged = self._status("questionable")
+        fakes = _gate(self.BOUNDARY, unchanged, unchanged)
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, tmp_path, ["--if-status-changed"], overrides=fakes
+        )
+
+        # assert
+        assert code == 0
+        assert calls == []
+        assert (f"no status change since {self.BOUNDARY.isoformat()}; nothing to publish"
+                in capsys.readouterr().out)
+
+    def test_no_previous_production_run_publishes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        fakes = _gate(None, pd.DataFrame(), self._status("out"))
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, tmp_path, ["--if-status-changed"], overrides=fakes
+        )
+
+        # assert
+        assert code == 0
+        assert calls == []
+
+    def test_a_change_publishes_both_runs_with_the_token_and_trigger(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        fakes = _gate(self.BOUNDARY, pd.DataFrame(), self._status("out"))
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, tmp_path, ["--if-status-changed"], overrides=fakes
+        )
+
+        # assert
+        assert code == 0
+        assert len(calls) == 2
+        run_a, run_b = calls
+        assert _flag(run_a, "--notes").startswith(config.PROSPECTIVE_RUN_NOTE_LABEL)
+        for argv in calls:
+            assert "rescore=status_change; changed_players=1" in _flag(argv, "--notes")
+            assert _flag(argv, "--trigger") == "status_change"
+        assert config.PROSPECTIVE_RUN_NOTE_LABEL not in _flag(run_b, "--notes")
+
+    def test_a_scheduled_run_ignores_the_gate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        def unreachable() -> None:
+            raise AssertionError("the scheduled lane must not read the boundary")
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, tmp_path, [],
+            overrides={"load_previous_boundary": unreachable},
+        )
+
+        # assert
+        assert code == 0
+        assert len(calls) == 2
+        for argv in calls:
+            assert "rescore=" not in _flag(argv, "--notes")
+            assert _flag(argv, "--trigger") == "schedule"
+
+
+class TestRescoreWorkflow:
+    WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/predictions.yml"
+    CRON = "45 15,19,20,21,22,23,0,1,2 * * *"
+
+    def test_the_rescore_lane_is_scheduled_and_dispatched(self) -> None:
+        # act
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        # assert
+        assert f'- cron: "{self.CRON}"' in text
+        assert f'"{self.CRON}")' in text
+        assert "daily_run.py --if-status-changed --shadow-feature-set v1" in text
+
+    def test_the_scheduled_lane_is_unchanged(self) -> None:
+        # act
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        # assert
+        assert '- cron: "0 16 * * *"' in text
+        assert '"0 16 * * *" | "")' in text
+        assert "cancel-in-progress: false" in text
+        assert "unknown schedule" in text
+
+    def test_the_lane_trails_the_scrapers_injuries_lane_by_fifteen_minutes(self) -> None:
+        # arrange
+        scraper = self.WORKFLOW.with_name("scraper.yml").read_text(encoding="utf-8")
+
+        # act
+        injuries = scraper.split('- cron: "30 ', 1)[1].split('"', 1)[0]
+
+        # assert
+        assert self.CRON == f"45 {injuries}"

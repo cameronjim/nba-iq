@@ -4150,3 +4150,54 @@ and `test_scoring_baselines.py`.
 - **The betting picks remain Claude estimates**, labelled as such (17.2 item 7).
 - **Nothing here changes a served prediction number.** The ranking, outlook and
   explanations read the production run; the scoring tool only reads the store.
+
+## 20. v3 candidates (2026-10-02)
+
+### 20.3 Injury-triggered rescoring
+
+**The defect.** Predictions publish once a day at 16:00 UTC. A player ruled out at
+18:00 UTC shows the new injury chip ("changed after run") beside a projection that
+still assumes he plays, and his teammates' projections, which the override layer
+moves through the base probabilities (7.1), never move at all.
+
+**The trigger.** `predictions.yml` gains a second cron, `45 15,19,20,21,22,23,0,1,2
+* * *`: the scraper's injuries-only lane shifted by 15 minutes so the fresh rows exist.
+It runs `daily_run.py --if-status-changed`. Before any heavy phase the new `rescore`
+phase reads the newest complete production run's `information_as_of` (the slate's own
+selection, `COALESCE(information_as_of, forecast_cutoff_at)`), resolves every
+player's designation as of that boundary and as of now through the same
+`overrides.latest_statuses` a run applies (strict `captured_at < as_of`, 72-hour
+expiry), and maps each to one of three classes read off the `StatusPolicy`: **out**
+where the policy replaces the model with a constant (out, suspended, g_league,
+doubtful), **questionable** where it blends (questionable, probable), **available**
+where it passes through or the player is not listed. A player counts when his class
+moved and he is rostered on a team with a game in the extended window that has not
+tipped. No player counts: exit 0, `no status change since <boundary>; nothing to
+publish`, nothing written. Otherwise the normal pipeline runs unchanged (run A if
+its window holds a Regular Season game, the shadow, run B) with
+`rescore=status_change; changed_players=N` appended to every note through
+`run_notes`, so the assertion that a non-qualifying note cannot carry the label still
+applies, and with `trigger: status_change` on each registry entry (`trigger:
+schedule` on the 16:00 lane's). No previous production run means no boundary and no
+rescore: the scheduled lane publishes the first one.
+
+**Why it is protocol-neutral.** A run is a run. The rescore computes exactly what the
+16:00 run computes: same artifact, same features, same policy, same label logic, its
+own `statuses_as_of` as its boundary, its own measured horizon facts (13.8.5). 13.8 is
+unaffected: (2) both `drop_tipped_off` passes still run, so a game that has tipped is
+never published and the gate never counts its players; (3) the store stays
+append-only, a rescore supersedes by being newest and the earlier run stays on the
+record; (4) the label is still decided by `prospective_conditions` alone, and the
+`rescore=` token makes every rescored run identifiable from the notes. Nothing frozen
+moved: no constant, no cron of the 16:00 lane, no label, no horizon bucket.
+
+**What a look report has to know.** A slate can now carry more than one labelled run.
+`scoring.py`'s pools already keep the newest run per player-game, so the rescored
+forecast is the one scored, and that is the right forecast to score: it is what was
+served. A run A rescored late in the evening is still labelled `gameday` (the label is
+part of the freeze) while its measured offset may sit in `lock`; the horizon facts on
+the registry entry record the measured bucket, and 13.8.5 already obliges a look report
+that pools across them to say so. The 15:45 slot will usually rescore against the
+previous day's 16:00 boundary 15 minutes before the scheduled run; the `predictions`
+concurrency group (`cancel-in-progress: false`) queues the 16:00 run behind it rather
+than overlapping.
