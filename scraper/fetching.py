@@ -449,6 +449,22 @@ def _fetch_inactive_players(game_id: str, game_date: date | None) -> tuple[list[
     return rows, "v2-suspect" if v2_unreliable else "v2"
 
 
+def fetch_box_score_traditional(game_id: str) -> dict[str, list[dict]]:
+    # the caller owns the delay between games; this only retries one game.
+    from nba_api.stats.endpoints import boxscoretraditionalv3
+
+    def fetch() -> object:
+        return boxscoretraditionalv3.BoxScoreTraditionalV3(
+            game_id=game_id, timeout=60, headers=STATS_HEADERS
+        )
+
+    box = _fetch_with_retry(f"box score traditional v3 {game_id}", fetch)
+    return {
+        "player_stats": box.player_stats.get_data_frame().to_dict("records"),
+        "team_stats": box.team_stats.get_data_frame().to_dict("records"),
+    }
+
+
 def _fetch_team_roster(
     team_id: str,
     season: str,

@@ -144,6 +144,18 @@ def _batch_upsert(cur: object, sql: str, rows: Sequence[tuple]) -> int:
     return len(rows)
 
 
+def _batch_update(cur: object, sql: str, rows: Sequence[tuple]) -> int:
+    # an UPDATE ... FROM (VALUES %s) matches only keys that exist, so the count
+    # is rowcount rather than len(rows); one page keeps rowcount whole.
+    if not rows:
+        return 0
+    if isinstance(cur, DryRunCursor):
+        cur.execute_values(sql, rows)
+        return len(rows)
+    execute_values(cur, sql, rows, page_size=max(len(rows), 1))
+    return cur.rowcount
+
+
 def _scalar(conn: psycopg2.extensions.connection, sql: str, params: tuple = ()) -> object:
     cur = conn.cursor()
     try:
