@@ -221,3 +221,37 @@ def test_a_base_model_trained_past_the_game_is_refused_at_the_context_stage():
 
     with pytest.raises(LeakageError, match="IN-FOLD"):
         rebuild_context(frame, base, None, pd.Timestamp("2026-03-02"))
+
+
+def test_horizon_none_is_accepted_and_the_default_is_unchanged():
+    import predict
+
+    args = predict.parse_args(["--version", "v", "--horizon", predict.NO_HORIZON])
+    assert args.horizon == predict.NO_HORIZON
+    assert predict.parse_args(["--version", "v"]).horizon == "gameday"
+
+
+def test_horizon_metadata_without_a_requested_horizon_still_measures():
+    import predict
+
+    facts = horizon_metadata(
+        _slate(["2026-03-02", "2026-03-08"]), None,
+        pd.Timestamp("2026-03-02T00:00:00"), None,
+    )
+
+    assert facts["horizon_requested"] == predict.NO_HORIZON
+    assert facts["hours_to_tip_max"] is not None
+
+
+def test_a_run_with_no_horizon_writes_no_horizon_token_into_notes():
+    from fnba_ml.store import build_run_record
+
+    record = build_run_record(
+        {"model_version": "v"},
+        pd.Timestamp("2026-03-01T18:00:00Z").to_pydatetime(),
+        pd.Timestamp("2026-03-01T00:00:00Z").to_pydatetime(),
+        notes="NOT PROSPECTIVE (extended 7-day serving window)",
+        horizon=None,
+    )
+
+    assert "horizon=" not in record["notes"]

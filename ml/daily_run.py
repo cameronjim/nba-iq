@@ -20,8 +20,17 @@ which games have already tipped off. Those four are pure functions at the top of
 module and `tests/test_daily_run.py` is about them, because they are the four things
 that can be wrong in a way no downstream script would notice.
 
-THE OFFSEASON NO-OP IS THE NORMAL CASE FOR MOST OF THE YEAR. No games in the window
-means exit 0 having written nothing: not a failure, not an empty run row, nothing. A
+TWO RUNS PER DAY, PROSPECTIVE FIRST. The app serves only the newest complete run, and
+a manager needs the next seven days, preseason included. So the schedule, universe
+and features are built ONCE over the extended window and scored twice from that one
+frame: run A is the frozen prospective run exactly as before (``--window-days``,
+Regular Season only, ``gameday``, the label); run B is every servable game in the
+extended window, published AFTER A so it is the one the app shows. B is NOT
+PROSPECTIVE by construction and says so in its notes, and it carries no horizon
+because a seven-day run has no single bucket (MODEL.md 16.7).
+
+THE OFFSEASON NO-OP IS THE NORMAL CASE FOR MOST OF THE YEAR. No games in the extended
+window means exit 0 having written nothing: not a failure, not an empty run row, nothing. A
 daily cron that goes red every morning from June to October is a cron whose red is
 worth nothing by November.
 
@@ -103,6 +112,14 @@ EASTERN = ZoneInfo("America/New_York")  # US/Eastern, under its canonical name
 # projection for Monday than Sunday's would have been, and they are a much better one
 # than an empty page.
 STALE_AFTER_DAYS = 3
+
+# the season types the app may serve. Wider than ``config.SEASON_TYPES`` on purpose:
+# that list feeds the training history and the freshness check and must stay Regular
+# Season; this one only widens which scheduled games get a forecast.
+SLATE_SEASON_TYPES: tuple[str, ...] = ("Pre Season", "Regular Season")
+
+# the only season type the frozen prospective run may contain (13.8.4).
+PROSPECTIVE_SEASON_TYPE = "Regular Season"
 
 # the phases, in order, for the banner and for the failure message. A failure has to
 # name one of these: "daily_run failed" sends an operator to read this file, "daily_run
@@ -368,6 +385,39 @@ def run_notes(reasons: list[str], stale: str | None = None) -> str:
     return note
 
 
+def extended_notes(
+    extended_days: int, conditions: list[str], stale: str | None = None
+) -> str:
+    """``prediction_runs.notes`` for the extended run: never the prospective label.
+
+    Goes through ``run_notes`` with a non-empty reason list, so the assertion that a
+    non-qualifying note cannot contain the label applies to this run too.
+    """
+    return run_notes([f"extended {extended_days}-day serving window", *conditions], stale)
+
+
+def split_prospective(
+    frame: pd.DataFrame,
+    schedule: pd.DataFrame,
+    window_start: date | pd.Timestamp,
+    window_end: date | pd.Timestamp,
+) -> pd.DataFrame:
+    """the rows of run A: Regular Season games dated inside the prospective window.
+
+    Season type lives on the schedule, not on the feature frame, so it is looked up by
+    ``GAME_ID``; the feature frame itself is passed through untouched so run A scores
+    exactly the rows it would have scored when it was the only run.
+    """
+    regular = set(
+        schedule.loc[schedule["SEASON_TYPE"] == PROSPECTIVE_SEASON_TYPE, "GAME_ID"]
+    )
+    dates = pd.to_datetime(frame["GAME_DATE"])
+    in_window = (dates >= pd.Timestamp(window_start)) & (
+        dates <= pd.Timestamp(window_end)
+    )
+    return frame[in_window & frame["GAME_ID"].isin(regular)].copy()
+
+
 def nominal_tip(frame: pd.DataFrame) -> pd.Series:
     """UTC tipoff per row: the real timestamp where we have one, else an approximation.
 
@@ -465,7 +515,7 @@ def load_window_schedule(start: date, end: date) -> tuple[pd.DataFrame, int]:
     """
     frame = _read_sql(
         WINDOW_SCHEDULE_SQL,
-        {"start": start, "end": end, "season_types": list(SEASON_TYPES)},
+        {"start": start, "end": end, "season_types": list(SLATE_SEASON_TYPES)},
     )
     queried = len(frame)
     log.info("schedule rows in window: %d", queried)
@@ -559,9 +609,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_common_args(parser)
     parser.add_argument(
         "--window-days", type=int, default=2,
-        help="how many game dates to serve, starting today Eastern (default 2: "
-             "tonight's slate, plus tomorrow's so a manager can plan and so one "
-             "missed cron does not lose a night)",
+        help="how many game dates the PROSPECTIVE run covers, starting today "
+             "Eastern (default 2: tonight's slate, plus tomorrow's so a manager can "
+             "plan and so one missed cron does not lose a night)",
+    )
+    parser.add_argument(
+        "--extended-days", type=int, default=7,
+        help="how many game dates the extended NOT PROSPECTIVE run covers, "
+             "preseason included (default 7; must be at least --window-days)",
     )
     parser.add_argument(
         "--window-start", default=None,
@@ -596,7 +651,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="csv of roster assignments (nba_player_id, team_id) instead of "
              "player_team_stints",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.extended_days < args.window_days:
+        parser.error(
+            f"--extended-days ({args.extended_days}) must be at least --window-days "
+            f"({args.window_days})"
+        )
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915 - it is a pipeline
@@ -651,9 +712,15 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
         window_start, window_end = prediction_window(
             args.window_days, args.window_start
         )
+        _, extended_end = prediction_window(args.extended_days, args.window_start)
         log.info(
             "window          : %s .. %s  (%d date(s), US/Eastern)",
             window_start, window_end, args.window_days,
+        )
+        log.info(
+            "extended window : %s .. %s  (%d date(s), %s)",
+            window_start, extended_end, args.extended_days,
+            ", ".join(SLATE_SEASON_TYPES),
         )
         if args.window_start:
             log.warning(
@@ -663,17 +730,17 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
 
     # ---- schedule -------------------------------------------------------
     with phase("schedule"):
-        schedule, queried = load_window_schedule(window_start, window_end)
+        schedule, queried = load_window_schedule(window_start, extended_end)
         if schedule.empty:
             if queried:
                 raise NothingToDo(
                     f"all {queried} game(s) in window {window_start} .. "
-                    f"{window_end} are already final or postponed; there is nothing "
+                    f"{extended_end} are already final or postponed; there is nothing "
                     f"left to forecast and a played game is never backfilled (13.8.2)"
                 )
             raise NothingToDo(
-                f"no games in window {window_start} .. {window_end} "
-                f"(season types: {', '.join(SEASON_TYPES)})"
+                f"no games in window {window_start} .. {extended_end} "
+                f"(season types: {', '.join(SLATE_SEASON_TYPES)})"
             )
         publish_at = pd.Timestamp.now("UTC")
         schedule, tipped = drop_tipped_off(schedule, publish_at)
@@ -685,7 +752,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             )
         if schedule.empty:
             raise NothingToDo(
-                f"every game in {window_start} .. {window_end} has already tipped; "
+                f"every game in {window_start} .. {extended_end} has already tipped; "
                 f"a post-tipoff prediction is never inserted (13.8.2)"
             )
         log.info(
@@ -747,15 +814,15 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
         log.info("rosters         : %s", roster_source)
         positions = load_positions()
         future = prospective_universe(
-            schedule, rosters, window_start, window_end, positions=positions
+            schedule, rosters, window_start, extended_end, positions=positions
         )
         features = build_prospective_features(history, future)
-        prospective_path = args.out_dir / "prospective.parquet"
-        features.to_parquet(prospective_path, index=False)
+        extended_path = args.out_dir / "prospective_extended.parquet"
+        features.to_parquet(extended_path, index=False)
         log.info(
             "prospective     : %d rows, %d games, %d players -> %s",
             len(features), features["GAME_ID"].nunique(),
-            features["PLAYER_ID"].nunique(), prospective_path,
+            features["PLAYER_ID"].nunique(), extended_path,
         )
 
     # ---- statuses -------------------------------------------------------
@@ -779,10 +846,11 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             )
 
     # ---- predict --------------------------------------------------------
+    runs: list[dict[str, object]] = []
     with phase("predict"):
         # THE SECOND POST-TIPOFF FILTER, and the load-bearing one. The phases above
-        # take minutes; a 7pm tip does not wait for them. This one runs against the
-        # frame that is about to be scored, immediately before it is scored.
+        # take minutes; a 7pm tip does not wait for them. It runs once against the
+        # shared frame, immediately before either run is scored.
         publish_at = pd.Timestamp.now("UTC")
         features, late = drop_tipped_off(features, publish_at)
         if len(late):
@@ -791,106 +859,175 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
                 "dropped: %s", len(late), late["GAME_ID"].nunique(),
                 ", ".join(sorted(late["GAME_ID"].astype(str).unique())),
             )
-            features.to_parquet(args.out_dir / "prospective.parquet", index=False)
+            features.to_parquet(extended_path, index=False)
         if features.empty:
             raise NothingToDo(
                 "every game tipped off during the run; nothing left to publish "
                 "(13.8.2)"
             )
 
-        served = schedule[schedule["GAME_ID"].isin(set(features["GAME_ID"]))]
-        reasons = prospective_conditions(
-            seasons=served["SEASON"].astype(str),
-            season_types=served["SEASON_TYPE"].astype(str),
-            horizon=PROSPECTIVE_SERVING_HORIZON,
+        universe_source = str(features["UNIVERSE_SOURCE"].iloc[0])
+
+        # RUN A, the frozen prospective run. Same window, same season type, same
+        # horizon, same notes logic as when it was the only run.
+        prospective_features = split_prospective(
+            features, schedule, window_start, window_end
+        )
+        if prospective_features.empty:
+            log.info(
+                "run A skipped   : no Regular Season game in %s .. %s (preseason "
+                "or offseason); that is not a failure", window_start, window_end,
+            )
+            runs.append({"name": "prospective", "skipped": True})
+        else:
+            prospective_path = args.out_dir / "prospective.parquet"
+            prospective_features.to_parquet(prospective_path, index=False)
+            served = schedule[
+                schedule["GAME_ID"].isin(set(prospective_features["GAME_ID"]))
+            ]
+            reasons = prospective_conditions(
+                seasons=served["SEASON"].astype(str),
+                season_types=served["SEASON_TYPE"].astype(str),
+                horizon=PROSPECTIVE_SERVING_HORIZON,
+                model_version=PROSPECTIVE_MODEL_VERSION,
+                feature_version=PROSPECTIVE_FEATURE_VERSION,
+                universe_source=universe_source,
+                artifact_verified=artifact_verified,
+            )
+            notes = run_notes(reasons, stale)
+            if reasons:
+                log.warning(
+                    "run A does NOT qualify for the frozen prospective label: %s",
+                    "; ".join(reasons),
+                )
+            else:
+                log.info("run A QUALIFIES for %s", PROSPECTIVE_RUN_NOTE_LABEL)
+            run_a = _publish_run(
+                args, "prospective", prospective_path,
+                args.out_dir / "predictions.parquet", notes,
+                PROSPECTIVE_SERVING_HORIZON, window_start, statuses_as_of,
+                statuses_path,
+            )
+            runs.append({**run_a, "reasons": reasons, "notes": notes})
+
+        # RUN B, everything servable in the extended window, AFTER A so it is the
+        # newest run and the one the app serves. No horizon: its games span days.
+        served_all = schedule[schedule["GAME_ID"].isin(set(features["GAME_ID"]))]
+        extended_conditions = prospective_conditions(
+            seasons=served_all["SEASON"].astype(str),
+            season_types=served_all["SEASON_TYPE"].astype(str),
+            horizon=predict_script.NO_HORIZON,
             model_version=PROSPECTIVE_MODEL_VERSION,
             feature_version=PROSPECTIVE_FEATURE_VERSION,
-            universe_source=str(features["UNIVERSE_SOURCE"].iloc[0]),
+            universe_source=universe_source,
             artifact_verified=artifact_verified,
         )
-        notes = run_notes(reasons, stale)
-        if reasons:
-            log.warning(
-                "this run does NOT qualify for the frozen prospective label: %s",
-                "; ".join(reasons),
-            )
-        else:
-            log.info("this run QUALIFIES for %s", PROSPECTIVE_RUN_NOTE_LABEL)
-        log.info("run notes       : %s", notes)
-
-        predictions_path = args.out_dir / "predictions.parquet"
-        entry = registry.find(PROSPECTIVE_MODEL_VERSION,
-                              args.models_dir / "registry.json")
-        runs_before = len(entry.get("prediction_runs", []) if entry else [])
-
-        predict_argv = [
-            "--dataset", str(prospective_path),
-            "--version", PROSPECTIVE_MODEL_VERSION,
-            "--models-dir", str(args.models_dir),
-            "--out", str(predictions_path),
-            "--run-at", str(window_start),
-            "--horizon", PROSPECTIVE_SERVING_HORIZON,
-            "--notes", notes,
-            "--statuses-as-of", statuses_as_of.isoformat(),
-        ]
-        if statuses_path is not None:
-            predict_argv += ["--statuses", str(statuses_path)]
-        if not args.dry_run:
-            predict_argv.append("--write-db")
-        else:
-            log.warning("--dry-run: predict.py will NOT be given --write-db")
-
-        log.info("predict.py %s", " ".join(predict_argv))
-        code = predict_script.main(predict_argv)
-        if code != 0:
-            raise PhaseFailure("predict", f"predict.py exited {code}")
-
-        run_id: object = "(dry run, nothing written)"
-        if not args.dry_run:
-            entry = registry.find(PROSPECTIVE_MODEL_VERSION,
-                                  args.models_dir / "registry.json")
-            runs = entry.get("prediction_runs", []) if entry else []
-            if len(runs) > runs_before:
-                run_id = runs[-1].get("run_id")
-            else:
-                log.warning(
-                    "predict.py reported success but the registry gained no "
-                    "prediction-run entry; the run id is unknown"
-                )
-                run_id = "(unknown: registry not updated)"
+        extended = extended_notes(args.extended_days, extended_conditions, stale)
+        run_b = _publish_run(
+            args, "extended", extended_path,
+            args.out_dir / "predictions_extended.parquet", extended,
+            predict_script.NO_HORIZON, window_start, statuses_as_of,
+            statuses_path,
+        )
+        runs.append({**run_b, "notes": extended})
 
     # ---- summary --------------------------------------------------------
-    predictions = pd.read_parquet(predictions_path)
     print("--- DAILY RUN ---")
-    print(f"window    : {window_start} .. {window_end}  (US/Eastern)")
+    print(f"window    : {window_start} .. {window_end}  (US/Eastern, prospective)")
+    print(f"extended  : {window_start} .. {extended_end}  "
+          f"({', '.join(SLATE_SEASON_TYPES)})")
     print(f"artifact  : {PROSPECTIVE_MODEL_VERSION}  "
           f"(feature_version {PROSPECTIVE_FEATURE_VERSION}, "
           f"horizon {PROSPECTIVE_SERVING_HORIZON})")
     print(f"rosters   : {roster_source}")
     print(f"truth     : game logs through {logs_through}"
           + ("   <-- STALE" if stale else ""))
-    print(f"games     : {predictions['GAME_ID'].nunique():,} served, "
-          f"{len(tipped):,} already tipped, "
+    print(f"tipped    : {len(tipped):,} already tipped, "
           f"{late['GAME_ID'].nunique():,} tipped during the run")
-    print(f"rows      : {len(predictions):,} player-games")
-    print(f"players   : {predictions['PLAYER_ID'].nunique():,}")
     print(f"injury    : {len(statuses):,} designations as of "
           f"{statuses_as_of.isoformat(timespec='seconds')}")
-    print(f"prospective: {'YES' if not reasons else 'no - ' + '; '.join(reasons)}")
-    print(f"notes     : {notes}")
-    for column in ("P_PLAY", "E_MIN", "E_PTS", "E_REB", "E_AST"):
-        if column in predictions.columns:
-            print(f"mean {column:<9s}: {predictions[column].mean():.4f}")
+    for run in runs:
+        name = str(run["name"])
+        if run.get("skipped"):
+            print(f"[{name}] SKIPPED (no Regular Season game in the prospective window)")
+            continue
+        predictions = pd.read_parquet(Path(str(run["path"])))
+        print(f"[{name}] games {predictions['GAME_ID'].nunique():,}, "
+              f"rows {len(predictions):,} player-games, "
+              f"players {predictions['PLAYER_ID'].nunique():,}")
+        if name == "prospective":
+            why = run.get("reasons") or []
+            print(f"[{name}] prospective: "
+                  f"{'YES' if not why else 'no - ' + '; '.join(why)}")
+        print(f"[{name}] notes: {run['notes']}")
+        for column in ("P_PLAY", "E_MIN", "E_PTS", "E_REB", "E_AST"):
+            if column in predictions.columns:
+                print(f"[{name}] mean {column:<9s}: {predictions[column].mean():.4f}")
+        if args.dry_run:
+            would = len(predictions) * _rows_per_player_game(predictions)
+            print(f"[{name}] WOULD WRITE: 1 prediction_runs row + ~{would:,} "
+                  f"player_game_predictions rows")
+        else:
+            print(f"[{name}] run id: {run['run_id']}")
     if args.dry_run:
-        would = len(predictions) * _rows_per_player_game(predictions)
-        print(f"WOULD WRITE: 1 prediction_runs row + ~{would:,} "
-              f"player_game_predictions rows")
         print("wrote     : nothing to the database (--dry-run)")
-    else:
-        print(f"run id    : {run_id}")
     print(f"parquets  -> {args.out_dir}")
     print(f"elapsed   : {time.monotonic() - started:.1f}s")
     return 0
+
+
+def _publish_run(
+    args: argparse.Namespace,
+    name: str,
+    dataset_path: Path,
+    out_path: Path,
+    notes: str,
+    horizon: str,
+    window_start: date,
+    statuses_as_of: pd.Timestamp,
+    statuses_path: Path | None,
+) -> dict[str, object]:
+    """score one frame through predict.py and report where it went."""
+    log.info("run %s notes : %s", name, notes)
+    registry_path = args.models_dir / "registry.json"
+    entry = registry.find(PROSPECTIVE_MODEL_VERSION, registry_path)
+    runs_before = len(entry.get("prediction_runs", []) if entry else [])
+
+    predict_argv = [
+        "--dataset", str(dataset_path),
+        "--version", PROSPECTIVE_MODEL_VERSION,
+        "--models-dir", str(args.models_dir),
+        "--out", str(out_path),
+        "--run-at", str(window_start),
+        "--horizon", horizon,
+        "--notes", notes,
+        "--statuses-as-of", statuses_as_of.isoformat(),
+    ]
+    if statuses_path is not None:
+        predict_argv += ["--statuses", str(statuses_path)]
+    if not args.dry_run:
+        predict_argv.append("--write-db")
+    else:
+        log.warning("--dry-run: predict.py will NOT be given --write-db")
+
+    log.info("predict.py %s", " ".join(predict_argv))
+    code = predict_script.main(predict_argv)
+    if code != 0:
+        raise PhaseFailure("predict", f"predict.py ({name}) exited {code}")
+
+    run_id: object = "(dry run, nothing written)"
+    if not args.dry_run:
+        entry = registry.find(PROSPECTIVE_MODEL_VERSION, registry_path)
+        recorded = entry.get("prediction_runs", []) if entry else []
+        if len(recorded) > runs_before:
+            run_id = recorded[-1].get("run_id")
+        else:
+            log.warning(
+                "predict.py reported success but the registry gained no "
+                "prediction-run entry; the run id is unknown"
+            )
+            run_id = "(unknown: registry not updated)"
+    return {"name": name, "path": out_path, "run_id": run_id}
 
 
 def _rows_per_player_game(predictions: pd.DataFrame) -> int:

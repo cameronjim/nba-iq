@@ -7,10 +7,13 @@
 # changes with `workflow_dispatch` and `dry_run: true` first - that path reads the
 # same database, scores the same slate, and writes nothing.
 #
-# AN OFFSEASON NO-OP IS THE EXPECTED RESULT UNTIL OCTOBER. `daily_run.py` exits 0
-# having written nothing when no game falls in its window, which is every day between
-# the finals and opening night. A green run that says "no games in window" is the
-# correct outcome, not a misconfiguration.
+# AN OFFSEASON NO-OP IS THE EXPECTED RESULT UNTIL PRESEASON. `daily_run.py` exits 0
+# having written nothing when no game falls in its 7-day extended window, which is
+# every day between the finals and the first preseason game. A green run that says "no
+# games in window" is the correct outcome, not a misconfiguration. Once preseason
+# starts it publishes an extended NOT PROSPECTIVE run (all games, next 7 days) after
+# the frozen prospective run, which is skipped until the first Regular Season game is
+# inside its 2-day window (MODEL.md 16.7).
 #
 # A RED RUN IS THE ALERT. There is no retry and no notification wiring: the driver
 # exits non-zero naming the phase that failed, and the failed-workflow email is the
@@ -57,11 +60,11 @@ jobs:
     name: Publish daily predictions
     runs-on: ubuntu-latest
     # the dataset rebuild fits one LightGBM base-availability model per calendar block
-    # over four seasons, then builds features once per game date in the window. That
-    # is the slow part and it runs in single-digit minutes; 30 is generous headroom
+    # over four seasons, then builds features once per game date in the 7-day extended
+    # window. That is the slow part and it runs in minutes; 45 is generous headroom
     # without letting a hang burn the 6-hour GitHub default (see ci.yml, which grew
     # timeouts on 2026-08-18 after a stalled step sat "in progress" for hours).
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

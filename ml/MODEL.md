@@ -3524,3 +3524,28 @@ constraint; the interpreter version follows from it**, and every pin has a cp314
   this code sees four seasons and a live `secrets.DATABASE_URL`**, and it should be
   triggered by hand with `dry_run: true` before October rather than being met for the
   first time by a cron.
+
+### 16.7 The extended run: seven days, preseason included
+
+The app serves only the **newest complete run**, and a manager needs predictions for
+every game in the next seven days, preseason included. The prospective run covers two
+days of Regular Season games, so `daily_run.py` publishes a second run, built from the
+same schedule, universe, feature frame and `statuses_as_of`, covering today through
+today + 6 Eastern (`--extended-days`, default 7) over both `Pre Season` and
+`Regular Season`. Values for a given game match between the two runs.
+
+- **Order is A then B.** Run A is the frozen prospective run, unchanged: `--window-days`
+  window, Regular Season only, `gameday`, the 13.4 note. It is skipped (not a failure)
+  when the window holds no Regular Season game, e.g. all of preseason. Run B is
+  published last so it is the run the app shows.
+- **B is NOT PROSPECTIVE by construction.** Its notes start `NOT PROSPECTIVE (extended
+  N-day serving window; ...)` and go through the same `run_notes` assertion, so they
+  can never contain `prospective_2026_27_v1`; look reports select on that label and
+  therefore exclude B. It carries no `horizon=` token (`predict.py --horizon none`)
+  because games one to seven days out have no honest single bucket.
+- **Preseason predictions are out of distribution.** The model is trained on Regular
+  Season games, and starters play far fewer preseason minutes than their rolling form
+  implies. Treat them as informational.
+- **Known caveat, unchanged:** the prospective two-day run labels tomorrow's games
+  `gameday` although their measured offset is roughly 24-36 hours. The label is part
+  of the freeze and is not touched here.
