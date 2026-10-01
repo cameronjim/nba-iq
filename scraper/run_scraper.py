@@ -88,7 +88,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="backfill_game_logs",
         action="store_true",
         help=(
-            "run the one-time truth-layer backfill instead of the normal scrape; "
+            "run the one-time truth-layer backfill instead of the normal scrape, "
+            "regular season, play-in and playoffs; "
             f"honours --from/--to (default {BACKFILL_GAME_LOGS_DEFAULT_FROM_SEASON})"
         ),
     )
