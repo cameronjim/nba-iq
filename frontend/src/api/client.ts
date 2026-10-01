@@ -5,7 +5,7 @@ import type {
   PlayerSeasonRow, TeamSeasonRow,
   Rating2kSummary, Rating2kDetail, Rating2kTeamType,
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, WatchlistResponse,
-  WatchlistPositionFilter,
+  WatchlistPositionFilter, WeeklyOutlookResponse,
 } from '../types';
 
 const BASE_URL = import.meta.env.VITE_API_URL
@@ -381,6 +381,21 @@ export async function getRatings2kByName(name: string): Promise<Rating2kSummary 
 export async function getMyRoster(): Promise<RosterPlayer[]> {
   const { data } = await api.get('/fantasy/roster');
   return data;
+}
+
+export async function getWeeklyOutlook(
+  start?: string,
+  days?: number
+): Promise<WeeklyOutlookResponse> {
+  const params: Record<string, string | number> = {};
+  if (start) params.start = start;
+  if (days !== undefined) params.days = days;
+  const { data } = await api.get<WeeklyOutlookResponse>('/fantasy/weekly-outlook', { params });
+  return {
+    ...data,
+    categories: data.categories ?? [],
+    players: data.players ?? [],
+  };
 }
 
 export async function addToRoster(playerId: number): Promise<void> {
