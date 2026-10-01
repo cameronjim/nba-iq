@@ -179,8 +179,8 @@ class BracketScores:
 
     losses: dict[str, tuple[pd.DataFrame, pd.DataFrame]]
     clip_rates: pd.DataFrame
-    coherence_inputs: list[tuple[str, pd.DataFrame, dict[str, np.ndarray],
-                                 dict[str, np.ndarray]]] = field(default_factory=list)
+    coherence_inputs: list[tuple[str, pd.DataFrame, dict[str, tuple[np.ndarray, np.ndarray]],
+                                 dict[str, tuple[np.ndarray, np.ndarray]]]] = field(default_factory=list)
 
 
 def score_brackets(
@@ -256,7 +256,9 @@ def score_brackets(
                     "origin": origin, "family": family, "constraint": constraint,
                     "clip_rate": n_bound / len(valid_all), "n": len(valid_all),
                 })
-        coherence_inputs.append((origin, valid_all, champion_uncond, challenger_uncond))
+        # the scored incumbent frame carries P_PLAY and MIN_PRED, which the
+        # coherence endpoints need to rebuild team minute sums.
+        coherence_inputs.append((origin, incumbent, champion, {**champion, **challenger}))
 
     if not blocks[COMPARISON_V5][0]:
         raise SystemExit("no origin produced results; check the dataset's date range")
@@ -338,22 +340,31 @@ def decide_comparison(
     return verdict, gated_cohorts
 
 
+def _coherence_frame(
+    scored: pd.DataFrame, estimates: dict[str, tuple[np.ndarray, np.ndarray]]
+) -> pd.DataFrame:
+    """the prediction-shaped frame eval_coherence scores: E_<stat>_COND and E_<stat>."""
+    frame = scored.reset_index(drop=True).copy()
+    minutes = frame[MIN_PRED].to_numpy(dtype=float)
+    frame["E_MIN_COND"] = minutes
+    frame["E_MIN"] = np.clip(frame[P_PLAY].to_numpy(dtype=float) * minutes, 0.0, None)
+    for target, (conditional, unconditional) in estimates.items():
+        frame[f"E_{target}_COND"] = np.asarray(conditional, dtype=float)
+        frame[f"E_{target}"] = np.asarray(unconditional, dtype=float)
+    return frame
+
+
 def coherence_report(scores: BracketScores) -> tuple[str, pd.DataFrame | None]:
-    """the other agent's coherence endpoints, if that module exists at run time."""
+    """the serving coherence corrections, scored on the same validation rows."""
     try:
         from fnba_ml.eval_coherence import coherence_endpoints  # noqa: PLC0415
     except ImportError:
         return "not available (fnba_ml.eval_coherence is not installed)", None
     frames: list[pd.DataFrame] = []
-    for origin, valid_all, champion, challenger in scores.coherence_inputs:
-        for family, values in (("champion", champion), (COMPARISON_RATE, challenger)):
-            try:
-                result = coherence_endpoints(values, valid_all)
-            except TypeError as exc:
-                log.warning("coherence_endpoints signature mismatch: %s", exc)
-                return f"available but not callable as (estimates, frame): {exc}", None
-            part = result if isinstance(result, pd.DataFrame) else pd.DataFrame([result])
-            frames.append(part.assign(origin=origin, family=family))
+    for origin, scored, champion, challenger in scores.coherence_inputs:
+        for family, estimates in (("champion", champion), (COMPARISON_RATE, challenger)):
+            result = coherence_endpoints(_coherence_frame(scored, estimates))
+            frames.append(result.assign(origin=origin, family=family))
     if not frames:
         return "available, no origins scored", None
     return "available", pd.concat(frames, ignore_index=True)

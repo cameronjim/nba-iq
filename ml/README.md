@@ -105,6 +105,12 @@ python backfill_dataset.py --source postgres --stats FGM --verify
 # 2. train: availability + minutes models + rate snapshot -> models/<version>/ + registry
 python train.py --version 2026-08-16
 
+# 2b. the v1 shadow comparator (MODEL.md 13.4 rung (c)) -> models/<version>-v1/.
+#     36 BASE_FEATURE_COLS, no base model, cutoff inherited from models/<version>/.
+#     for the pinned artifact: train against prod, then commit the directory and
+#     its registry entry (ML Evaluate's train_shadow input does the fit in CI).
+python train.py --feature-set v1 --version 20260818
+
 # 3. evaluate: rolling-origin report -> reports/<version>.md
 #    exits 1 if the promoted composition regresses >1% against the one it
 #    replaced, for ANY of the eleven served stats
@@ -128,6 +134,9 @@ python score_runs.py                                  # runs predicted in the la
 python score_runs.py --since 2026-10-20 --channel production
 python score_runs.py --run-id 412 --run-id 413 --md reports\scoring\look_dec1.md
 
+# 6. the daily publisher, as predictions.yml runs it (run A, the v1 shadow, run B)
+python daily_run.py --shadow-feature-set v1 --dry-run
+
 # tests
 python -m pytest tests -v
 ```
@@ -146,8 +155,18 @@ one, because a prediction that can be revised after the fact cannot be
 backtested. Serving reads the newest run with `status = 'complete'` and
 `channel = 'production'`. `--channel shadow` (default `production`) records a
 challenger run beside the served one without the app ever reading it; the daily
-run always passes `--channel production`, and its notes say `channel=production`
-to match the column.
+run's served runs always pass `--channel production`, and their notes say
+`channel=production` to match the column.
+
+**The daily shadow.** `daily_run.py --shadow-feature-set v1` (what the workflow
+passes) publishes, right after the prospective run A, one more run of
+`models/20260818-v1/` with `--channel shadow`: same prospective frame, same
+`--statuses-as-of`, `--run-at`, horizon and history boundary, notes
+`<label>; feature_set=v1; channel=shadow` when A qualifies. It is disqualified
+(`NOT PROSPECTIVE`) if its metadata names another feature set, its cutoff differs
+from the pinned artifact's, or its registry checksums do not verify. A missing
+artifact is a warning and a skip; a failed shadow is logged, run B still
+publishes, and the job exits 1. The extended run B never gets a shadow.
 
 `--write-db` **refuses the approximation universe** unless
 `--allow-biased-universe` is passed, and stamps the reason into the run's notes
@@ -242,6 +261,7 @@ promotion: `FEATURE_COLS`, `FEATURE_VERSION` and the served rate are unchanged.
 | Path | Committed? | Notes |
 |---|---|---|
 | `models/<version>/` | yes | `availability_model.joblib`, `minutes_model.joblib`, `ewma_state.parquet`, `metadata.json`, `feature_gain.csv` |
+| `models/<version>-v1/` | yes | the v1 shadow: the same files minus `base_availability_model.joblib`; `metadata.json` says `feature_set: v1` |
 | `models/registry.json` | yes | one entry per version: training window, hyperparams, metrics, per-artifact sha256, git commit |
 | `reports/<version>.md` | yes | the evaluation record for that version |
 | `reports/*_results.csv` | no | tidy long results, for numeric diffing between runs |

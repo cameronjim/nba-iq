@@ -13,7 +13,7 @@ from fnba_ml.intervals import (
     fit_residual_quantiles,
     quantile_columns,
 )
-from fnba_ml.config import HORIZONS
+from fnba_ml.config import HORIZONS, MODELS_DIR, PROSPECTIVE_MODEL_VERSION
 from fnba_ml.models import P_PLAY, P_PLAY_CUTOFF
 from fnba_ml.overrides import (
     OVERRIDE_REASON,
@@ -600,3 +600,36 @@ def test_predict_defaults_to_the_production_channel_and_refuses_others():
     assert args.channel == "production"
     with pytest.raises(SystemExit):
         predict.parse_args(["--version", "v", "--channel", "challenger"])
+
+
+class TestFeatureSetContext:
+    def test_prepare_context_returns_no_audit_for_v1(self, caplog) -> None:
+        # arrange
+        frame = pd.DataFrame({"PLAYER_ID": ["1"], "GAME_ID": ["g"]})
+        caplog.set_level("INFO", logger="predict")
+
+        # act
+        rebuilt, audit = predict.prepare_context(
+            frame, None, {"feature_set": "v1"}, None, pd.Timestamp("2026-10-20")
+        )
+
+        # assert
+        assert audit is None
+        assert rebuilt is frame
+        assert "feature_set v1 carries no teammate context" in caplog.text
+
+    def test_an_artifact_without_the_key_is_read_as_the_served_set(self) -> None:
+        # act + assert
+        assert predict.uses_teammate_context({}) is True
+        assert predict.uses_teammate_context({"feature_set": "v3-honest"}) is True
+        assert predict.uses_teammate_context({"feature_set": "v1"}) is False
+
+    def test_the_pinned_artifact_still_loads_its_base_model(self) -> None:
+        # act
+        _, _, base, metadata = predict.load_version(
+            PROSPECTIVE_MODEL_VERSION, MODELS_DIR
+        )
+
+        # assert
+        assert base is not None
+        assert predict.uses_teammate_context(metadata) is True

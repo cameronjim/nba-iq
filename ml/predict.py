@@ -32,6 +32,7 @@ from fnba_ml.coherence import (  # noqa: E402
 from fnba_ml.config import (  # noqa: E402
     DATA_DIR,
     DEFAULT_HORIZON,
+    FEATURE_SETS,
     HORIZONS,
     INITIAL_REPORT_DEADLINE_HOUR,
     MINUTES_TARGET,
@@ -41,6 +42,8 @@ from fnba_ml.config import (  # noqa: E402
     PRODUCTION_TARGETS,
     PROSPECTIVE_COLD_START_FLAG,
     PROSPECTIVE_COLD_START_THROUGH,
+    SERVED_FEATURE_SET,
+    TEAMMATE_FEATURE_COLS,
     horizon_for_offset,
     horizon_label,
     is_cold_start,
@@ -139,8 +142,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def artifact_feature_set(metadata: dict) -> str:
+    """the feature set an artifact was trained on; older artifacts predate the key."""
+    return str(metadata.get("feature_set", SERVED_FEATURE_SET))
+
+
+def uses_teammate_context(metadata: dict) -> bool:
+    """whether the artifact's feature set reads any teammate-context column."""
+    name = artifact_feature_set(metadata)
+    columns = FEATURE_SETS.get(name, metadata.get("feature_cols", []))
+    return bool(set(columns) & set(TEAMMATE_FEATURE_COLS))
+
+
 def load_version(version: str, models_dir: Path):
-    """the three models and their shared metadata."""
+    """the models and their shared metadata; the base model is None without context."""
     dir_ = version_dir(version, models_dir)
     model_path = dir_ / "availability_model.joblib"
     minutes_path = dir_ / "minutes_model.joblib"
@@ -153,19 +168,20 @@ def load_version(version: str, models_dir: Path):
             f"no minutes model at {minutes_path}. this version predates the "
             f"minutes-propagating composition; retrain with train.py to score it."
         )
-    if not base_path.exists():
+    with open(meta_path, encoding="utf-8") as fh:
+        metadata = json.load(fh)
+    needs_base = uses_teammate_context(metadata)
+    if needs_base and not base_path.exists():
         raise SystemExit(
             f"no base availability model at {base_path}. this version predates the "
             f"two-stage probabilistic teammate context (feature_version v3); the "
             f"served context features cannot be built for an unplayed slate without "
             f"it. retrain with train.py."
         )
-    with open(meta_path, encoding="utf-8") as fh:
-        metadata = json.load(fh)
     return (
         joblib.load(model_path),
         joblib.load(minutes_path),
-        joblib.load(base_path),
+        joblib.load(base_path) if needs_base else None,
         metadata,
     )
 
@@ -250,6 +266,24 @@ def rebuild_context(
         len(features), resolved.n_applied,
     )
     return rebuilt, audit
+
+
+def prepare_context(
+    features: pd.DataFrame,
+    base_model,
+    metadata: dict,
+    statuses: pd.DataFrame | None,
+    as_of: pd.Timestamp,
+    policy=DEFAULT_POLICY,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """rebuild_context for a context artifact; a no-op (audit None) for one without."""
+    if not uses_teammate_context(metadata):
+        log.info(
+            "feature_set %s carries no teammate context; skipping rebuild_context",
+            artifact_feature_set(metadata),
+        )
+        return features, None
+    return rebuild_context(features, base_model, statuses, as_of, policy)
 
 
 def build_predictions(
@@ -556,8 +590,8 @@ def main(argv: list[str] | None = None) -> int:
     # a night the star plays.
     slate = upcoming
     try:
-        upcoming, context_audit = rebuild_context(
-            upcoming, base_model, statuses, statuses_as_of, DEFAULT_POLICY
+        upcoming, context_audit = prepare_context(
+            upcoming, base_model, metadata, statuses, statuses_as_of, DEFAULT_POLICY
         )
     except LeakageError as exc:
         raise SystemExit(
@@ -671,10 +705,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {key:22s} {value}")
     print(f"universe  : {source}")
     print(f"coherence : {args.coherence}")
-    print(f"context p : mean {upcoming[P_CONTEXT].mean():.4f} "
-          f"(base {context_audit['P_CONTEXT_BASE'].mean():.4f}, "
-          f"{int(context_audit['CONTEXT_OVERRIDDEN'].sum()):,} rows corrected by the "
-          f"report before the teammate sums)")
+    if context_audit is None:
+        print(f"context p : none (feature_set {artifact_feature_set(metadata)} has no "
+              f"teammate context)")
+    else:
+        print(f"context p : mean {upcoming[P_CONTEXT].mean():.4f} "
+              f"(base {context_audit['P_CONTEXT_BASE'].mean():.4f}, "
+              f"{int(context_audit['CONTEXT_OVERRIDDEN'].sum()):,} rows corrected by the "
+              f"report before the teammate sums)")
     print(f"rows      : {len(predictions):,}")
     print(f"games     : {predictions['GAME_ID'].nunique():,}")
     print(f"cold start: {cold_rows:,} of {len(predictions):,} rows "
