@@ -30,11 +30,13 @@ from parsing import (
     cleared_player_ids,
     clearances_for_report,
     extract_next_data,
+    format_processed_line,
     in_season,
     normalize_injury_status,
     parse_game_date,
     parse_matchup,
     parse_minutes,
+    parse_processed_line,
     season_end_date,
     season_start_date,
     season_type_from_game_id,
@@ -2884,3 +2886,24 @@ class TestPartialPageWritesNoClearances:
         assert skipped == 1
         assert len(rows) == 1
         assert clearances_for_report([("9", "Old Listed")], ["1"], complete=skipped == 0) == []
+
+
+def test_processed_line_round_trips():
+    # act + assert
+    assert format_processed_line(0) == "box_details_processed=0"
+    assert parse_processed_line(format_processed_line(287)) == 287
+
+
+def test_processed_line_found_among_log_output():
+    # arrange
+    text = "INFO box details: 2 game(s)\nbox_details_processed=2\n"
+
+    # act + assert
+    assert parse_processed_line(text) == 2
+
+
+def test_processed_line_missing_or_malformed_is_none():
+    # act + assert
+    assert parse_processed_line("INFO nothing\n") is None
+    assert parse_processed_line("box_details_processed=abc") is None
+    assert parse_processed_line("see box_details_processed=5 here") is None

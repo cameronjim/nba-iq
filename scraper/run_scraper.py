@@ -16,7 +16,12 @@ from config import (
 # resolve_database_url is re-exported: check_migrations.py imports it, and the
 # --dev/--prod rules must not come to mean two things in two files.
 from database import TARGET_DEV, TARGET_PROD, get_db, resolve_database_url  # noqa: F401
-from parsing import parse_team_types, season_range, season_start_year
+from parsing import (
+    format_processed_line,
+    parse_team_types,
+    season_range,
+    season_start_year,
+)
 from fetching import stats_nba_reachable
 from injury_report import scrape_official_injuries
 from odds import scrape_odds_snapshots
@@ -273,9 +278,10 @@ def main(argv: list[str] | None = None) -> None:
             if not stats_nba_reachable():
                 logger.error("stats.nba.com is unreachable: box-detail backfill skipped")
                 sys.exit(1)
-            backfill_box_details(
+            processed = backfill_box_details(
                 conn, args.season, dry_run=args.dry_run, limit=args.limit
             )
+            print(format_processed_line(processed), flush=True)
         elif args.sync_2k:
             sync_2k_ratings(conn, team_types)
         elif args.roster_snapshot:

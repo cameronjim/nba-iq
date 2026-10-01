@@ -516,7 +516,7 @@ def backfill_box_details(
     logger.info(
         "box details: %s%s", notes, " (dry run: nothing written)" if dry_run else ""
     )
-    return written
+    return len(games) - failed
 
 
 NBA_WEB_MAX_CONSECUTIVE_FAILURES = 3

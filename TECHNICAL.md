@@ -247,6 +247,20 @@ since it costs one request per game.
    python run_scraper.py --backfill-box-details --season 2024-25 --limit 300
    ```
 
+   **Local backfills.** `scraper/run_local.ps1 -Task <task>` runs these from
+   the home PC with the same pull, venv and log handling as the scrape
+   (`-Task scrape` is the default). `-Task game-logs` runs
+   `--backfill-game-logs`. `-Task box-details` loops
+   `--backfill-box-details --season <Season> --limit <Limit>` (`-Limit` default
+   300, `-MaxBatches` default 20, 60 seconds between batches) until a batch
+   reports `box_details_processed=0` or any batch exits non-zero; `-Season`
+   defaults to the scraper's current season. At the 5s delay a batch of 300
+   games takes about 30 minutes, and a regular season is 1,230 games, so a full
+   season is about 4 batches. It is resumable: rerun it and it continues from
+   the first game with unfetched details. `install_shortcut.ps1` creates an
+   "NBA IQ box-details backfill" shortcut for it. Playoff ingestion will extend
+   the same path.
+
 3. **Validate.** Read-only, takes no locks, safe against prod mid-scrape:
 
    ```bash
