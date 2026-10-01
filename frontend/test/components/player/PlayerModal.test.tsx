@@ -108,7 +108,7 @@ describe('PlayerModal', () => {
     renderModal(samplePlayer, onClose);
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('button', { name: '✕' }));
+    await user.click(screen.getByRole('button', { name: 'Close' }));
 
     expect(onClose).toHaveBeenCalledTimes(1);
   });

@@ -137,6 +137,19 @@ beforeEach(() => {
 });
 
 describe('SlatePage', () => {
+  it('shows a game-card skeleton, not a spinner, while the slate loads', () => {
+    // arrange
+    slateMock.mockReturnValue(new Promise(() => {}));
+
+    // act
+    const { container } = renderPage();
+
+    // assert
+    expect(screen.getByRole('status', { name: /loading projections/i })).toBeInTheDocument();
+    expect(container.querySelector('.loading')).toBeNull();
+    expect(screen.queryByText('Stephen Curry')).not.toBeInTheDocument();
+  });
+
   it('renders each game as a card with its projected players', async () => {
     renderPage();
 

@@ -15,7 +15,7 @@ export const UpcomingGameRow = ({ game, columns }: UpcomingGameRowProps): JSX.El
     <tr data-testid="upcoming-game-row">
       <td className="whitespace-nowrap">
         <span className="font-medium">{date.label}</span>
-        {date.weekday && <span className="ml-1 text-[10px] opacity-50">{date.weekday}</span>}
+        {date.weekday && <span className="ml-1 text-[10px] text-muted">{date.weekday}</span>}
       </td>
       <td className="whitespace-nowrap font-medium">
         {opponentLabel(game.opponent_abbr, game.is_home)}
@@ -25,7 +25,7 @@ export const UpcomingGameRow = ({ game, columns }: UpcomingGameRowProps): JSX.El
           <span className={`badge badge-sm ${badge.className}`}>{badge.label}</span>
         </span>
         {badge.percentText && (
-          <span className="ml-1.5 text-[10px] tabular-nums opacity-50">{badge.percentText}</span>
+          <span className="ml-1.5 text-[10px] tabular-nums text-muted">{badge.percentText}</span>
         )}
       </td>
       {columns.map((stat) => {
@@ -37,10 +37,10 @@ export const UpcomingGameRow = ({ game, columns }: UpcomingGameRowProps): JSX.El
             <span className="tooltip tooltip-left" data-tip={cell.hint}>
               <span className="font-semibold tabular-nums">{cell.primary}</span>
               {cell.band && (
-                <span className="block text-[10px] tabular-nums opacity-60">{cell.band}</span>
+                <span className="block text-[10px] tabular-nums text-muted">{cell.band}</span>
               )}
               {cell.unconditional && (
-                <span className="block text-[10px] tabular-nums opacity-40">
+                <span className="block text-[10px] tabular-nums text-faint">
                   {cell.unconditional} sched
                 </span>
               )}

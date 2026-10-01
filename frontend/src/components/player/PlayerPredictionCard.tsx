@@ -1,4 +1,3 @@
-import { Sparkles } from 'lucide-react';
 import type { AnalyticsStat, NumericLike, PlayerPrediction, ProjectedRange } from '../../types';
 import { formatStat, toStatNumber } from '../../utils/stats';
 import { formatTimestampWithZone, statLabel } from '../../utils/analytics';
@@ -30,7 +29,7 @@ const VsUsualLine = ({ prediction }: PlayerPredictionCardProps): JSX.Element | n
   if (parts.length === 0) return null;
   return (
     <p
-      className="text-xs tabular-nums opacity-70"
+      className="text-xs tabular-nums text-muted"
       data-testid="prediction-vs-usual"
       title={`Usually ${formatStat(vs.minutes.usual)} min and ${formatStat(vs.points.usual)} pts, if he plays`}
     >
@@ -58,11 +57,10 @@ export const PlayerPredictionCard = ({
       : prediction.unconditional_pts;
 
   return (
-    <section className="card bg-base-200 border border-primary/30">
-      <div className="card-body p-4 sm:p-5 gap-3">
+    <section className="border-t border-base-300 pt-4">
+      <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 flex-wrap">
-          <Sparkles size={16} className="text-primary" />
-          <h2 className="font-bold text-base">Projection</h2>
+          <h2 className="text-lg font-semibold">Model projection</h2>
           {prediction.game_date && (
             <span className="badge badge-sm badge-outline">{prediction.game_date}</span>
           )}
@@ -80,16 +78,16 @@ export const PlayerPredictionCard = ({
           )}
         </div>
 
-        {prediction.summary && <p className="text-sm opacity-80">{prediction.summary}</p>}
+        {prediction.summary && <p className="text-sm text-muted">{prediction.summary}</p>}
 
         {projected.length > 0 && (
           <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
             {projected.map(([stat, value]) => (
-              <div key={stat} className="rounded-box bg-base-100 border border-base-300 px-2 py-1.5">
+              <div key={stat} className="border border-base-300 px-2 py-1.5">
                 {isRange(value) ? (
                   <>
                     <p className="text-sm font-semibold tabular-nums">{formatStat(value.p50)}</p>
-                    <p className="text-[10px] tabular-nums opacity-60">
+                    <p className="text-[10px] tabular-nums text-muted">
                       {formatStat(value.p10)}-{formatStat(value.p90)}
                     </p>
                   </>
@@ -98,7 +96,7 @@ export const PlayerPredictionCard = ({
                     {formatStat(value as NumericLike)}
                   </p>
                 )}
-                <p className="text-[10px] uppercase tracking-wider opacity-50">{statLabel(stat)}</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted">{statLabel(stat)}</p>
               </div>
             ))}
           </div>
@@ -107,13 +105,13 @@ export const PlayerPredictionCard = ({
         <VsUsualLine prediction={prediction} />
 
         {unconditionalPts !== null && (
-          <p className="text-xs opacity-60">
+          <p className="text-xs text-muted">
             Points, counting the chance he sits:{' '}
             <span className="font-semibold tabular-nums">{formatStat(unconditionalPts)}</span>
           </p>
         )}
 
-        <p className="text-[10px] opacity-40">
+        <p className="text-[10px] text-faint">
           {[
             asOf ? `Published ${asOf}` : null,
             prediction.conditional ? 'stat lines assume he plays' : null,

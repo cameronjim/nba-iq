@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import { IconChevronDown, IconChevronUp } from '../icons';
+import { SkeletonLines } from '../Skeleton';
 import { getPreferences, updatePreferences, type BettingPreferences } from '../../api/client';
 import { invalidateBettingClientCache } from '../../api/clientCaches';
 
@@ -59,22 +60,20 @@ export const BettingPrefsPanel = ({ onSaved }: BettingPrefsPanelProps) => {
   };
 
   return (
-    <div className="card bg-base-200">
+    <div className="border border-base-300">
       <button
         onClick={() => setOpen(!open)}
         className="px-4 py-3 flex items-center justify-between w-full text-left"
         aria-expanded={open}
       >
         <span className="text-sm font-semibold">Betting Preferences</span>
-        {open ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        {open ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
       </button>
 
       {open && (
         <div className="px-4 pb-4 space-y-4 border-t border-base-300 pt-4">
           {loading ? (
-            <div className="flex justify-center py-4">
-              <span className="loading loading-spinner loading-sm" />
-            </div>
+            <SkeletonLines lines={3} label="Loading betting preferences" />
           ) : (
             <>
               <div>
@@ -128,7 +127,7 @@ export const BettingPrefsPanel = ({ onSaved }: BettingPrefsPanelProps) => {
 
               <div className="flex items-center gap-3">
                 <button onClick={handleSave} disabled={saving} className="btn btn-primary btn-sm">
-                  {saving ? 'Saving...' : 'Save & Re-analyze'}
+                  {saving ? 'Saving' : 'Save & Re-analyze'}
                 </button>
                 {error && <span className="text-xs text-error">{error}</span>}
               </div>

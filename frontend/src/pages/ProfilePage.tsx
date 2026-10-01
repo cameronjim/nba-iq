@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { User, KeyRound, CheckCircle2 } from 'lucide-react';
 import {
   changePassword,
   getAuthToken,
@@ -8,12 +7,13 @@ import {
   updateProfile,
   type CurrentUser,
 } from '../api/client';
+import { SkeletonLines } from '../components/Skeleton';
 
 type TabKey = 'profile' | 'password';
 
-const TABS: Array<{ key: TabKey; label: string; icon: typeof User }> = [
-  { key: 'profile', label: 'My Profile', icon: User },
-  { key: 'password', label: 'Change Password', icon: KeyRound },
+const TABS: Array<{ key: TabKey; label: string }> = [
+  { key: 'profile', label: 'My Profile' },
+  { key: 'password', label: 'Change Password' },
 ];
 
 export const ProfilePage = () => {
@@ -37,17 +37,16 @@ export const ProfilePage = () => {
 
   return (
     <div className="max-w-[1100px] mx-auto px-4 py-6">
-      <h1 className="text-2xl font-bold mb-5">Account</h1>
+      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide mb-5">Account</h1>
       <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-5">
-        <nav className="card bg-base-200 p-2 h-fit">
+        <nav className="border border-base-300 p-2 h-fit">
           <ul className="menu menu-sm w-full">
-            {TABS.map(({ key, label, icon: Icon }) => (
+            {TABS.map(({ key, label }) => (
               <li key={key}>
                 <button
                   onClick={() => switchTab(key)}
                   className={activeTab === key ? 'menu-active' : ''}
                 >
-                  <Icon size={16} />
                   {label}
                 </button>
               </li>
@@ -55,11 +54,9 @@ export const ProfilePage = () => {
           </ul>
         </nav>
 
-        <section className="card bg-base-200">
-          <div className="card-body">
-            {activeTab === 'profile' && <MyProfilePanel />}
-            {activeTab === 'password' && <ChangePasswordPanel />}
-          </div>
+        <section>
+          {activeTab === 'profile' && <MyProfilePanel />}
+          {activeTab === 'password' && <ChangePasswordPanel />}
         </section>
       </div>
     </div>
@@ -133,23 +130,22 @@ const MyProfilePanel = () => {
 
   if (loading) {
     return (
-      <div className="flex justify-center py-12">
-        <span className="loading loading-spinner loading-md" />
-      </div>
+      <SkeletonLines lines={5} label="Loading" />
     );
   }
 
   return (
     <>
-      <h2 className="card-title text-lg mb-1">My Profile</h2>
-      <p className="text-sm opacity-50 mb-4">
+      <h2 className="font-display text-xl font-semibold uppercase tracking-wide mb-1">My Profile</h2>
+      <p className="text-sm text-muted mb-4">
         Email is used for password resets. Username is what you sign in with.
       </p>
 
       <form onSubmit={handleSave} className="space-y-4 max-w-md">
         <div>
-          <label className="text-xs font-medium opacity-60 mb-1 block">Username</label>
+          <label htmlFor="profile-username" className="text-xs font-medium text-muted mb-1 block">Username</label>
           <input
+            id="profile-username"
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -158,12 +154,13 @@ const MyProfilePanel = () => {
             maxLength={50}
             autoComplete="username"
           />
-          <p className="text-xs opacity-40 mt-1">3-50 characters. Must be unique.</p>
+          <p className="text-xs text-muted mt-1">3-50 characters. Must be unique.</p>
         </div>
 
         <div>
-          <label className="text-xs font-medium opacity-60 mb-1 block">Name</label>
+          <label htmlFor="profile-name" className="text-xs font-medium text-muted mb-1 block">Name</label>
           <input
+            id="profile-name"
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -174,8 +171,9 @@ const MyProfilePanel = () => {
         </div>
 
         <div>
-          <label className="text-xs font-medium opacity-60 mb-1 block">Email</label>
+          <label htmlFor="profile-email" className="text-xs font-medium text-muted mb-1 block">Email</label>
           <input
+            id="profile-email"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -185,8 +183,9 @@ const MyProfilePanel = () => {
         </div>
 
         <div>
-          <label className="text-xs font-medium opacity-60 mb-1 block">Phone</label>
+          <label htmlFor="profile-phone" className="text-xs font-medium text-muted mb-1 block">Phone</label>
           <input
+            id="profile-phone"
             type="tel"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
@@ -198,9 +197,7 @@ const MyProfilePanel = () => {
 
         {error && <p className="text-error text-sm">{error}</p>}
         {savedAt && !error && (
-          <p className="text-success text-sm flex items-center gap-1.5">
-            <CheckCircle2 size={14} /> Saved
-          </p>
+          <p className="text-success text-sm">Saved</p>
         )}
 
         <button
@@ -208,7 +205,7 @@ const MyProfilePanel = () => {
           disabled={saving || !dirty}
           className="btn btn-primary"
         >
-          {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save changes'}
+          {saving ? 'Saving' : 'Save changes'}
         </button>
       </form>
     </>
@@ -270,23 +267,16 @@ const ChangePasswordPanel = () => {
   }
   if (hasPassword === null) {
     return (
-      <div className="flex justify-center py-12">
-        <span className="loading loading-spinner loading-md" />
-      </div>
+      <SkeletonLines lines={5} label="Loading" />
     );
   }
 
   if (success) {
     return (
-      <div className="text-center py-8">
-        <div className="flex justify-center mb-3">
-          <div className="bg-success/15 text-success rounded-full p-3">
-            <CheckCircle2 size={28} />
-          </div>
-        </div>
-        <h2 className="card-title justify-center text-xl mb-2">Password saved</h2>
-        <p className="text-sm opacity-60 mb-4">
-          Your password has been saved successfully.
+      <div>
+        <h2 className="font-display text-xl font-semibold uppercase tracking-wide mb-1">Password saved</h2>
+        <p className="text-sm text-success mb-4">
+          Your password has been saved.
         </p>
         <button onClick={() => setSuccess(false)} className="btn btn-ghost btn-sm">
           Change password again
@@ -311,14 +301,15 @@ const ChangePasswordPanel = () => {
 
   return (
     <>
-      <h2 className="card-title text-lg mb-1">{heading}</h2>
-      <p className="text-sm opacity-50 mb-4">{intro}</p>
+      <h2 className="font-display text-xl font-semibold uppercase tracking-wide mb-1">{heading}</h2>
+      <p className="text-sm text-muted mb-4">{intro}</p>
 
       <form onSubmit={handleSubmit} className="space-y-3 max-w-md">
         {hasPassword && (
           <div>
-            <label className="text-xs font-medium opacity-60 mb-1 block">Current password</label>
+            <label htmlFor="pw-current" className="text-xs font-medium text-muted mb-1 block">Current password</label>
             <input
+              id="pw-current"
               type="password"
               value={currentPw}
               onChange={(e) => setCurrentPw(e.target.value)}
@@ -329,8 +320,9 @@ const ChangePasswordPanel = () => {
         )}
 
         <div>
-          <label className="text-xs font-medium opacity-60 mb-1 block">New password</label>
+          <label htmlFor="pw-new" className="text-xs font-medium text-muted mb-1 block">New password</label>
           <input
+            id="pw-new"
             type="password"
             value={newPw}
             onChange={(e) => setNewPw(e.target.value)}
@@ -339,18 +331,19 @@ const ChangePasswordPanel = () => {
           />
           {newPw && (
             <p
-              className={`text-xs mt-1 px-1 ${
+              className={`text-xs mt-1 ${
                 pwValidationError ? 'text-warning' : 'text-success'
               }`}
             >
-              {pwValidationError ?? '✓ Password looks good'}
+              {pwValidationError ?? 'Meets the password rules'}
             </p>
           )}
         </div>
 
         <div>
-          <label className="text-xs font-medium opacity-60 mb-1 block">Confirm new password</label>
+          <label htmlFor="pw-confirm" className="text-xs font-medium text-muted mb-1 block">Confirm new password</label>
           <input
+            id="pw-confirm"
             type="password"
             value={confirmNewPw}
             onChange={(e) => setConfirmNewPw(e.target.value)}
@@ -359,14 +352,14 @@ const ChangePasswordPanel = () => {
           />
         </div>
 
-        <p className="text-xs opacity-40 px-1">
+        <p className="text-xs text-muted">
           Min 8 chars · 1 uppercase · 1 number or symbol
         </p>
 
         {error && <p className="text-error text-sm">{error}</p>}
 
         <button type="submit" disabled={submitDisabled} className="btn btn-primary">
-          {loading ? <span className="loading loading-spinner loading-sm" /> : submitLabel}
+          {loading ? 'Saving' : submitLabel}
         </button>
       </form>
     </>

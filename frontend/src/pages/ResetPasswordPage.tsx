@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Link, useSearchParams, useNavigate } from 'react-router-dom';
-import { CheckCircle2, AlertTriangle } from 'lucide-react';
 import { resetPassword } from '../api/client';
 
 function validatePassword(pwd: string): string | null {
@@ -25,23 +24,14 @@ export const ResetPasswordPage = () => {
 
   if (!token) {
     return (
-      <div className="flex items-center justify-center min-h-[calc(100vh-4rem)] px-4 py-8">
-        <div className="card bg-base-200 w-full max-w-sm shadow-xl">
-          <div className="card-body">
-            <div className="flex justify-center mb-3">
-              <div className="bg-warning/15 text-warning rounded-full p-3">
-                <AlertTriangle size={28} />
-              </div>
-            </div>
-            <h2 className="card-title justify-center text-xl mb-2">Invalid reset link</h2>
-            <p className="text-sm opacity-60 text-center mb-4">
-              This link is missing its token. Request a new reset link to continue.
-            </p>
-            <Link to="/forgot-password" className="btn btn-primary btn-sm w-full">
-              Request new link
-            </Link>
-          </div>
-        </div>
+      <div className="max-w-sm mx-auto px-4 py-10">
+        <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Invalid reset link</h1>
+        <p className="text-sm text-muted mt-2 mb-6">
+          This link is missing its token. Request a new reset link to continue.
+        </p>
+        <Link to="/forgot-password" className="btn btn-primary btn-sm">
+          Request new link
+        </Link>
       </div>
     );
   }
@@ -75,77 +65,66 @@ export const ResetPasswordPage = () => {
 
   if (success) {
     return (
-      <div className="flex items-center justify-center min-h-[calc(100vh-4rem)] px-4 py-8">
-        <div className="card bg-base-200 w-full max-w-sm shadow-xl">
-          <div className="card-body">
-            <div className="flex justify-center mb-3">
-              <div className="bg-success/15 text-success rounded-full p-3">
-                <CheckCircle2 size={28} />
-              </div>
-            </div>
-            <h2 className="card-title justify-center text-xl mb-2">Password updated</h2>
-            <p className="text-sm opacity-60 text-center mb-4">
-              You'll be redirected to sign in.
-            </p>
-            <Link to="/login" className="btn btn-primary btn-sm w-full">
-              Sign in now
-            </Link>
-          </div>
-        </div>
+      <div className="max-w-sm mx-auto px-4 py-10">
+        <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Password updated</h1>
+        <p className="text-sm text-muted mt-2 mb-6">
+          You'll be redirected to sign in.
+        </p>
+        <Link to="/login" className="btn btn-primary btn-sm">
+          Sign in now
+        </Link>
       </div>
     );
   }
 
   return (
-    <div className="flex items-center justify-center min-h-[calc(100vh-4rem)] px-4 py-8">
-      <div className="card bg-base-200 w-full max-w-sm shadow-xl">
-        <div className="card-body">
-          <h2 className="card-title text-2xl mb-1">Reset Password</h2>
-          <p className="text-sm opacity-50 mb-4">Choose a new password for your account.</p>
+    <div className="max-w-sm mx-auto px-4 py-10">
+      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Reset Password</h1>
+      <p className="text-sm text-muted mt-1 mb-6">Choose a new password for your account.</p>
 
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div>
-              <label className="text-xs font-medium opacity-60 mb-1 block">New password</label>
-              <input
-                type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="input input-bordered w-full"
-                autoFocus
-                autoComplete="new-password"
-              />
-              {newPassword && (
-                <p className={`text-xs mt-1 px-1 ${pwValidationError ? 'text-warning' : 'text-success'}`}>
-                  {pwValidationError ?? '✓ Password looks good'}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="text-xs font-medium opacity-60 mb-1 block">Confirm password</label>
-              <input
-                type="password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                className="input input-bordered w-full"
-                autoComplete="new-password"
-              />
-            </div>
-
-            <p className="text-xs opacity-40 px-1">Min 8 chars · 1 uppercase · 1 number or symbol</p>
-
-            {error && <p className="text-error text-sm">{error}</p>}
-
-            <button
-              type="submit"
-              disabled={loading || !newPassword || !confirm || !!pwValidationError}
-              className="btn btn-primary w-full mt-2"
-            >
-              {loading ? <span className="loading loading-spinner loading-sm" /> : 'Update password'}
-            </button>
-          </form>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div>
+          <label htmlFor="reset-password" className="text-xs font-medium text-muted mb-1 block">New password</label>
+          <input
+            id="reset-password"
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            className="input input-bordered w-full"
+            autoFocus
+            autoComplete="new-password"
+          />
+          {newPassword && (
+            <p className={`text-xs mt-1 ${pwValidationError ? 'text-warning' : 'text-success'}`}>
+              {pwValidationError ?? 'Meets the password rules'}
+            </p>
+          )}
         </div>
-      </div>
+
+        <div>
+          <label htmlFor="reset-confirm" className="text-xs font-medium text-muted mb-1 block">Confirm password</label>
+          <input
+            id="reset-confirm"
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            className="input input-bordered w-full"
+            autoComplete="new-password"
+          />
+        </div>
+
+        <p className="text-xs text-muted">Min 8 chars · 1 uppercase · 1 number or symbol</p>
+
+        {error && <p className="text-error text-sm">{error}</p>}
+
+        <button
+          type="submit"
+          disabled={loading || !newPassword || !confirm || !!pwValidationError}
+          className="btn btn-primary w-full mt-2"
+        >
+          {loading ? 'Saving' : 'Update password'}
+        </button>
+      </form>
     </div>
   );
 };

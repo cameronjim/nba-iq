@@ -12,7 +12,7 @@ export class ImproveTeamPage {
   }
 
   signInPrompt(): Locator {
-    return this.page.getByText(/Sign in to unlock AI suggestions/i);
+    return this.page.getByText(/Sign in to get suggestions/i);
   }
 
   emptyRosterPrompt(): Locator {
@@ -24,6 +24,6 @@ export class ImproveTeamPage {
   }
 
   waiverPickupsHeader(): Locator {
-    return this.page.getByRole('heading', { name: /Waiver Wire Pickups/i });
+    return this.page.getByRole('heading', { name: /Waiver pickups/i });
   }
 }

@@ -2,9 +2,9 @@ import { formatStat, toStatNumber, STAT_PLACEHOLDER } from '../../utils/stats';
 import type { SlatePlayer } from '../../types';
 
 function availabilityClass(probability: number): string {
-  if (probability >= 0.85) return 'badge-success';
-  if (probability >= 0.6) return 'badge-warning';
-  return 'badge-error';
+  if (probability >= 0.85) return 'text-success';
+  if (probability >= 0.6) return 'text-warning';
+  return 'text-error';
 }
 
 export const AvailabilityBadge = ({
@@ -15,14 +15,14 @@ export const AvailabilityBadge = ({
   const probability = toStatNumber(value);
   if (probability === null) {
     return (
-      <span className="badge badge-ghost badge-sm tabular-nums" title="Availability not modelled">
+      <span className="text-sm text-faint tabular-nums" title="Availability not modelled">
         {STAT_PLACEHOLDER}
       </span>
     );
   }
   return (
     <span
-      className={`badge badge-sm tabular-nums ${availabilityClass(probability)}`}
+      className={`text-sm font-semibold tabular-nums ${availabilityClass(probability)}`}
       title="Modelled chance this player appears"
     >
       {Math.round(probability * 100)}%
@@ -34,22 +34,15 @@ export const ImpactBadge = ({ player }: { player: SlatePlayer }): JSX.Element =>
   const impact = toStatNumber(player.impact);
   if (impact === null) {
     return (
-      <span
-        className="badge badge-ghost badge-sm tabular-nums"
-        title="No impact score for this player"
-      >
+      <span className="text-sm text-faint tabular-nums" title="No impact score for this player">
         {STAT_PLACEHOLDER}
       </span>
     );
   }
-  const tone = player.slate_spotlight
-    ? 'badge-primary'
-    : player.spotlight
-      ? 'badge-primary badge-outline'
-      : 'badge-ghost';
+  const tone = player.slate_spotlight || player.spotlight ? 'text-primary' : '';
   return (
     <span
-      className={`badge badge-sm tabular-nums font-semibold ${tone}`}
+      className={`text-sm tabular-nums font-semibold ${tone}`}
       title="Projected impact tonight. 0 is an average night."
     >
       {impact > 0 ? '+' : ''}
@@ -81,7 +74,5 @@ export const CategoryLine = ({ player }: { player: SlatePlayer }): JSX.Element |
     ([key]) => toStatNumber(player.projected?.[key]) !== null
   ).map(([key, label]) => `${formatStat(player.projected[key])} ${label}`);
   if (parts.length === 0) return null;
-  return (
-    <span className="text-[11px] opacity-50 tabular-nums">{parts.join(' · ')}</span>
-  );
+  return <span className="text-[11px] text-muted tabular-nums">{parts.join(' · ')}</span>;
 };

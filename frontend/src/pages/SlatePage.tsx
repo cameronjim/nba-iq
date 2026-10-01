@@ -1,11 +1,11 @@
 import { Link } from 'react-router-dom';
-import { CalendarDays } from 'lucide-react';
 import { useSlate } from '../hooks/useSlate';
 import { formatTimestampBeside, formatTimestampWithZone } from '../utils/analytics';
 import { formatRange, formatSlateDate } from '../utils/dates';
 import { SlateGameCard } from '../components/slate/SlateGameCard';
 import { SlateLegend } from '../components/slate/SlateLegend';
 import { SlateSortPicker } from '../components/slate/SlateSortPicker';
+import { SlateSkeleton } from '../components/slate/SlateSkeleton';
 import type { SlateRun, SlateSort } from '../types';
 
 const NO_RUN_NOTICE = 'No prediction run yet. Check back after the next model run.';
@@ -44,11 +44,10 @@ export const SlatePage = (): JSX.Element => {
     <div className="max-w-[900px] mx-auto px-4 py-6 pb-20">
       <header className="flex flex-wrap items-end justify-between gap-3 mb-5">
         <div>
-          <h1 className="font-bold text-xl sm:text-2xl leading-tight flex items-center gap-2">
-            <CalendarDays size={20} className="opacity-60" />
+          <h1 className="font-display text-3xl font-semibold uppercase tracking-wide leading-tight">
             {isToday ? <>Today&apos;s Projections</> : 'Projections'}
           </h1>
-          <p className="text-sm opacity-60 mt-0.5" data-testid="slate-subtitle">
+          <p className="text-sm text-muted mt-0.5" data-testid="slate-subtitle">
             {formatSlateDate(data?.date ?? date)}
             {publishedAt && ` · published ${publishedAt}`}
             {injuriesAsOf && ` · injuries as of ${injuriesAsOf}`}
@@ -71,11 +70,9 @@ export const SlatePage = (): JSX.Element => {
       </header>
 
       {loading && !data ? (
-        <div className="flex items-center justify-center py-20">
-          <span className="loading loading-spinner loading-lg" />
-        </div>
+        <SlateSkeleton />
       ) : !data ? (
-        <div className="card bg-base-200 border border-base-300">
+        <div className="card border border-base-300">
           <div className="card-body flex flex-col items-center py-12 gap-4">
             <p className="text-error text-sm">{error || 'Failed to load the slate'}</p>
             <button onClick={() => void reload()} className="btn btn-primary btn-sm">
@@ -86,22 +83,22 @@ export const SlatePage = (): JSX.Element => {
       ) : (
         <div className="flex flex-col gap-4">
           {!data.run && (
-            <div className="alert alert-info py-2.5 px-3">
+            <div className="alert py-2.5 px-3">
               <span className="text-sm">{NO_RUN_NOTICE}</span>
             </div>
           )}
 
           {data.run && scheduleOnly && data.games.length > 0 && (
-            <div className="alert alert-info py-2.5 px-3" data-testid="slate-coverage-notice">
+            <div className="alert py-2.5 px-3" data-testid="slate-coverage-notice">
               <span className="text-sm">{coverageNotice(data.date, data.run)}</span>
             </div>
           )}
 
           {data.games.length === 0 ? (
-            <div className="card bg-base-200 border border-base-300">
+            <div className="card border border-base-300">
               <div className="card-body items-center text-center py-12 gap-1">
                 <p className="text-sm font-semibold">No games scheduled</p>
-                <p className="text-xs opacity-60 max-w-md">
+                <p className="text-xs text-muted max-w-md">
                   Nothing on the schedule for {formatSlateDate(data.date)}. Pick another date, or
                   check{' '}
                   <Link to="/watchlist" className="link link-primary">
@@ -128,7 +125,7 @@ export const SlatePage = (): JSX.Element => {
         </div>
       )}
 
-      <footer className="text-[11px] opacity-40 mt-6 pt-3 border-t border-base-300 flex flex-col gap-1">
+      <footer className="text-[11px] text-muted mt-6 pt-3 border-t border-base-300 flex flex-col gap-1">
         <span data-testid="slate-order-note">{ORDER_NOTE[sort]}</span>
         <span>
           The headline points, minutes and category line are what he projects if he plays.

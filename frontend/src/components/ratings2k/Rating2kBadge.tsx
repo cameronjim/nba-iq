@@ -19,7 +19,7 @@ export const Rating2kBadge = ({ playerName }: Rating2kBadgeProps): JSX.Element |
     <>
       <button
         onClick={() => setOpen(true)}
-        className={`badge badge-sm gap-1 font-semibold transition-opacity hover:opacity-75 ${tierBadgeClass(rating.overall)}`}
+        className={`badge badge-sm font-semibold ${tierBadgeClass(rating.overall)}`}
         title="View the full 2K attribute breakdown"
       >
         2K {formatStat(rating.overall, 0)}

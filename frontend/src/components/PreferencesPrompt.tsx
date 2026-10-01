@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, X } from 'lucide-react';
 import { getPreferences, getAuthToken } from '../api/client';
+import { IconClose } from './icons';
 
 const DISMISS_KEY = 'preferences_prompt_dismissed';
 
@@ -39,12 +39,11 @@ export const PreferencesPrompt = () => {
   if (!shouldShow) return null;
 
   return (
-    <div className="bg-base-200 border border-base-300 rounded-lg px-4 py-3 mb-4 flex items-center justify-between gap-3">
+    <div className="bg-base-200 border border-base-300 px-4 py-3 mb-4 flex items-center justify-between gap-3">
       <div className="flex items-center gap-3">
-        <Settings size={18} className="text-primary opacity-80 flex-shrink-0" />
         <div>
           <p className="text-sm font-medium">Get sharper recommendations</p>
-          <p className="text-xs opacity-60">
+          <p className="text-xs text-muted">
             Set your team preferences so every suggestion fits your strategy.
           </p>
         </div>
@@ -58,11 +57,11 @@ export const PreferencesPrompt = () => {
             localStorage.setItem(DISMISS_KEY, '1');
             setShouldShow(false);
           }}
-          className="btn btn-ghost btn-sm btn-circle"
+          className="btn btn-ghost btn-sm"
           aria-label="Dismiss"
           title="Dismiss"
         >
-          <X size={14} />
+          <IconClose size={14} />
         </button>
       </div>
     </div>

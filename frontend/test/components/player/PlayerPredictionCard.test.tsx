@@ -33,6 +33,13 @@ describe('PlayerPredictionCard', () => {
     );
   });
 
+  it('labels the card as a model projection and shows the model numbers', () => {
+    render(<PlayerPredictionCard prediction={prediction()} />);
+
+    expect(screen.getByRole('heading', { name: 'Model projection' })).toBeInTheDocument();
+    expect(screen.getByText('34.0')).toBeInTheDocument();
+  });
+
   it('leaves the line off for an older server or a player without a usual', () => {
     render(<PlayerPredictionCard prediction={prediction()} />);
 

@@ -28,12 +28,12 @@ export const DeltaPair = ({ player }: { player: WatchlistPlayer }): JSX.Element 
           className="font-semibold whitespace-nowrap"
           title={`Usually ${usualMin.toFixed(1)} min, tonight ${projMin.toFixed(1)}.`}
         >
-          {usualMin.toFixed(0)} <span className="opacity-40">→</span> {projMin.toFixed(0)} min
+          {usualMin.toFixed(0)} <span className="text-faint">→</span> {projMin.toFixed(0)} min
         </span>
       )}
       {ptsDelta !== null && (
         <span
-          className="opacity-70 whitespace-nowrap"
+          className="text-muted whitespace-nowrap"
           title={`Projected ${formatStat(player.points.projected)} points, usually ${formatStat(player.points.usual)}.`}
         >
           {ptsDelta > 0 ? '+' : ''}
@@ -56,7 +56,7 @@ export const Drivers = ({ drivers }: { drivers: UpsideDriver[] }): JSX.Element |
   if (parts.length === 0) return null;
   return (
     <span
-      className="text-[11px] opacity-50 tabular-nums whitespace-nowrap"
+      className="text-[11px] text-muted tabular-nums whitespace-nowrap"
       title="The categories furthest above his usual, biggest first"
     >
       up vs usual: {parts.join(' · ')}
@@ -81,7 +81,7 @@ export const PositionChip = ({ position }: { position: string | null }): JSX.Ele
   if (position === null) {
     return (
       <span
-        className="badge badge-ghost badge-sm opacity-50 shrink-0"
+        className="badge badge-ghost badge-sm text-muted shrink-0"
         title="No position on record, so position filters skip him"
       >
         pos ?
@@ -111,7 +111,7 @@ export const GamesCount = ({
   if (days <= 1) return null;
   return (
     <span
-      className="badge badge-primary badge-sm tabular-nums whitespace-nowrap"
+      className="badge badge-outline badge-sm tabular-nums whitespace-nowrap"
       title={`${count} game${count === 1 ? '' : 's'} projected in this window. The score adds them up, so more games ranks higher.`}
     >
       {count} game{count === 1 ? '' : 's'} {phrase}

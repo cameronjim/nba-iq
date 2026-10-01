@@ -20,6 +20,9 @@ import { ProfilePage } from './pages/ProfilePage';
 import { PreferencesPage } from './pages/PreferencesPage';
 import { AboutPage } from './pages/AboutPage';
 import { AdminPage } from './pages/AdminPage';
+import { TermsPage } from './pages/TermsPage';
+import { PrivacyPage } from './pages/PrivacyPage';
+import { SiteFooter } from './components/SiteFooter';
 import { PageViewTracker } from './components/PageViewTracker';
 import { getAuthToken, setAuthToken } from './api/client';
 import { useWarmupPrefetch } from './hooks/useWarmupPrefetch';
@@ -53,9 +56,9 @@ export const App = (): JSX.Element => {
     <GoogleOAuthProvider clientId={googleClientId}>
       <BrowserRouter>
         <PageViewTracker />
-        <div className="min-h-screen bg-base-100 text-base-content">
+        <div className="flex min-h-screen flex-col bg-base-100 text-base-content">
           <Navbar isLoggedIn={isLoggedIn} onLogout={handleLogout} />
-          <main>
+          <main className="flex-1">
             <Routes>
               <Route path="/" element={<HomePage isLoggedIn={isLoggedIn} />} />
               <Route path="/stats" element={<StatsPage />} />
@@ -75,10 +78,13 @@ export const App = (): JSX.Element => {
               <Route path="/change-password" element={<Navigate to="/profile#password" replace />} />
               <Route path="/preferences" element={<PreferencesPage />} />
               <Route path="/about" element={<AboutPage />} />
+              <Route path="/terms" element={<TermsPage />} />
+              <Route path="/privacy" element={<PrivacyPage />} />
               <Route path="/admin" element={<AdminPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </main>
+          <SiteFooter />
         </div>
       </BrowserRouter>
     </GoogleOAuthProvider>

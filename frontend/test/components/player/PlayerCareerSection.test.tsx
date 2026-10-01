@@ -51,6 +51,15 @@ describe('PlayerCareerSection', () => {
     expect(careerMock).toHaveBeenCalledWith('977');
   });
 
+  it('shows a table-shaped skeleton while the career loads', () => {
+    careerMock.mockReturnValue(new Promise(() => {}));
+
+    const { container } = render(<PlayerCareerSection nbaPlayerId="977" />);
+
+    expect(screen.getByRole('status', { name: 'Loading career history' })).toBeInTheDocument();
+    expect(container.querySelector('.loading-spinner')).toBeNull();
+  });
+
   it('renders nothing and skips the request without an nba id', () => {
     const { container } = render(<PlayerCareerSection nbaPlayerId={null} />);
 

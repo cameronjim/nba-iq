@@ -1,4 +1,5 @@
-import { RefreshCw } from 'lucide-react';
+import { IconRefresh } from '../icons';
+import { SkeletonTable } from '../Skeleton';
 import { formatTimestampWithZone } from '../../utils/analytics';
 import type { WeeklyOutlookState } from '../../hooks/useWeeklyOutlook';
 import type {
@@ -49,9 +50,9 @@ function percent(value: number): string {
 }
 
 function missRiskClass(risk: number): string {
-  if (risk >= HIGH_MISS_RISK) return 'badge-error';
-  if (risk >= MODERATE_MISS_RISK) return 'badge-warning';
-  return 'badge-success';
+  if (risk >= HIGH_MISS_RISK) return 'text-error';
+  if (risk >= MODERATE_MISS_RISK) return 'text-warning';
+  return 'text-success';
 }
 
 function CategoryRow({ row }: { row: OutlookCategory }): JSX.Element {
@@ -61,16 +62,16 @@ function CategoryRow({ row }: { row: OutlookCategory }): JSX.Element {
     <tr>
       <td className="font-medium">
         {label}
-        {row.lower_is_better && <span className="text-xs opacity-50 ml-1">(lower wins)</span>}
+        {row.lower_is_better && <span className="text-xs text-muted ml-1">(lower wins)</span>}
       </td>
       <td>{formatOutlookValue(row.category, row.p50)}</td>
-      <td className="whitespace-nowrap text-xs opacity-70">
+      <td className="whitespace-nowrap text-xs text-muted">
         {formatOutlookValue(row.category, row.p10)} to {formatOutlookValue(row.category, row.p90)}
       </td>
-      <td className="text-xs opacity-70">{formatOutlookValue(row.category, row.opponent)}</td>
+      <td className="text-xs text-muted">{formatOutlookValue(row.category, row.opponent)}</td>
       <td>
         {win === null ? (
-          <span className="text-xs opacity-50">-</span>
+          <span className="text-xs text-faint">-</span>
         ) : (
           <div className="flex items-center gap-2">
             <progress
@@ -89,11 +90,11 @@ function CategoryRow({ row }: { row: OutlookCategory }): JSX.Element {
 
 function MissRiskChip({ player }: { player: OutlookPlayer }): JSX.Element {
   if (player.games_scheduled === 0) {
-    return <span className="badge badge-ghost badge-sm">{player.name}: no games</span>;
+    return <span className="text-xs text-muted">{player.name}: no games</span>;
   }
   return (
     <span
-      className={`badge badge-sm ${missRiskClass(player.miss_risk)}`}
+      className={`text-xs font-semibold ${missRiskClass(player.miss_risk)}`}
       title={`${player.games_scheduled} games scheduled, ${player.expected_games.toFixed(1)} expected`}
     >
       {player.name}: {percent(player.miss_risk)} miss risk
@@ -105,7 +106,7 @@ function Provenance({ data }: { data: WeeklyOutlookResponse }): JSX.Element {
   const fallbacks = data.provenance.fallback_spread_players;
   const publishedAt = formatTimestampWithZone(data.provenance.predicted_at);
   return (
-    <div className="text-xs opacity-50 space-y-1">
+    <div className="text-xs text-muted space-y-1">
       <p data-testid="weekly-outlook-provenance">
         {[
           publishedAt ? `Published ${publishedAt}` : null,
@@ -128,8 +129,8 @@ function Provenance({ data }: { data: WeeklyOutlookResponse }): JSX.Element {
 function Body({ state, onReload }: WeeklyOutlookCardProps): JSX.Element {
   if (state.status === 'idle' || state.status === 'loading') {
     return (
-      <div className="flex justify-center p-8" role="status" aria-label="Loading weekly outlook">
-        <span className="loading loading-spinner loading-lg" />
+      <div className="p-4">
+        <SkeletonTable rows={9} cols={5} label="Loading weekly outlook" />
       </div>
     );
   }
@@ -147,7 +148,7 @@ function Body({ state, onReload }: WeeklyOutlookCardProps): JSX.Element {
   if (data.status !== 'ok') {
     return (
       <div className="p-6 text-center">
-        <p className="text-sm opacity-50">{EMPTY_MESSAGES[data.status]}</p>
+        <p className="text-sm text-muted">{EMPTY_MESSAGES[data.status]}</p>
       </div>
     );
   }
@@ -174,10 +175,8 @@ function Body({ state, onReload }: WeeklyOutlookCardProps): JSX.Element {
       </div>
 
       <div>
-        <p className="text-xs font-bold uppercase tracking-wider opacity-60 mb-2">
-          Chance of missing at least one game
-        </p>
-        <div className="flex flex-wrap gap-2">
+        <h3 className="text-sm font-semibold mb-1">Chance of missing at least one game</h3>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
           {data.players.map((player) => (
             <MissRiskChip key={player.player_id} player={player} />
           ))}
@@ -193,24 +192,24 @@ export function WeeklyOutlookCard({ state, onReload }: WeeklyOutlookCardProps): 
   const loading = state.status === 'loading';
   const range = state.status === 'ready' ? state.data.window : null;
   return (
-    <div className="card bg-base-200 overflow-hidden">
-      <div className="card-body p-0">
-        <div className="px-4 py-3 border-b border-base-300 flex items-center justify-between">
-          <h3 className="font-semibold text-sm">
+    <section className="border-t border-base-300 pt-3">
+      <div>
+        <div className="pb-2 flex items-center justify-between">
+          <h2 className="font-display text-xl font-semibold uppercase tracking-wide">
             Weekly Outlook
             {range && (
-              <span className="ml-2 font-normal text-xs opacity-50">
+              <span className="ml-2 font-sans normal-case tracking-normal font-normal text-xs text-muted">
                 {range.from} to {range.to}
               </span>
             )}
-          </h3>
+          </h2>
           <button onClick={onReload} disabled={loading} className="btn btn-ghost btn-xs gap-1.5">
-            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-            Refresh
+            <IconRefresh size={12} />
+            {loading ? 'Refreshing' : 'Refresh'}
           </button>
         </div>
         <Body state={state} onReload={onReload} />
       </div>
-    </div>
+    </section>
   );
 }

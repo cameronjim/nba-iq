@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { IconChevronUp, IconChevronDown } from '../icons';
 import type { Rating2kSummary } from '../../types';
 import { getTeamLogoUrl } from '../../utils/teamLogos';
 import { PLAYER_IMAGE_FALLBACK } from '../../utils/playerImage';
@@ -38,22 +38,22 @@ export const Rating2kTable = ({ rows, onSelect }: Rating2kTableProps): JSX.Eleme
   const sortIcon = (key: SortKey): JSX.Element => {
     if (sortKey !== key) {
       // always rendered, just hidden: an absent icon would change the column width.
-      return <ChevronUp size={12} className="invisible" />;
+      return <IconChevronUp size={12} className="invisible" />;
     }
-    return sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />;
+    return sortDir === 'asc' ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />;
   };
 
   return (
     <div>
-      <div className="overflow-x-auto rounded-box border border-base-300">
+      <div className="overflow-x-auto border border-base-300">
         {/* table-fixed: re-sorting can never change column widths. */}
-        <table className="table table-zebra table-sm table-fixed min-w-[640px] w-full">
+        <table className="table table-sm table-fixed min-w-[640px] w-full">
           <thead>
             <tr>
               <th
                 onClick={() => handleSort('name')}
                 title="Player Name"
-                className="cursor-pointer select-none whitespace-nowrap w-[240px]"
+                className={`cursor-pointer select-none whitespace-nowrap w-[240px] ${sortKey === 'name' ? 'font-bold' : ''}`}
               >
                 <span className="inline-flex items-center gap-1">
                   Player
@@ -63,7 +63,7 @@ export const Rating2kTable = ({ rows, onSelect }: Rating2kTableProps): JSX.Eleme
               <th
                 onClick={() => handleSort('team')}
                 title="Team"
-                className="cursor-pointer select-none whitespace-nowrap w-[150px]"
+                className={`cursor-pointer select-none whitespace-nowrap w-[150px] ${sortKey === 'team' ? 'font-bold' : ''}`}
               >
                 <span className="inline-flex items-center gap-1">
                   Team
@@ -74,7 +74,7 @@ export const Rating2kTable = ({ rows, onSelect }: Rating2kTableProps): JSX.Eleme
               <th
                 onClick={() => handleSort('overall')}
                 title="Overall Rating"
-                className="cursor-pointer select-none whitespace-nowrap w-[90px]"
+                className={`cursor-pointer select-none whitespace-nowrap text-right w-[90px] ${sortKey === 'overall' ? 'font-bold' : ''}`}
               >
                 <span className="inline-flex items-center gap-1">
                   OVR
@@ -96,7 +96,7 @@ export const Rating2kTable = ({ rows, onSelect }: Rating2kTableProps): JSX.Eleme
                   <td className="whitespace-nowrap">
                     <span className="flex items-center gap-2 overflow-hidden">
                       <span className="avatar flex-shrink-0">
-                        <span className="w-7 rounded-full bg-base-200 block overflow-hidden">
+                        <span className="w-7 rounded-box bg-base-200 block overflow-hidden">
                           <img
                             src={row.player_image || PLAYER_IMAGE_FALLBACK}
                             alt=""
@@ -123,18 +123,18 @@ export const Rating2kTable = ({ rows, onSelect }: Rating2kTableProps): JSX.Eleme
                     </span>
                   </td>
                   <td className="whitespace-nowrap">{formatText(formatPositions(row.positions))}</td>
-                  <td className="whitespace-nowrap">
+                  <td className="whitespace-nowrap text-right">
                     <span className={`badge badge-sm font-semibold tabular-nums ${tierBadgeClass(row.overall)}`}>
                       {formatStat(row.overall, 0)}
                     </span>
                   </td>
-                  <td className="whitespace-nowrap opacity-60">{formatText(row.game_version)}</td>
+                  <td className="whitespace-nowrap text-muted">{formatText(row.game_version)}</td>
                 </tr>
               );
             })}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={5} className="text-center py-12 opacity-40">
+                <td colSpan={5} className="text-center py-12 text-faint">
                   No players found
                 </td>
               </tr>
@@ -144,7 +144,7 @@ export const Rating2kTable = ({ rows, onSelect }: Rating2kTableProps): JSX.Eleme
       </div>
 
       {sorted.length > 0 && (
-        <div className="text-center text-xs opacity-30 py-3">
+        <div className="text-center text-xs text-faint py-3">
           {sorted.length} player{sorted.length !== 1 ? 's' : ''}
         </div>
       )}

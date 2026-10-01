@@ -1,4 +1,3 @@
-import { Flame } from 'lucide-react';
 import { formatStat, toStatNumber } from '../../utils/stats';
 import { AvailabilityBadge, CategoryLine, ImpactBadge } from './SlateBadges';
 import { SlateReasons, SlateVsUsual } from './SlateVsUsual';
@@ -17,27 +16,26 @@ export const SlatePlayerRow = ({ player }: { player: SlatePlayer }): JSX.Element
   return (
     <li
       className={
-        'flex flex-col gap-0.5 py-1.5 px-2 -mx-2 rounded-md ' +
-        (player.slate_spotlight
-          ? 'bg-primary/10 ring-1 ring-primary/30'
-          : player.spotlight
-            ? 'bg-base-300/50'
-            : '')
+        'flex flex-col gap-0.5 py-2 px-3 border-b border-base-300 last:border-b-0 ' +
+        (player.slate_spotlight ? 'bg-base-200' : '')
       }
     >
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex items-center gap-1.5">
+        <span className="min-w-0 flex items-baseline gap-1.5">
           {player.slate_spotlight && (
-            <Flame
-              size={13}
-              className="text-primary shrink-0"
+            <span
+              className="text-[11px] font-semibold uppercase text-primary shrink-0"
               aria-label="Top projected impact on the slate"
-            />
+            >
+              Top
+            </span>
           )}
           <span
             className={
               'text-sm truncate ' +
-              (player.name_is_placeholder ? 'font-mono text-xs italic opacity-60' : 'font-medium')
+              (player.name_is_placeholder
+                ? 'font-mono text-xs italic text-muted'
+                : 'font-semibold')
             }
             title={
               player.name_is_placeholder
@@ -48,13 +46,13 @@ export const SlatePlayerRow = ({ player }: { player: SlatePlayer }): JSX.Element
             {player.name}
           </span>
           {player.team_abbr && (
-            <span className="text-[11px] opacity-50 uppercase tracking-wider shrink-0">
+            <span className="text-[11px] text-muted uppercase tracking-wider shrink-0">
               {player.team_abbr}
             </span>
           )}
         </span>
 
-        <span className="ml-auto flex items-center gap-1.5 shrink-0">
+        <span className="ml-auto flex items-baseline gap-3 shrink-0">
           <ImpactBadge player={player} />
           <AvailabilityBadge value={player.prob_active} />
         </span>
@@ -62,12 +60,12 @@ export const SlatePlayerRow = ({ player }: { player: SlatePlayer }): JSX.Element
 
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span
-          className="text-xs tabular-nums opacity-70 whitespace-nowrap"
+          className="text-xs tabular-nums text-muted whitespace-nowrap"
           data-testid={`slate-headline-${player.nba_player_id}`}
         >
-          <span className="font-semibold opacity-100">{formatStat(player.proj_pts_cond)}</span>{' '}
+          <span className="font-semibold text-base-content">{formatStat(player.proj_pts_cond)}</span>{' '}
           pts if he plays
-          <span className="opacity-40"> · </span>
+          <span className="text-faint"> · </span>
           {formatStat(player.proj_min_p50)} min
         </span>
         <CategoryLine player={player} />
@@ -76,7 +74,7 @@ export const SlatePlayerRow = ({ player }: { player: SlatePlayer }): JSX.Element
 
       {schedule && (
         <span
-          className="text-[11px] tabular-nums opacity-50"
+          className="text-[11px] tabular-nums text-faint"
           data-testid={`slate-schedule-${player.nba_player_id}`}
         >
           {schedule}

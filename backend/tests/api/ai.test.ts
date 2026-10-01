@@ -146,3 +146,52 @@ describe('GET /api/ai/waiver-suggestions prompt', () => {
     expect(prompt).toContain('PROJECTED NEXT 7 DAYS: not available, no complete production model run exists yet.');
   });
 });
+
+describe('plain-text output rules', () => {
+  it('strips emoji and em dashes from the waiver suggestions and tells Claude not to use them', async () => {
+    // arrange
+    routeWaiverQueries();
+    getRankedPlayersMock.mockResolvedValue([candidate(5, { name: 'Tier Star' })]);
+    narrate.mockResolvedValue({
+      text: JSON.stringify({
+        trade_targets: [{ name: 'Tier Star', reasoning: 'Scores a lot \u2014 fills points \u{1F525}' }],
+        waiver_pickups: [],
+        summary: 'Add points \u2014 fast \u{1F3C0}',
+      }),
+      model: 'test',
+      provider: 'test',
+    });
+
+    // act
+    const res = await request(app)
+      .get('/api/ai/waiver-suggestions?refresh=true')
+      .set('Authorization', bearerFor(1));
+
+    // assert
+    expect(res.status).toBe(200);
+    expect(res.body.trade_targets[0].reasoning).toBe('Scores a lot, fills points');
+    expect(res.body.summary).toBe('Add points, fast');
+    const [{ system }] = narrate.mock.calls[0];
+    expect(system).toMatch(/never use emoji/i);
+    expect(system).toMatch(/em dashes/i);
+  });
+
+  it('strips emoji and em dashes from the chat reply', async () => {
+    // arrange
+    queryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('SELECT ai_preferences FROM users')) return pgResult([{ ai_preferences: {} }]);
+      return pgResult([]);
+    });
+    narrate.mockResolvedValue({ text: 'Hold him \u2014 great month \u{1F680}', model: 'test', provider: 'test' });
+
+    // act
+    const res = await request(app)
+      .post('/api/ai/chat')
+      .set('Authorization', bearerFor(1))
+      .send({ message: 'Should I hold?' });
+
+    // assert
+    expect(res.status).toBe(200);
+    expect(res.body.reply).toBe('Hold him, great month');
+  });
+});

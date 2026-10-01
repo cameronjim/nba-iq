@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { CalendarRange } from 'lucide-react';
 import { statLabel, formatTimestampWithZone } from '../../utils/analytics';
 import { UpcomingGameRow } from './UpcomingGameRow';
 import type { PlayerPredictionsResponse } from '../../types';
@@ -25,18 +24,17 @@ export const PlayerUpcomingGames = ({ data }: PlayerUpcomingGamesProps): JSX.Ele
     <section
       id="upcoming-games"
       data-testid="upcoming-games-section"
-      className="card bg-base-200 border border-base-300"
+      className="border-t border-base-300 pt-4"
     >
-      <div className="card-body p-4 sm:p-5 gap-3">
+      <div className="flex flex-col gap-3">
         <div>
           <div className="flex items-center gap-2 flex-wrap">
-            <CalendarRange size={16} className="text-primary" />
-            <h2 className="font-bold text-base">Upcoming games</h2>
+            <h2 className="text-lg font-semibold">Upcoming games</h2>
             {games.length > 0 && (
               <span className="badge badge-sm badge-outline">{games.length} games</span>
             )}
           </div>
-          <p className="text-xs opacity-50 mt-0.5">
+          <p className="text-xs text-muted mt-0.5">
             Every projected game, earliest first. Stat lines assume{' '}
             <span className="font-semibold">he plays</span>; the badge is a model estimate, not an
             official injury designation.
@@ -46,14 +44,14 @@ export const PlayerUpcomingGames = ({ data }: PlayerUpcomingGamesProps): JSX.Ele
         {run === null ? (
           <div className="py-8 text-center">
             <p className="text-sm font-semibold">No prediction run published yet</p>
-            <p className="text-xs opacity-60 mt-1 max-w-md mx-auto">
+            <p className="text-xs text-muted mt-1 max-w-md mx-auto">
               Fills in once a model run completes.
             </p>
           </div>
         ) : games.length === 0 ? (
           <div className="py-8 text-center">
             <p className="text-sm font-semibold">No upcoming games for this player in the current run</p>
-            <p className="text-xs opacity-60 mt-1 max-w-md mx-auto">
+            <p className="text-xs text-muted mt-1 max-w-md mx-auto">
               The run completed, but has no scheduled games for him.
             </p>
           </div>
@@ -87,7 +85,7 @@ export const PlayerUpcomingGames = ({ data }: PlayerUpcomingGamesProps): JSX.Ele
               </div>
             )}
 
-            <div className="overflow-x-auto rounded-box border border-base-300">
+            <div className="overflow-x-auto border border-base-300">
               <table className="table table-xs w-full" data-testid="upcoming-games-table">
                 <thead>
                   <tr>
@@ -109,13 +107,13 @@ export const PlayerUpcomingGames = ({ data }: PlayerUpcomingGamesProps): JSX.Ele
               </table>
             </div>
 
-            <p className="text-[10px] opacity-50">
+            <p className="text-[10px] text-muted">
               Each cell: the median if he plays, its likely range under it, and{' '}
               <span className="font-semibold">sched</span>, the same number counting the chance he
               sits.
             </p>
 
-            <p className="text-[10px] opacity-40">
+            <p className="text-[10px] text-faint">
               {[
                 formatTimestampWithZone(run.predicted_at)
                   ? `published ${formatTimestampWithZone(run.predicted_at)}`

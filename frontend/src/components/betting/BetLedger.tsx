@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { IconTrash } from '../icons';
+import { SkeletonTable } from '../Skeleton';
 import { formatAmerican, formatLine, formatMoney, formatSignedMoney } from '../../utils/formatOdds';
 import type {
   Bet, BettingGame, BetStatus, LedgerSummary, NewBet, NewBetGameRef,
@@ -17,11 +18,11 @@ interface BetLedgerProps {
   onRemoveBet: (id: number) => Promise<void>;
 }
 
-const STATUS_BADGE: Record<Bet['status'], string> = {
-  pending: 'badge-ghost',
-  won: 'badge-success',
-  lost: 'badge-error',
-  push: 'badge-warning',
+const STATUS_RESULT: Record<Bet['status'], { text: string; className: string }> = {
+  pending: { text: 'Pending', className: 'text-muted' },
+  won: { text: 'W', className: 'text-success font-semibold' },
+  lost: { text: 'L', className: 'text-error font-semibold' },
+  push: { text: 'P', className: 'font-semibold' },
 };
 
 const MARKET_LABEL: Record<BetMarket, string> = {
@@ -164,7 +165,7 @@ const AddBetForm = ({ games, onTrackBet, onDone }: AddBetFormProps) => {
   };
 
   return (
-    <div className="bg-base-300 rounded-lg p-3 space-y-3">
+    <div className="border border-base-300 bg-base-200 p-3 space-y-3">
       <div className="flex flex-wrap gap-3 items-end">
         <div>
           <label className="text-xs font-semibold block mb-1" htmlFor="addbet-market">Bet type</label>
@@ -267,7 +268,7 @@ const AddBetForm = ({ games, onTrackBet, onDone }: AddBetFormProps) => {
           disabled={!canSubmit || saving}
           className="btn btn-primary btn-sm"
         >
-          {saving ? 'Adding...' : 'Add bet'}
+          {saving ? 'Adding' : 'Add bet'}
         </button>
         <button onClick={onDone} className="btn btn-ghost btn-sm">Cancel</button>
       </div>
@@ -301,7 +302,7 @@ const AddBetForm = ({ games, onTrackBet, onDone }: AddBetFormProps) => {
         <p className="text-xs text-warning">That market isn't posted for this game yet.</p>
       )}
       {isStraight && game && resolved && (
-        <p className="text-xs opacity-60">
+        <p className="text-xs text-muted">
           Line: {resolved.line != null ? formatLine(resolved.line) : 'n/a'} · Odds: {formatAmerican(resolved.odds)}
         </p>
       )}
@@ -316,25 +317,23 @@ export const BetLedger = ({ bets, summary, loading, error, games, onTrackBet, on
   const hasMoney = bets.some((b) => b.stake != null);
 
   return (
-    <div className="card bg-base-200 overflow-hidden">
-      <div className="px-4 py-3 border-b border-base-300 flex items-center justify-between">
-        <h2 className="text-sm font-semibold">My Bets</h2>
+    <section>
+      <div className="border-b border-base-300 pb-1 mb-3 flex items-baseline justify-between">
+        <h2 className="font-display text-xl font-semibold uppercase tracking-wide">My Bets</h2>
         {!adding && (
           <button onClick={() => setAdding(true)} className="btn btn-ghost btn-xs">+ Add bet</button>
         )}
       </div>
 
-      <div className="p-4 space-y-4">
+      <div className="space-y-4">
         {adding && <AddBetForm games={games} onTrackBet={onTrackBet} onDone={() => setAdding(false)} />}
 
         {loading ? (
-          <div className="flex justify-center py-8">
-            <span className="loading loading-spinner loading-md" />
-          </div>
+          <SkeletonTable rows={4} cols={7} label="Loading bets" />
         ) : error ? (
           <p className="text-error text-sm text-center py-4">{error}</p>
         ) : bets.length === 0 ? (
-          <p className="text-sm opacity-40 text-center py-6">
+          <p className="text-sm text-muted py-4">
             No bets tracked yet. Add spreads, totals, moneylines, props, parlays, or anything custom.
           </p>
         ) : (
@@ -342,7 +341,7 @@ export const BetLedger = ({ bets, summary, loading, error, games, onTrackBet, on
             <p className="text-xs font-semibold">
               <span>{summary.pending} pending</span>
               {hasMoney && (
-                <span className={`ml-3 ${summary.net > 0 ? 'text-success' : summary.net < 0 ? 'text-error' : 'opacity-60'}`}>
+                <span className={`ml-3 ${summary.net > 0 ? 'text-success' : summary.net < 0 ? 'text-error' : 'text-muted'}`}>
                   Net: {formatSignedMoney(summary.net)}
                 </span>
               )}
@@ -374,7 +373,7 @@ export const BetLedger = ({ bets, summary, loading, error, games, onTrackBet, on
                         <td className="text-xs whitespace-nowrap">
                           {MARKET_LABEL[bet.market]}
                           {bet.wager_type !== 'cash' && (
-                            <span className="opacity-60"> ({WAGER_LABEL[bet.wager_type]})</span>
+                            <span className="text-muted"> ({WAGER_LABEL[bet.wager_type]})</span>
                           )}
                         </td>
                         <td className="font-medium text-xs max-w-60">{betLabel(bet)}</td>
@@ -383,11 +382,11 @@ export const BetLedger = ({ bets, summary, loading, error, games, onTrackBet, on
                         </td>
                         <td className="text-xs">{bet.american_odds != null ? formatAmerican(bet.american_odds) : ''}</td>
                         <td className="text-xs">{bet.stake != null ? formatMoney(bet.stake) : ''}</td>
-                        <td>
-                          <span className={`badge badge-sm ${STATUS_BADGE[bet.status]}`}>{bet.status}</span>
+                        <td className={`text-xs ${STATUS_RESULT[bet.status].className}`} title={bet.status}>
+                          {STATUS_RESULT[bet.status].text}
                         </td>
                         <td className={`text-xs font-medium whitespace-nowrap ${
-                          bet.net != null && bet.net > 0 ? 'text-success' : bet.net != null && bet.net < 0 ? 'text-error' : 'opacity-60'
+                          bet.net != null && bet.net > 0 ? 'text-success' : bet.net != null && bet.net < 0 ? 'text-error' : 'text-muted'
                         }`}>
                           {bet.net != null
                             ? formatSignedMoney(bet.net)
@@ -421,7 +420,7 @@ export const BetLedger = ({ bets, summary, loading, error, games, onTrackBet, on
                               aria-label={`Delete bet: ${betLabel(bet)}`}
                               title="Delete this bet"
                             >
-                              <Trash2 size={12} />
+                              <IconTrash size={12} />
                             </button>
                           </div>
                         </td>
@@ -434,6 +433,6 @@ export const BetLedger = ({ bets, summary, loading, error, games, onTrackBet, on
           </>
         )}
       </div>
-    </div>
+    </section>
   );
 };

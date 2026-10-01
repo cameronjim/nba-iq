@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
-import { BarChart3 } from 'lucide-react';
 import type { Player } from '../../types';
+import { IconClose } from '../icons';
 import { PlayerCareerSection } from './PlayerCareerSection';
 import { Rating2kBadge } from '../ratings2k/Rating2kBadge';
 
@@ -62,7 +62,7 @@ export const PlayerModal = ({ player, onClose }: PlayerModalProps) => {
           <div className="flex items-center gap-4">
             {player.headshot_url && (
               <div className="avatar">
-                <div className="w-16 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2">
+                <div className="w-16 rounded-box border border-base-300">
                   <img
                     src={player.headshot_url}
                     alt={player.name}
@@ -72,41 +72,40 @@ export const PlayerModal = ({ player, onClose }: PlayerModalProps) => {
               </div>
             )}
             <div>
-              <h3 className="font-bold text-2xl">{player.name}</h3>
-              <p className="text-sm opacity-60">{player.team} · {player.position}</p>
+              <h3 className="font-display font-semibold text-3xl uppercase tracking-wide">{player.name}</h3>
+              <p className="text-sm text-muted">{player.team} · {player.position}</p>
               <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                 {/* renders nothing when the player has no 2K match */}
                 <Rating2kBadge playerName={player.name} />
-                {/* deliberately the same badge recipe as Rating2kBadge so the
-                    two read as one row of equal chips */}
                 <Link
                   to={`/player/${player.id}`}
                   onClick={onClose}
-                  className="badge badge-sm badge-primary gap-1 font-semibold transition-opacity hover:opacity-75"
+                  className="badge badge-sm badge-primary font-semibold"
                   title="Trends, percentiles and projections"
                 >
-                  <BarChart3 size={12} />
                   Full Analytics
                 </Link>
               </div>
             </div>
           </div>
-          <button className="btn btn-sm btn-circle btn-ghost" onClick={onClose}>✕</button>
+          <button className="btn btn-sm btn-circle btn-ghost" onClick={onClose} aria-label="Close">
+            <IconClose size={14} />
+          </button>
         </div>
 
         {player.injury_status && (
           <div className={`${injuryAlertClass(player.injury_status)} mb-4 py-2`}>
             <span className="text-xs font-bold uppercase">{player.injury_status.replace(/_/g, ' ')}</span>
             {player.injury_detail && (
-              <span className="text-xs ml-2 opacity-80">· {player.injury_detail}</span>
+              <span className="text-xs ml-2 text-muted">· {player.injury_detail}</span>
             )}
           </div>
         )}
 
         {statGroups.map((group) => (
           <div key={group.label} className="mb-4">
-            <p className="text-xs font-semibold opacity-40 uppercase tracking-wider mb-2">{group.label}</p>
-            <div className="stats stats-horizontal shadow w-full border border-base-300">
+            <h4 className="text-sm font-semibold mb-2">{group.label}</h4>
+            <div className="stats stats-horizontal w-full border border-base-300">
               {group.stats.map((stat) => (
                 <div key={stat.label} className="stat px-4 py-3">
                   <div className="stat-value text-lg">{stat.value}</div>

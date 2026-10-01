@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CalendarRange, TrendingUp } from 'lucide-react';
 import { getWatchlist } from '../api/client';
 import { useCachedResource } from '../hooks/useCachedResource';
 import { formatRange, todayInEastern } from '../utils/dates';
 import { WatchlistRow } from '../components/watchlist/WatchlistRow';
+import { WatchlistSkeleton } from '../components/watchlist/WatchlistSkeleton';
 import { RankingNote, WatchlistLegend } from '../components/watchlist/WatchlistLegend';
 import {
   DEFAULT_WINDOW_DAYS,
@@ -51,11 +51,10 @@ export const WatchlistPage = (): JSX.Element => {
     <div className="max-w-[900px] mx-auto px-4 py-6 pb-20">
       <header className="flex flex-wrap items-end justify-between gap-3 mb-3">
         <div>
-          <h1 className="font-bold text-xl sm:text-2xl leading-tight flex items-center gap-2">
-            <TrendingUp size={20} className="opacity-60" />
+          <h1 className="font-display text-3xl font-semibold uppercase tracking-wide leading-tight">
             Watchlist
           </h1>
-          <p className="text-sm opacity-60 mt-0.5">
+          <p className="text-sm text-muted mt-0.5">
             Players projected to do more than they usually do.
           </p>
         </div>
@@ -76,12 +75,11 @@ export const WatchlistPage = (): JSX.Element => {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <WindowPicker days={days} onChange={setDays} />
           <span
-            className="text-xs opacity-60 flex items-center gap-1.5 tabular-nums"
+            className="text-xs text-muted tabular-nums"
             data-testid="window-range"
           >
-            <CalendarRange size={13} className="opacity-60" />
             {formatRange(from, to)}
-            {shownDays > 1 && <span className="opacity-50">· {shownDays} days</span>}
+            {shownDays > 1 && <span className="text-faint"> · {shownDays} days</span>}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -103,11 +101,9 @@ export const WatchlistPage = (): JSX.Element => {
       </section>
 
       {loading && !data ? (
-        <div className="flex items-center justify-center py-20">
-          <span className="loading loading-spinner loading-lg" />
-        </div>
+        <WatchlistSkeleton />
       ) : !data ? (
-        <div className="card bg-base-200 border border-base-300">
+        <div className="card border border-base-300">
           <div className="card-body flex flex-col items-center py-12 gap-4">
             <p className="text-error text-sm">{error || 'Failed to load the watchlist'}</p>
             <button onClick={() => void reload()} className="btn btn-primary btn-sm">
@@ -118,7 +114,7 @@ export const WatchlistPage = (): JSX.Element => {
       ) : (
         <div className="flex flex-col gap-4">
           {!data.run && (
-            <div className="alert alert-info py-2.5 px-3">
+            <div className="alert py-2.5 px-3">
               <span className="text-sm">{NO_RUN_NOTICE}</span>
             </div>
           )}
@@ -126,13 +122,13 @@ export const WatchlistPage = (): JSX.Element => {
           {players.length === 0 && data.position !== null ? (
             /* a position filter that emptied the list is its own state: the model
                has plenty to say, just not about this slot. */
-            <div className="card bg-base-200 border border-base-300">
+            <div className="card border border-base-300">
               <div className="card-body items-center text-center py-12 gap-1">
                 <p className="text-sm font-semibold">
                   No {POSITION_LABELS[data.position].toLowerCase()} clear the bar{' '}
                   {shownDays > 1 ? 'in this window' : 'tonight'}
                 </p>
-                <p className="text-xs opacity-60 max-w-md">
+                <p className="text-xs text-muted max-w-md">
                   Try a longer window, a wider slot, or{' '}
                   <button
                     type="button"
@@ -153,12 +149,12 @@ export const WatchlistPage = (): JSX.Element => {
               </div>
             </div>
           ) : players.length === 0 ? (
-            <div className="card bg-base-200 border border-base-300">
+            <div className="card border border-base-300">
               <div className="card-body items-center text-center py-12 gap-1">
                 <p className="text-sm font-semibold">
                   {shownDays > 1 ? NO_CANDIDATES_WINDOW : NO_CANDIDATES}
                 </p>
-                <p className="text-xs opacity-60 max-w-md">
+                <p className="text-xs text-muted max-w-md">
                   {data.run
                     ? 'That is a normal answer on a quiet stretch.'
                     : 'Check back after the next model run.'}{' '}
@@ -172,10 +168,10 @@ export const WatchlistPage = (): JSX.Element => {
           ) : visiblePlayers.length === 0 ? (
             /* the team filter is client-side only, so an empty result here is this
                page's own filter rather than the model's answer. */
-            <div className="card bg-base-200 border border-base-300">
+            <div className="card border border-base-300">
               <div className="card-body items-center text-center py-8 gap-1">
                 <p className="text-sm font-semibold">No {teamFilter} players in this window</p>
-                <p className="text-xs opacity-60">
+                <p className="text-xs text-muted">
                   <button
                     type="button"
                     className="link link-primary"
@@ -191,13 +187,13 @@ export const WatchlistPage = (): JSX.Element => {
             <>
               <RankingNote days={shownDays} />
               {data.position !== null && (
-                <p className="text-[11px] opacity-50" data-testid="position-note">
+                <p className="text-[11px] text-muted" data-testid="position-note">
                   Showing {POSITION_LABELS[data.position].toLowerCase()} only.
                   {unplaced > 0 &&
                     ` ${unplaced} projected player${unplaced === 1 ? '' : 's'} ${unplaced === 1 ? 'has' : 'have'} no position on record.`}
                 </p>
               )}
-              <ul className="flex flex-col gap-2">
+              <ul className="flex flex-col border-t border-base-300">
                 {visiblePlayers.map((player, index) => (
                   <WatchlistRow
                     key={player.nba_player_id}
@@ -214,7 +210,7 @@ export const WatchlistPage = (): JSX.Element => {
 
           {/* the label comes from the server, so this page never names a baseline
               the numbers were not actually computed against. */}
-          <footer className="text-[11px] opacity-40 pt-1 flex flex-col gap-1">
+          <footer className="text-[11px] text-muted pt-1 flex flex-col gap-1">
             {baseline?.label && <span>&ldquo;Usual&rdquo; means {baseline.label}.</span>}
             {shownDays > 1 && (
               <span>

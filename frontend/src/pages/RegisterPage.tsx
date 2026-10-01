@@ -101,118 +101,122 @@ export const RegisterPage = ({ onRegister }: RegisterPageProps) => {
   };
 
   return (
-    <div className="flex items-center justify-center min-h-[calc(100vh-4rem)] px-4 py-8">
-      <div className="card bg-base-200 w-full max-w-sm shadow-xl">
-        <div className="card-body">
-          <h2 className="card-title text-2xl mb-1">Create Account</h2>
-          <p className="text-sm opacity-50 mb-4">Join NBA IQ</p>
+    <div className="max-w-sm mx-auto px-4 py-10">
+      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Create Account</h1>
+      <p className="text-sm text-muted mt-1 mb-6">Sign up to save a roster, track bets, and set preferences.</p>
 
-          <div className="flex flex-col items-center gap-2 mb-4">
-            <GoogleLogin
-              onSuccess={(resp) => handleGoogleSuccess(resp.credential)}
-              onError={() => setError('Google sign-in failed')}
-              theme="outline"
-              size="large"
-              text="signup_with"
-              width="290"
-            />
-            <button
-              type="button"
-              onClick={() => switchGoogleAccount()}
-              className="text-xs text-primary hover:underline cursor-pointer"
-            >
-              Use a different Google account
-            </button>
-          </div>
-
-          <div className="divider text-xs opacity-50 my-2">or</div>
-
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div>
-              <label className="text-xs font-medium opacity-60 mb-1 block">Username</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="input input-bordered w-full"
-                autoFocus
-                autoComplete="username"
-                minLength={3}
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-medium opacity-60 mb-1 block">Email</label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="input input-bordered w-full"
-                autoComplete="email"
-              />
-              {email && !emailLooksValid && (
-                <p className="text-xs mt-1 px-1 text-warning">Please enter a valid email address</p>
-              )}
-            </div>
-
-            <div>
-              <label className="text-xs font-medium opacity-60 mb-1 block">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input input-bordered w-full"
-                autoComplete="new-password"
-              />
-              {password && (
-                <p className={`text-xs mt-1 px-1 ${pwValidationError ? 'text-warning' : 'text-success'}`}>
-                  {pwValidationError ?? '✓ Password looks good'}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="text-xs font-medium opacity-60 mb-1 block">Confirm password</label>
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                className="input input-bordered w-full"
-                autoComplete="new-password"
-              />
-            </div>
-
-            <p className="text-xs opacity-40 px-1">Min 8 chars · 1 uppercase · 1 number or symbol</p>
-
-            {error && <p className="text-error text-sm">{error}</p>}
-
-            <button
-              type="submit"
-              disabled={
-                loading ||
-                !username ||
-                !email ||
-                !password ||
-                !confirmPassword ||
-                !emailLooksValid ||
-                !!pwValidationError
-              }
-              className="btn btn-primary w-full mt-2"
-            >
-              {loading ? <span className="loading loading-spinner loading-sm" /> : 'Create Account'}
-            </button>
-          </form>
-
-          <div className="divider text-xs opacity-50 my-4">or</div>
-
-          <p className="text-center text-sm opacity-70">
-            Already have an account?{' '}
-            <Link to="/login" className="text-primary hover:underline font-medium">
-              Sign in
-            </Link>
-          </p>
-        </div>
+      <div className="space-y-2">
+        <GoogleLogin
+          onSuccess={(resp) => handleGoogleSuccess(resp.credential)}
+          onError={() => setError('Google sign-in failed')}
+          theme="outline"
+          size="large"
+          text="signup_with"
+          width="290"
+        />
+        <button
+          type="button"
+          onClick={() => switchGoogleAccount()}
+          className="link link-primary text-xs block"
+        >
+          Use a different Google account
+        </button>
       </div>
+
+      <p className="text-xs text-muted my-4">Or create an account with an email address.</p>
+
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div>
+          <label htmlFor="register-username" className="text-xs font-medium text-muted mb-1 block">Username</label>
+          <input
+            id="register-username"
+            type="text"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="input input-bordered w-full"
+            autoFocus
+            autoComplete="username"
+            minLength={3}
+          />
+        </div>
+
+        <div>
+          <label htmlFor="register-email" className="text-xs font-medium text-muted mb-1 block">Email</label>
+          <input
+            id="register-email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="input input-bordered w-full"
+            autoComplete="email"
+          />
+          {email && !emailLooksValid && (
+            <p className="text-xs mt-1 text-warning">Please enter a valid email address</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="register-password" className="text-xs font-medium text-muted mb-1 block">Password</label>
+          <input
+            id="register-password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="input input-bordered w-full"
+            autoComplete="new-password"
+          />
+          {password && (
+            <p className={`text-xs mt-1 ${pwValidationError ? 'text-warning' : 'text-success'}`}>
+              {pwValidationError ?? 'Meets the password rules'}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="register-confirm" className="text-xs font-medium text-muted mb-1 block">Confirm password</label>
+          <input
+            id="register-confirm"
+            type="password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            className="input input-bordered w-full"
+            autoComplete="new-password"
+          />
+        </div>
+
+        <p className="text-xs text-muted">Min 8 chars · 1 uppercase · 1 number or symbol</p>
+
+        {error && <p className="text-error text-sm">{error}</p>}
+
+        <button
+          type="submit"
+          disabled={
+            loading ||
+            !username ||
+            !email ||
+            !password ||
+            !confirmPassword ||
+            !emailLooksValid ||
+            !!pwValidationError
+          }
+          className="btn btn-primary w-full mt-2"
+        >
+          {loading ? 'Creating account' : 'Create Account'}
+        </button>
+
+        <p className="text-xs text-muted">
+          By creating an account you agree to the{' '}
+          <Link to="/terms" className="link">Terms</Link> and{' '}
+          <Link to="/privacy" className="link">Privacy Policy</Link>.
+        </p>
+      </form>
+
+      <p className="text-sm text-muted mt-6">
+        Already have an account?{' '}
+        <Link to="/login" className="link link-primary font-medium">
+          Sign in
+        </Link>
+      </p>
     </div>
   );
 };

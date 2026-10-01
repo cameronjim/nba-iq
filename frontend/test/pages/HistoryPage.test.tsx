@@ -102,6 +102,14 @@ describe('HistoryPage', () => {
     expect(screen.getByText('LeBron James')).toBeInTheDocument();
   });
 
+  it('shows a table skeleton while the season rows load', async () => {
+    playersMock.mockReturnValue(new Promise(() => {}));
+
+    render(<HistoryPage />);
+
+    expect(await screen.findByRole('status', { name: 'Loading season stats' })).toBeInTheDocument();
+  });
+
   it('shows the no-data state and skips the season fetch when no seasons exist', async () => {
     seasonsMock.mockResolvedValue([]);
 

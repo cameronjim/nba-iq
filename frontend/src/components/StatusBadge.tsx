@@ -48,23 +48,24 @@ export const StatusBadge = () => {
       .sort()
       .reverse()[0];
 
+  const age = relativeTime(mostRecentISO ?? null);
+
   return (
     <div className="dropdown dropdown-bottom">
       <button
         tabIndex={0}
-        className="btn btn-ghost btn-xs btn-circle"
-        aria-label={`Data updated ${relativeTime(mostRecentISO ?? null)}`}
-        title={`Data updated ${relativeTime(mostRecentISO ?? null)}`}
+        className="text-xs text-muted hover:text-base-content"
+        aria-label={`Data updated ${age}`}
+        title={`Data updated ${age}`}
       >
-        {/* bg-success is overridden in index.css to the brand green. */}
-        <span className="inline-block w-2 h-2 rounded-full bg-success" />
+        {status ? `Updated ${age}` : 'Data status'}
       </button>
-      <div tabIndex={0} className="dropdown-content mt-1 z-50 w-60 p-3 shadow-lg bg-base-200 border border-base-300 rounded-box">
-        <p className="text-xs font-bold uppercase tracking-wider opacity-50 mb-2">Last updated</p>
+      <div tabIndex={0} className="dropdown-content z-50 mt-1 w-60 border border-base-300 bg-base-200 p-3 rounded-box">
+        <p className="mb-2 font-display text-sm font-semibold uppercase tracking-wide">Last updated</p>
         <Row label="Players" iso={status?.players_updated_at ?? null} />
-        <Row label="Teams"   iso={status?.teams_updated_at ?? null} />
-        <Row label="Games"   iso={status?.games_updated_at ?? null} />
-        <p className="text-[10px] opacity-30 mt-2 pt-2 border-t border-base-300">
+        <Row label="Teams" iso={status?.teams_updated_at ?? null} />
+        <Row label="Games" iso={status?.games_updated_at ?? null} />
+        <p className="mt-2 border-t border-base-300 pt-2 text-xs text-faint">
           Data refreshes every 6 hours
         </p>
       </div>
@@ -75,7 +76,7 @@ export const StatusBadge = () => {
 const Row = ({ label, iso }: { label: string; iso: string | null }) => (
   <div className="flex items-baseline justify-between py-1">
     <span className="text-xs">{label}</span>
-    <span className="text-xs opacity-60" title={fullTimestamp(iso)}>
+    <span className="text-xs text-muted" title={fullTimestamp(iso)}>
       {relativeTime(iso)}
     </span>
   </div>

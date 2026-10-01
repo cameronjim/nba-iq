@@ -1,4 +1,3 @@
-import { Info } from 'lucide-react';
 import type { AnalyticsPool, StatPercentile } from '../../types';
 import { formatStat } from '../../utils/stats';
 import { clampPercentile, ordinal, percentileTier, statHint, statLabel } from '../../utils/analytics';
@@ -12,23 +11,22 @@ interface PercentilePanelProps {
 const TIER_CLASS = {
   success: 'progress-success',
   primary: 'progress-primary',
-  warning: 'progress-warning',
   error: 'progress-error',
 } as const;
 
 // turnover percentiles arrive already inverted, so every bar reads further-right-is-better.
 export const PercentilePanel = ({ percentiles, pool }: PercentilePanelProps): JSX.Element => (
-  <section className="card bg-base-200 border border-base-300">
-    <div className="card-body p-4 sm:p-5 gap-3">
+  <section className="border-t border-base-300 pt-4">
+    <div className="flex flex-col gap-3">
       <div>
-        <h2 className="font-bold text-base">Category Percentiles</h2>
-        <p className="text-xs opacity-50 mt-0.5">
+        <h2 className="text-lg font-semibold">Category Percentiles</h2>
+        <p className="text-xs text-muted mt-0.5">
           vs {pool.label} · {pool.definition} · n={formatStat(pool.sample_size, 0)}
         </p>
       </div>
 
       {percentiles.length === 0 ? (
-        <p className="text-sm opacity-50 py-4">No percentile data for this player yet.</p>
+        <p className="text-sm text-muted py-4">No percentile data for this player yet.</p>
       ) : (
         <ul className="flex flex-col gap-2.5">
           {percentiles.map((row) => {
@@ -40,13 +38,16 @@ export const PercentilePanel = ({ percentiles, pool }: PercentilePanelProps): JS
                 key={row.stat}
                 className="grid grid-cols-[72px_1fr_auto] items-center gap-2 sm:gap-3"
               >
-                {/* opacity must stay off this container: a translucent ancestor makes the
-                    tooltip bubble translucent and traps it under later progress bars. */}
                 <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider">
-                  <span className="truncate opacity-70">{label}</span>
+                  <span className="truncate text-muted">{label}</span>
                   {hint && (
-                    <span className="tooltip tooltip-right" data-tip={hint}>
-                      <Info size={11} className="opacity-50" aria-label={`${label} explanation`} />
+                    <span
+                      className="tooltip tooltip-right cursor-help text-muted"
+                      data-tip={hint}
+                      role="img"
+                      aria-label={`${label} explanation`}
+                    >
+                      ?
                     </span>
                   )}
                 </span>
@@ -58,7 +59,7 @@ export const PercentilePanel = ({ percentiles, pool }: PercentilePanelProps): JS
                     max={100}
                     aria-label={`${label} percentile`}
                   />
-                  <span className="text-xs tabular-nums opacity-60 w-9 shrink-0 text-right">
+                  <span className="text-xs tabular-nums text-muted w-9 shrink-0 text-right">
                     {ordinal(pct)}
                   </span>
                 </span>

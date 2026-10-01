@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useBettingPicks } from '../hooks/useBettingPicks';
 import { useBetLedger } from '../hooks/useBetLedger';
 import { BettingOddsBoard } from '../components/betting/BettingOddsBoard';
@@ -22,7 +23,8 @@ export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
   } = useBetLedger(isLoggedIn);
 
   return (
-    <div className="max-w-[1400px] mx-auto px-4 py-6 space-y-5">
+    <div className="max-w-[1400px] mx-auto px-4 py-6 space-y-6">
+      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Betting</h1>
       {isLoggedIn ? (
         <>
           <BettingPrefsPanel onSaved={() => void reloadPicks(true)} />
@@ -45,21 +47,26 @@ export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
           />
         </>
       ) : (
-        <div className="card bg-base-200">
-          <div className="card-body flex flex-col items-center py-12 gap-2 text-center">
-            <p className="font-semibold">Sign in to unlock AI betting picks</p>
-            <p className="text-sm opacity-50 max-w-md">
-              Get Best Value, Safe, and Hail Mary picks tailored to your preferences, a suggested
-              parlay, and a bet tracker. The odds board below is free to browse.
-            </p>
-          </div>
+        <div className="border border-base-300 p-4 space-y-1">
+          <p className="font-semibold">Sign in to see Claude's betting picks</p>
+          <p className="text-sm text-muted max-w-xl">
+            Signed-in users get Best Value, Safe, and Hail Mary picks based on their preferences, a suggested
+            parlay, and a bet tracker. The odds board below is free to browse.
+          </p>
         </div>
       )}
 
-      <div>
-        <h2 className="text-sm font-semibold mb-3">Upcoming Games & Odds</h2>
+      <p className="text-xs text-muted">
+        Picks are informational, not betting advice. 21+ where legal. Problem gambling help: 1-800-GAMBLER.{' '}
+        <Link to="/terms" className="link">Terms</Link>
+      </p>
+
+      <section>
+        <h2 className="font-display text-xl font-semibold uppercase tracking-wide border-b border-base-300 pb-1 mb-3">
+          Upcoming Games & Odds
+        </h2>
         <BettingOddsBoard games={odds} loading={oddsLoading} error={oddsError} onRetry={reloadOdds} />
-      </div>
+      </section>
 
       <ChatBox
         contextType="betting"
@@ -68,10 +75,6 @@ export const BettingPage = ({ isLoggedIn }: BettingPageProps) => {
       />
 
       <BettingGlossary />
-
-      <p className="text-xs opacity-40 text-center pb-2">
-        For entertainment only, not financial advice. If betting stops being fun, call or text 1-800-GAMBLER.
-      </p>
     </div>
   );
 };

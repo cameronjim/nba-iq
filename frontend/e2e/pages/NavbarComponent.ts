@@ -6,15 +6,15 @@ export class NavbarComponent {
 
   constructor(page: Page) {
     this.page = page;
-    this.root = page.getByRole('navigation').or(page.locator('.navbar')).first();
+    this.root = page.locator('header.navbar');
   }
 
   statsLink(): Locator {
-    return this.page.getByRole('link', { name: /^Stats$/i });
+    return this.root.getByRole('link', { name: /^Stats$/i });
   }
 
   signInButton(): Locator {
-    return this.page.getByRole('button', { name: /Sign In/i });
+    return this.root.getByRole('button', { name: /Sign In/i });
   }
 
   async goToSignIn(): Promise<void> {

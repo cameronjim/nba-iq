@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { IconChevronLeft, IconChevronRight } from './icons';
+import { SkeletonBlock } from './Skeleton';
 import { getGames, getLiveGames } from '../api/client';
 import type { Game } from '../types';
 
@@ -17,6 +18,7 @@ function periodLabel(period: number): string {
 
 export const ScoreboardStrip = () => {
   const [games, setGames] = useState<Game[]>(gamesCache);
+  const [loading, setLoading] = useState(cacheFetchedAt === 0);
   // without this the 2-minute poll and the live overlay would keep yanking the
   // strip back to today while the user is scrolling through other days.
   const autoScrolledForDay = useRef<string | null>(null);
@@ -50,6 +52,8 @@ export const ScoreboardStrip = () => {
       }).catch(() => { /* db data is already showing */ });
     } catch {
       setGames([]);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -163,27 +167,33 @@ export const ScoreboardStrip = () => {
     <div className="bg-base-200 border-b border-base-300 relative">
       <button
         onClick={() => scroll('left')}
-        className="btn btn-ghost btn-xs btn-circle absolute left-1 top-1/2 -translate-y-1/2 z-10"
+        className="btn btn-ghost btn-xs absolute left-1 top-1/2 -translate-y-1/2 z-10"
+        aria-label="Scroll scores left"
       >
-        <ChevronLeft size={16} />
+        <IconChevronLeft size={16} />
       </button>
 
       <div
         id="scoreboard-scroll"
         className="flex gap-3 overflow-x-auto py-3 px-10 no-scrollbar"
       >
-        {sortedDates.map((date) => (
+        {loading && (
+          <div role="status" aria-label="Loading scores" className="flex gap-3">
+            {Array.from({ length: 5 }, (_, i) => (
+              <SkeletonBlock key={i} className="h-[74px] w-[210px] flex-shrink-0" />
+            ))}
+          </div>
+        )}
+        {!loading && sortedDates.map((date) => (
           <div key={date} data-date={date} className="flex items-center gap-3 flex-shrink-0">
             <div className="flex-shrink-0 text-center px-2">
-              <div className="text-[10px] font-bold opacity-40 uppercase tracking-wider">{formatDate(date)}</div>
-              <div className="text-[10px] opacity-25">{date}</div>
+              <div className="font-display text-sm font-semibold uppercase tracking-wide">{formatDate(date)}</div>
+              <div className="text-[10px] text-faint tabular">{date}</div>
             </div>
 
             {grouped[date].length === 0 && (
-              <div className="card card-compact bg-base-300/50 flex-shrink-0 min-w-[200px] border border-dashed border-base-300">
-                <div className="card-body items-center justify-center text-center">
-                  <p className="text-xs opacity-50">No games scheduled</p>
-                </div>
+              <div className="flex-shrink-0 min-w-[200px] border border-base-300 px-3 py-4 text-center">
+                <p className="text-xs text-muted">No games scheduled</p>
               </div>
             )}
 
@@ -196,31 +206,30 @@ export const ScoreboardStrip = () => {
               return (
                 <div
                   key={game.id}
-                  className={`card card-compact bg-base-300 flex-shrink-0 min-w-[210px] ${isLive ? 'outline outline-1 outline-success/40' : ''}`}
+                  className={`flex-shrink-0 min-w-[210px] border bg-base-100 ${isLive ? 'border-success' : 'border-base-300'}`}
                 >
-                  <div className="card-body gap-1.5">
+                  <div className="flex flex-col gap-1.5 p-3">
                     <div className="flex items-center gap-2">
                       {isLive ? (
-                        <span className="badge badge-success badge-sm gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                        <span className="badge badge-success badge-sm">
                           {game.period
                             ? `${periodLabel(game.period)}${game.game_clock ? ` ${game.game_clock}` : ''}`
                             : 'LIVE'}
                         </span>
                       ) : (
-                        <span className={`text-[10px] font-bold uppercase tracking-wider ${isFinal ? 'opacity-40' : 'text-info'}`}>
+                        <span className={`text-[10px] font-bold uppercase tracking-wider ${isFinal ? 'text-faint' : 'text-muted'}`}>
                           {isFinal ? 'FINAL' : game.status.toUpperCase()}
                         </span>
                       )}
                     </div>
                     <div className="space-y-0.5">
                       <div className="flex items-center justify-between gap-4">
-                        <span className={`text-sm ${awayWon ? 'font-bold' : 'opacity-60'}`}>{game.away_team}</span>
-                        <span className={`text-sm tabular-nums ${awayWon ? 'font-bold' : ''}`}>{game.away_score ?? '-'}</span>
+                        <span className={`text-sm ${awayWon ? 'font-bold' : 'text-muted'}`}>{game.away_team}</span>
+                        <span className={`text-sm tabular ${awayWon ? 'font-bold' : ''}`}>{game.away_score ?? '-'}</span>
                       </div>
                       <div className="flex items-center justify-between gap-4">
-                        <span className={`text-sm ${homeWon ? 'font-bold' : 'opacity-60'}`}>{game.home_team}</span>
-                        <span className={`text-sm tabular-nums ${homeWon ? 'font-bold' : ''}`}>{game.home_score ?? '-'}</span>
+                        <span className={`text-sm ${homeWon ? 'font-bold' : 'text-muted'}`}>{game.home_team}</span>
+                        <span className={`text-sm tabular ${homeWon ? 'font-bold' : ''}`}>{game.home_score ?? '-'}</span>
                       </div>
                     </div>
                   </div>
@@ -238,11 +247,11 @@ export const ScoreboardStrip = () => {
 
       <button
         onClick={() => scroll('right')}
-        className="btn btn-ghost btn-xs btn-circle absolute right-1 top-1/2 -translate-y-1/2 z-10"
+        className="btn btn-ghost btn-xs absolute right-1 top-1/2 -translate-y-1/2 z-10"
+        aria-label="Scroll scores right"
       >
-        <ChevronRight size={16} />
+        <IconChevronRight size={16} />
       </button>
-
     </div>
   );
 };

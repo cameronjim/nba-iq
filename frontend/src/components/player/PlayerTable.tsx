@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { IconChevronUp, IconChevronDown } from '../icons';
+import { SkeletonLines } from '../Skeleton';
 import type { Player } from '../../types';
 import { getTeamLogoUrl } from '../../utils/teamLogos';
 import { PLAYER_IMAGE_FALLBACK } from '../../utils/playerImage';
@@ -32,6 +33,8 @@ const COLUMNS: { key: SortKey; label: string; full: string; format?: (v: number)
   { key: 'minutes_per_game',       label: 'MIN',    full: 'Minutes Per Game',            w: 'w-[64px]', format: (v) => Number(v).toFixed(1) },
   { key: 'games_played',           label: 'GP',     full: 'Games Played',                w: 'w-[58px]' },
 ];
+
+const alignClass = (key: SortKey): string => (NUMERIC_KEYS.has(key) ? 'text-right' : '');
 
 const INITIAL_ROWS = 30;
 const ROW_INCREMENT = 30;
@@ -111,10 +114,8 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
 
   return (
     <div>
-      <div className="overflow-x-auto rounded-box border border-base-300">
-        <table
-          className="table table-zebra table-sm table-fixed min-w-[1200px] w-full"
-        >
+      <div className="overflow-x-auto border border-base-300">
+        <table className="table table-sm table-fixed min-w-[1200px] w-full">
           <thead>
             <tr>
               {onToggleCompare && <th className="w-10" />}
@@ -123,13 +124,13 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
                   key={col.key}
                   onClick={() => handleSort(col.key)}
                   title={col.full}
-                  className={`cursor-pointer select-none whitespace-nowrap ${col.w}`}
+                  className={`cursor-pointer select-none whitespace-nowrap ${col.w} ${alignClass(col.key)} ${sortKey === col.key ? 'font-bold' : ''}`}
                 >
                   <span className="inline-flex items-center gap-1">
                     {col.label}
                     {sortKey === col.key
-                      ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)
-                      : <ChevronUp size={12} className="invisible" />}
+                      ? (sortDir === 'asc' ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />)
+                      : <IconChevronUp size={12} className="invisible" />}
                   </span>
                 </th>
               ))}
@@ -144,7 +145,7 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
                 <tr
                   key={player.id}
                   onClick={() => onSelect(player)}
-                  className={`cursor-pointer hover ${isSelected ? 'bg-primary/10' : ''}`}
+                  className={`cursor-pointer hover ${isSelected ? 'bg-base-200' : ''}`}
                 >
                   {onToggleCompare && (
                     <td onClick={(e) => e.stopPropagation()}>
@@ -160,12 +161,12 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
                   {COLUMNS.map((col) => (
                     <td
                       key={col.key}
-                      className={`whitespace-nowrap ${col.format ? 'tabular-nums' : ''}`}
+                      className={`whitespace-nowrap ${alignClass(col.key)} ${col.format ? 'tabular-nums' : ''}`}
                     >
                       {col.key === 'name' ? (
                         <span className="flex items-center gap-2 overflow-hidden">
                           <div className="avatar flex-shrink-0">
-                            <div className="w-7 rounded-full">
+                            <div className="w-7 rounded-box">
                               <img
                                 src={player.headshot_url || PLAYER_IMAGE_FALLBACK}
                                 alt=""
@@ -204,7 +205,7 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={COLUMNS.length + (onToggleCompare ? 1 : 0)} className="text-center py-12 opacity-40">
+                <td colSpan={COLUMNS.length + (onToggleCompare ? 1 : 0)} className="text-center py-12 text-faint">
                   No players found
                 </td>
               </tr>
@@ -214,13 +215,13 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
       </div>
 
       {hasMore && (
-        <div ref={sentinelRef} className="flex items-center justify-center py-4">
-          <span className="loading loading-spinner loading-sm opacity-40" />
+        <div ref={sentinelRef} className="py-4">
+          <SkeletonLines lines={1} label="Loading more players" />
         </div>
       )}
 
       {!hasMore && sorted.length > INITIAL_ROWS && (
-        <div className="text-center text-xs opacity-30 py-3">
+        <div className="text-center text-xs text-faint py-3">
           {sorted.length} player{sorted.length !== 1 ? 's' : ''} total
         </div>
       )}

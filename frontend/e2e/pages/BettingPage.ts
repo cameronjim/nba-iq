@@ -16,7 +16,7 @@ export class BettingPage {
   }
 
   signInPrompt(): Locator {
-    return this.page.getByText(/Sign in to unlock AI betting picks/i);
+    return this.page.getByText(/Sign in to see Claude's betting picks/i);
   }
 
   oddsBoardHeading(): Locator {
@@ -57,7 +57,7 @@ export class BettingPage {
   }
 
   chatHeading(): Locator {
-    return this.page.getByText('AI Assistant', { exact: true });
+    return this.page.getByText('Ask Claude', { exact: true });
   }
 
   seeMoreButton(): Locator {

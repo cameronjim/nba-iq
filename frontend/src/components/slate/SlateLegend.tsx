@@ -1,44 +1,34 @@
-import { Flame } from 'lucide-react';
-import { ReasonBadge } from '../watchlist/ReasonBadge';
-
 export const SlateLegend = (): JSX.Element => (
-  <div
-    className="text-[11px] opacity-70 flex items-center gap-x-4 gap-y-1 flex-wrap"
-    data-testid="slate-legend"
-  >
-    <span className="flex items-center gap-1.5">
-      <span className="badge badge-primary badge-sm tabular-nums font-semibold">
-        +11.2
-      </span>
-      <span>projected impact, 0 = average night</span>
-    </span>
-    <span className="flex items-center gap-1.5">
-      <span className="tabular-nums">
-        <span className="font-semibold">21.4</span> pts if he plays
-      </span>
-      <span>points, minutes and the category line, given he takes the floor</span>
-    </span>
-    <span className="flex items-center gap-1.5">
-      <span className="tabular-nums opacity-70">88% to play, 18.9 over the schedule</span>
-      <span>the same points with the chance he sits priced in</span>
-    </span>
-    <span className="flex items-center gap-1.5">
-      <span className="badge badge-success badge-sm tabular-nums">87%</span>
-      <span>chance he plays</span>
-    </span>
-    <span className="flex items-center gap-1.5">
-      <Flame size={13} className="text-primary" />
-      <span>slate standout</span>
-    </span>
-    <span className="flex items-center gap-1.5">
-      <ReasonBadge reason="ROLE_INCREASE" />
-      <span>why tonight differs from his usual; tap &quot;vs usual&quot; for the numbers</span>
-    </span>
-    <span className="flex items-center gap-1.5">
-      <span className="badge badge-xs badge-error uppercase tracking-wide">
-        Out<span className="font-bold normal-case">&nbsp;· new</span>
-      </span>
-      <span>injury report now; &quot;new&quot; = changed after this projection</span>
-    </span>
-  </div>
+  <dl className="text-xs text-muted border-y border-base-300 py-2 flex flex-col gap-1" data-testid="slate-legend">
+    <div className="flex gap-2">
+      <dt className="font-semibold tabular-nums text-base-content w-24 shrink-0">+11.2</dt>
+      <dd>projected impact, 0 = average night</dd>
+    </div>
+    <div className="flex gap-2">
+      <dt className="font-semibold tabular-nums text-base-content w-24 shrink-0">21.4 pts</dt>
+      <dd>points, minutes and the category line, given he takes the floor</dd>
+    </div>
+    <div className="flex gap-2">
+      <dt className="font-semibold tabular-nums text-base-content w-24 shrink-0">88% to play</dt>
+      <dd>the same points with the chance he sits priced in, e.g. 18.9 over the schedule</dd>
+    </div>
+    <div className="flex gap-2">
+      <dt className="font-semibold tabular-nums text-success w-24 shrink-0">87%</dt>
+      <dd>chance he plays</dd>
+    </div>
+    <div className="flex gap-2">
+      <dt className="font-semibold text-primary w-24 shrink-0">Top</dt>
+      <dd>slate standout</dd>
+    </div>
+    <div className="flex gap-2">
+      <dt className="font-semibold text-base-content w-24 shrink-0">Role increase</dt>
+      <dd>why tonight differs from his usual; open &quot;vs usual&quot; for the numbers</dd>
+    </div>
+    <div className="flex gap-2">
+      <dt className="font-semibold uppercase text-error w-24 shrink-0">
+        Out<span className="normal-case">&nbsp;· new</span>
+      </dt>
+      <dd>injury report now; &quot;new&quot; = changed after this projection</dd>
+    </div>
+  </dl>
 );

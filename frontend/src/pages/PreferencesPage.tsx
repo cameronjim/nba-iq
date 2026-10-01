@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Navigate, Link } from 'react-router-dom';
-import { CheckCircle2 } from 'lucide-react';
 import { getAuthToken, getPreferences, updatePreferences, type AIPreferences } from '../api/client';
 import { invalidateAIClientCaches } from '../api/clientCaches';
+import { SkeletonLines } from '../components/Skeleton';
 
 const CATEGORIES = ['PTS', 'REB', 'AST', 'STL', 'BLK', 'FG%', 'FT%', '3PM', 'TO'];
 
@@ -72,6 +72,7 @@ const BENCH_CHOICES: Choice<NonNullable<AIPreferences['bench_philosophy']>>[] = 
 ];
 
 const POSITIONS = ['PG', 'SG', 'SF', 'PF', 'C'];
+const LEAGUE_SIZES = [8, 10, 12, 14, 16];
 
 export const PreferencesPage = () => {
   const [prefs, setPrefs] = useState<AIPreferences>({});
@@ -136,17 +137,17 @@ export const PreferencesPage = () => {
 
   if (loading) {
     return (
-      <div className="flex justify-center py-20">
-        <span className="loading loading-spinner loading-lg" />
+      <div className="max-w-3xl mx-auto px-4 py-6">
+        <SkeletonLines lines={8} label="Loading preferences" />
       </div>
     );
   }
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-6 pb-24">
-      <h1 className="text-2xl font-bold mb-2">Team Preferences</h1>
-      <p className="text-sm opacity-60 mb-6">
-        Tell us about your fantasy strategy and we'll tailor every suggestion to fit. Update these anytime.
+      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide mb-2">Team Preferences</h1>
+      <p className="text-sm text-muted mb-6">
+        Your answers shape Claude's roster and trade suggestions. Update them anytime.
       </p>
 
       <div className="space-y-5">
@@ -178,32 +179,32 @@ export const PreferencesPage = () => {
           onChange={(v) => setPrefs({ ...prefs, league_format: v })}
         />
 
-        <div>
-          <label className="text-sm font-semibold block mb-2">
+        <fieldset>
+          <legend className="text-sm font-semibold mb-2">
             How many teams in your league?
-            <span className="text-xs opacity-50 font-normal ml-2">
-              (helps us calibrate waiver-wire suggestions)
+            <span className="text-xs text-muted font-normal ml-2">
+              (helps calibrate waiver-wire suggestions)
             </span>
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {[8, 10, 12, 14, 16].map((size) => {
-              const selected = prefs.league_size === size;
-              return (
-                <button
-                  key={size}
-                  type="button"
-                  onClick={() => setPrefs({ ...prefs, league_size: size })}
-                  className={`btn btn-sm ${selected ? 'btn-primary' : 'btn-ghost border border-base-300'}`}
-                >
-                  {size} teams
-                </button>
-              );
-            })}
+          </legend>
+          <div className="flex flex-wrap items-center gap-2">
+            {LEAGUE_SIZES.map((size) => (
+              <OptionLabel key={size} selected={prefs.league_size === size}>
+                <input
+                  type="radio"
+                  name="league_size"
+                  className="radio radio-xs"
+                  checked={prefs.league_size === size}
+                  onChange={() => setPrefs({ ...prefs, league_size: size })}
+                />
+                {size} teams
+              </OptionLabel>
+            ))}
             <input
               type="number"
               min={4}
               max={20}
-              value={prefs.league_size && ![8, 10, 12, 14, 16].includes(prefs.league_size) ? prefs.league_size : ''}
+              aria-label="Other league size"
+              value={prefs.league_size && !LEAGUE_SIZES.includes(prefs.league_size) ? prefs.league_size : ''}
               onChange={(e) => {
                 const n = parseInt(e.target.value, 10);
                 if (Number.isNaN(n)) {
@@ -216,7 +217,7 @@ export const PreferencesPage = () => {
               className="input input-bordered input-sm w-24"
             />
           </div>
-        </div>
+        </fieldset>
 
         <Question
           label="Roster construction strategy?"
@@ -260,95 +261,99 @@ export const PreferencesPage = () => {
           onChange={(v) => setPrefs({ ...prefs, bench_philosophy: v })}
         />
 
-        <div>
-          <label className="text-sm font-semibold block mb-2">
-            Do you have roster needs at any positions? <span className="text-xs opacity-50 font-normal">(select all that apply)</span>
-          </label>
+        <fieldset>
+          <legend className="text-sm font-semibold mb-2">
+            Do you have roster needs at any positions? <span className="text-xs text-muted font-normal">(select all that apply)</span>
+          </legend>
           <div className="flex flex-wrap gap-2">
-            {POSITIONS.map((pos) => {
-              const selected = (prefs.position_needs ?? []).includes(pos);
+            {POSITIONS.map((opt) => {
+              const selected = (prefs.position_needs ?? []).includes(opt);
               return (
-                <button
-                  key={pos}
-                  onClick={() => togglePosition(pos)}
-                  className={`btn btn-sm ${selected ? 'btn-primary' : 'btn-ghost border border-base-300'}`}
-                >
-                  {pos}
-                </button>
+                <OptionLabel key={opt} selected={selected}>
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-xs"
+                    checked={selected}
+                    onChange={() => togglePosition(opt)}
+                  />
+                  {opt}
+                </OptionLabel>
               );
             })}
           </div>
-        </div>
+        </fieldset>
 
-        <div>
-          <label className="text-sm font-semibold block mb-2">
-            Priority categories <span className="text-xs opacity-50 font-normal">(must be strengths)</span>
-          </label>
+        <fieldset>
+          <legend className="text-sm font-semibold mb-2">
+            Priority categories <span className="text-xs text-muted font-normal">(must be strengths)</span>
+          </legend>
           <div className="flex flex-wrap gap-2">
-            {CATEGORIES.map((cat) => {
-              const selected = (prefs.priority_categories ?? []).includes(cat);
+            {CATEGORIES.map((opt) => {
+              const selected = (prefs.priority_categories ?? []).includes(opt);
               return (
-                <button
-                  key={cat}
-                  onClick={() => togglePriorityCategory(cat)}
-                  className={`btn btn-sm ${selected ? 'btn-success text-white' : 'btn-ghost border border-base-300'}`}
-                >
-                  {cat}
-                </button>
+                <OptionLabel key={opt} selected={selected}>
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-xs"
+                    checked={selected}
+                    onChange={() => togglePriorityCategory(opt)}
+                  />
+                  {opt}
+                </OptionLabel>
               );
             })}
           </div>
-        </div>
+        </fieldset>
 
-        <div>
-          <label className="text-sm font-semibold block mb-2">
-            Punt categories <span className="text-xs opacity-50 font-normal">(ignore these entirely)</span>
-          </label>
+        <fieldset>
+          <legend className="text-sm font-semibold mb-2">
+            Punt categories <span className="text-xs text-muted font-normal">(ignore these entirely)</span>
+          </legend>
           <div className="flex flex-wrap gap-2">
-            {CATEGORIES.map((cat) => {
-              const selected = (prefs.punt_categories ?? []).includes(cat);
+            {CATEGORIES.map((opt) => {
+              const selected = (prefs.punt_categories ?? []).includes(opt);
               return (
-                <button
-                  key={cat}
-                  onClick={() => togglePuntCategory(cat)}
-                  className={`btn btn-sm ${selected ? 'btn-error text-white' : 'btn-ghost border border-base-300'}`}
-                >
-                  {cat}
-                </button>
+                <OptionLabel key={opt} selected={selected}>
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-xs"
+                    checked={selected}
+                    onChange={() => togglePuntCategory(opt)}
+                  />
+                  {opt}
+                </OptionLabel>
               );
             })}
           </div>
-        </div>
+        </fieldset>
 
         <div>
-          <label className="text-sm font-semibold block mb-2">
-            Anything else the AI should know? <span className="text-xs opacity-50 font-normal">(optional, max 1000 chars)</span>
+          <label htmlFor="pref-extra-notes" className="text-sm font-semibold block mb-2">
+            Anything else Claude should know? <span className="text-xs text-muted font-normal">(optional, max 1000 chars)</span>
           </label>
           <textarea
+            id="pref-extra-notes"
             value={prefs.extra_notes ?? ''}
             onChange={(e) => setPrefs({ ...prefs, extra_notes: e.target.value.slice(0, 1000) })}
             placeholder="e.g. 'I have an empty IR slot' or 'My league has dynasty keepers' or 'I need 3PM badly this week'"
             className="textarea textarea-bordered w-full"
             rows={3}
           />
-          <p className="text-xs opacity-40 mt-1">{(prefs.extra_notes ?? '').length}/1000</p>
+          <p className="text-xs text-muted mt-1">{(prefs.extra_notes ?? '').length}/1000</p>
         </div>
       </div>
 
-      <div className="sticky bottom-0 mt-8 -mx-4 px-4 py-3 bg-base-100/95 backdrop-blur border-t border-base-300 flex items-center justify-between">
+      <div className="sticky bottom-0 mt-8 -mx-4 px-4 py-3 bg-base-100 border-t border-base-300 flex items-center justify-between">
         <div className="flex items-center gap-3">
           {savedAt && Date.now() - savedAt < 4000 && (
-            <span className="badge badge-success gap-1.5 px-3 py-3 text-sm font-semibold text-white">
-              <CheckCircle2 size={16} />
-              Saved
-            </span>
+            <span className="text-success text-sm">Saved</span>
           )}
           {error && <span className="text-error text-sm">{error}</span>}
         </div>
         <div className="flex items-center gap-2">
           <Link to="/" className="btn btn-ghost btn-sm">Done</Link>
           <button onClick={handleSave} disabled={saving} className="btn btn-primary btn-sm">
-            {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+            {saving ? 'Saving' : 'Save'}
           </button>
         </div>
       </div>
@@ -363,26 +368,47 @@ interface QuestionProps<T extends string> {
   onChange: (v: T) => void;
 }
 
+interface OptionLabelProps {
+  selected: boolean;
+  children: React.ReactNode;
+}
+
+const OptionLabel = ({ selected, children }: OptionLabelProps) => (
+  <label
+    className={`flex items-center gap-2 px-3 py-1.5 border cursor-pointer text-sm ${
+      selected ? 'border-primary' : 'border-base-300'
+    }`}
+  >
+    {children}
+  </label>
+);
+
 function Question<T extends string>({ label, choices, value, onChange }: QuestionProps<T>) {
   return (
-    <div>
-      <label className="text-sm font-semibold block mb-2">{label}</label>
+    <fieldset>
+      <legend className="text-sm font-semibold mb-2">{label}</legend>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         {choices.map((c) => (
-          <button
+          <label
             key={c.value}
-            onClick={() => onChange(c.value)}
-            className={`text-left p-3 rounded-lg border transition ${
-              value === c.value
-                ? 'border-primary bg-primary/10'
-                : 'border-base-300 hover:border-base-content/30'
+            className={`flex items-start gap-2 p-3 border cursor-pointer ${
+              value === c.value ? 'border-primary' : 'border-base-300'
             }`}
           >
-            <div className="text-sm font-semibold mb-0.5">{c.label}</div>
-            <div className="text-xs opacity-60 leading-snug">{c.description}</div>
-          </button>
+            <input
+              type="radio"
+              name={label}
+              className="radio radio-xs mt-1"
+              checked={value === c.value}
+              onChange={() => onChange(c.value)}
+            />
+            <span>
+              <span className="block text-sm font-semibold mb-0.5">{c.label}</span>
+              <span className="block text-xs text-muted leading-snug">{c.description}</span>
+            </span>
+          </label>
         ))}
       </div>
-    </div>
+    </fieldset>
   );
 }

@@ -12,11 +12,11 @@ export class PlayerModalComponent {
   }
 
   heading(): Locator {
-    return this.root().getByRole('heading');
+    return this.root().getByRole('heading', { level: 3 });
   }
 
   closeButton(): Locator {
-    return this.root().getByRole('button', { name: '✕' });
+    return this.root().getByRole('button', { name: 'Close', exact: true });
   }
 
   async close(): Promise<void> {

@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 // recharts writes colors onto svg presentation attributes, where `var(...)` is not resolved.
 const COLOR_VARS = {
   primary: '--color-primary',
-  secondary: '--color-secondary',
   accent: '--color-accent',
   success: '--color-success',
   error: '--color-error',

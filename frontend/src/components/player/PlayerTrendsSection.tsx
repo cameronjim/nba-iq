@@ -66,17 +66,17 @@ export const PlayerTrendsSection = ({ trends }: PlayerTrendsSectionProps): JSX.E
   const tooltipStyle = {
     background: colors.surface,
     border: `1px solid ${colors.grid}`,
-    borderRadius: '0.5rem',
+    borderRadius: '2px',
     color: colors.content,
     fontSize: '0.75rem',
   };
 
   return (
-    <section className="card bg-base-200 border border-base-300">
-      <div className="card-body p-4 sm:p-5 gap-4">
+    <section className="border-t border-base-300 pt-4">
+      <div className="flex flex-col gap-4">
         <div>
-          <h2 className="font-bold text-base">Trends</h2>
-          <p className="text-xs opacity-50 mt-0.5">
+          <h2 className="text-lg font-semibold">Trends</h2>
+          <p className="text-xs text-muted mt-0.5">
             {hasCharts
               ? `Last ${points.length} games, oldest first, with trailing averages.`
               : 'Recent form against this player’s season baseline.'}
@@ -117,27 +117,30 @@ export const PlayerTrendsSection = ({ trends }: PlayerTrendsSectionProps): JSX.E
                     name={statLabel(stat)}
                     stroke={colors.content}
                     strokeOpacity={0.35}
-                    strokeWidth={1.5}
+                    strokeWidth={1}
                     dot={false}
+                    isAnimationActive={false}
                   />
                   <Line
                     type="monotone"
                     dataKey="r5"
                     name="5-game avg"
                     stroke={colors.primary}
-                    strokeWidth={2}
+                    strokeWidth={1.5}
                     dot={false}
                     connectNulls={false}
+                    isAnimationActive={false}
                   />
                   <Line
                     type="monotone"
                     dataKey="r10"
                     name="10-game avg"
                     stroke={colors.accent}
-                    strokeWidth={2}
+                    strokeWidth={1.5}
                     strokeDasharray="4 3"
                     dot={false}
                     connectNulls={false}
+                    isAnimationActive={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
@@ -147,10 +150,8 @@ export const PlayerTrendsSection = ({ trends }: PlayerTrendsSectionProps): JSX.E
 
         {hasForm && (
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wider opacity-50 mb-1">
-              Last 10 vs season
-            </p>
-            <div className="overflow-x-auto rounded-box border border-base-300">
+            <h3 className="text-sm font-semibold mb-1">Last 10 vs season</h3>
+            <div className="overflow-x-auto border border-base-300">
               <table className="table table-xs w-full">
                 <thead>
                   <tr>
@@ -164,14 +165,14 @@ export const PlayerTrendsSection = ({ trends }: PlayerTrendsSectionProps): JSX.E
                   {trends.last10_vs_season.map((row) => {
                     const display = deltaDisplay(row.delta, row.z, LOWER_IS_BETTER.has(row.stat));
                     return (
-                      <tr key={row.stat} className={display.notable ? 'bg-base-300/40' : undefined}>
+                      <tr key={row.stat} className={display.notable ? 'bg-base-200' : undefined}>
                         <td className="font-medium whitespace-nowrap">{statLabel(row.stat)}</td>
                         <td className="text-right tabular-nums">{formatStat(row.last10)}</td>
                         <td className="text-right tabular-nums">{formatStat(row.season)}</td>
                         <td className={`text-right tabular-nums whitespace-nowrap ${display.className}`}>
-                          <span aria-hidden="true">{display.arrow}</span> {display.text}
+                          {display.text}
                           {row.z === null && (
-                            <span className="ml-1 opacity-60 text-[10px]">small sample</span>
+                            <span className="ml-1 text-muted text-[10px]">small sample</span>
                           )}
                         </td>
                       </tr>
@@ -180,7 +181,7 @@ export const PlayerTrendsSection = ({ trends }: PlayerTrendsSectionProps): JSX.E
                 </tbody>
               </table>
             </div>
-            <p className="text-[10px] opacity-40 mt-1">
+            <p className="text-[10px] text-faint mt-1">
               Highlighted rows moved more than one standard deviation from this player&apos;s own
               season baseline.
             </p>

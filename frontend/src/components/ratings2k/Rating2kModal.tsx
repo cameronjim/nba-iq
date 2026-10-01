@@ -2,6 +2,8 @@ import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { Rating2kSummary } from '../../types';
 import { useRating2kDetail } from '../../hooks/useRating2kDetail';
+import { IconClose } from '../icons';
+import { SkeletonBlock, SkeletonLines } from '../Skeleton';
 import { PLAYER_IMAGE_FALLBACK } from '../../utils/playerImage';
 import { formatStat, toStatNumber } from '../../utils/stats';
 import {
@@ -44,38 +46,38 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
   const deltaToneClass = (delta: string): string => {
     if (delta.startsWith('+')) return 'text-success';
     if (delta.startsWith('-')) return 'text-error';
-    return 'opacity-40';
+    return 'text-faint';
   };
 
   const renderBody = (): JSX.Element => {
     if (loading) {
       return (
-        <div className="flex items-center justify-center py-16">
-          <span className="loading loading-spinner loading-lg" />
+        <div className="flex flex-col gap-5">
+          <SkeletonBlock className="h-3 w-40" />
+          <div className="grid gap-x-8 gap-y-5 md:grid-cols-2">
+            <SkeletonLines lines={8} label="Loading 2K ratings" />
+            <SkeletonLines lines={8} label="Loading 2K ratings" />
+          </div>
         </div>
       );
     }
 
     if (error) {
       return (
-        <div className="card bg-base-200">
-          <div className="card-body flex flex-col items-center py-10 gap-3">
-            <p className="text-error text-sm">{error}</p>
-            <button onClick={reload} className="btn btn-primary btn-sm">Try Again</button>
-          </div>
+        <div className="flex flex-col items-center py-10 gap-3 border border-base-300">
+          <p className="text-error text-sm">{error}</p>
+          <button onClick={reload} className="btn btn-primary btn-sm">Try Again</button>
         </div>
       );
     }
 
     if (notFound || !detail) {
       return (
-        <div className="card bg-base-200">
-          <div className="card-body items-center text-center py-10 gap-1">
-            <p className="font-semibold">No 2K ratings for this player</p>
-            <p className="text-sm opacity-60">
-              This player isn't in the imported 2K roster.
-            </p>
-          </div>
+        <div className="flex flex-col items-center text-center py-10 gap-1 border border-base-300">
+          <p className="font-semibold">No 2K ratings for this player</p>
+          <p className="text-sm text-muted">
+            This player isn't in the imported 2K roster.
+          </p>
         </div>
       );
     }
@@ -83,26 +85,24 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
     return (
       <div className="flex flex-col gap-5">
         {bio.length > 0 && (
-          <p className="text-xs opacity-50">{bio.join(' · ')}</p>
+          <p className="text-xs text-muted">{bio.join(' · ')}</p>
         )}
 
         <div className="grid gap-x-8 gap-y-5 md:grid-cols-2">
           {groups.map((group) => (
             <div key={group.label}>
-              <p className="text-xs font-semibold opacity-40 uppercase tracking-wider mb-2">
-                {group.label}
-              </p>
+              <h4 className="text-sm font-semibold mb-2">{group.label}</h4>
               <div className="flex flex-col gap-1.5">
                 {group.attributes.map((attribute) => {
                   const label = formatAttributeLabel(attribute.attribute_name);
                   return (
                     <div key={attribute.attribute_name} className="flex items-center gap-2">
-                      <span className="w-[124px] shrink-0 text-xs opacity-70 truncate" title={label}>
+                      <span className="w-[124px] shrink-0 text-xs text-muted truncate" title={label}>
                         {label}
                       </span>
-                      <span className="flex-1 h-2 rounded-full bg-base-300 overflow-hidden">
+                      <span className="flex-1 h-2 bg-base-300 overflow-hidden">
                         <span
-                          className={`block h-full rounded-full ${tierBarClass(attribute.value)}`}
+                          className={`block h-full ${tierBarClass(attribute.value)}`}
                           style={{ width: `${ratingBarPercent(attribute.value)}%` }}
                         />
                       </span>
@@ -119,9 +119,7 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
 
         {detail.rating_history.length > 0 && (
           <div>
-            <p className="text-xs font-semibold opacity-40 uppercase tracking-wider mb-2">
-              Overall by Game
-            </p>
+            <h4 className="text-sm font-semibold mb-2">Overall by Game</h4>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {detail.rating_history.map((entry) => {
                 const delta = formatRatingDelta(entry.delta);
@@ -130,7 +128,7 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
                     key={entry.game_version}
                     className="rounded-box border border-base-300 px-3 py-2 text-center min-w-[78px]"
                   >
-                    <p className="text-[10px] uppercase tracking-wider opacity-50">
+                    <p className="text-[10px] uppercase tracking-wider text-muted">
                       {entry.game_version}
                     </p>
                     <p className="text-lg font-bold tabular-nums leading-tight">
@@ -148,7 +146,7 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
 
         {detail.badges.length > 0 && (
           <div>
-            <p className="text-xs font-semibold opacity-40 uppercase tracking-wider mb-2">Badges</p>
+            <h4 className="text-sm font-semibold mb-2">Badges</h4>
             <div className="flex flex-wrap gap-1.5">
               {detail.badges.map((badge) => (
                 <span key={badge.badge_name} className="badge badge-outline badge-sm">
@@ -169,7 +167,7 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
         <div className="flex items-start justify-between gap-3 mb-4">
           <div className="flex items-center gap-3 min-w-0">
             <div className="avatar flex-shrink-0">
-              <div className="w-14 rounded-full bg-base-200">
+              <div className="w-14 rounded-box bg-base-200">
                 <img
                   src={player?.player_image || PLAYER_IMAGE_FALLBACK}
                   alt=""
@@ -178,11 +176,11 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
               </div>
             </div>
             <div className="min-w-0">
-              <h3 className="font-bold text-xl truncate" title={player?.name}>
+              <h3 className="font-display font-semibold text-2xl uppercase tracking-wide truncate" title={player?.name}>
                 {player?.name ?? '2K Ratings'}
               </h3>
-              {meta && <p className="text-sm opacity-60 truncate">{meta}</p>}
-              {archetype && <p className="text-xs opacity-50 truncate">{archetype}</p>}
+              {meta && <p className="text-sm text-muted truncate">{meta}</p>}
+              {archetype && <p className="text-xs text-muted truncate">{archetype}</p>}
             </div>
           </div>
 
@@ -192,7 +190,7 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
                 <span className={`badge badge-lg font-bold text-lg h-9 px-3 ${tierBadgeClass(player?.overall)}`}>
                   {formatStat(player?.overall, 0)}
                 </span>
-                <p className="text-[10px] uppercase tracking-wider opacity-50 mt-1">Overall</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted mt-1">Overall</p>
               </div>
             )}
             <button
@@ -200,7 +198,7 @@ export const Rating2kModal = ({ slug, summary, onClose }: Rating2kModalProps): J
               onClick={onClose}
               aria-label="Close 2K ratings"
             >
-              ✕
+              <IconClose size={14} />
             </button>
           </div>
         </div>

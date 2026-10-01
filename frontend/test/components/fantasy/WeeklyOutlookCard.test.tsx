@@ -59,7 +59,7 @@ function outlook(over: Partial<WeeklyOutlookResponse> = {}): WeeklyOutlookRespon
 }
 
 describe('WeeklyOutlookCard', () => {
-  it('shows a spinner while loading', () => {
+  it('shows a table skeleton while loading', () => {
     render(<WeeklyOutlookCard state={{ status: 'loading' }} onReload={vi.fn()} />);
 
     expect(screen.getByRole('status', { name: /loading weekly outlook/i })).toBeInTheDocument();

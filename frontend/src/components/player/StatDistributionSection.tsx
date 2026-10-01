@@ -50,11 +50,11 @@ export const StatDistributionSection = ({
     (playerValue >= (data[data.length - 1]?.hi ?? 0) ? data[data.length - 1] : data[0]);
 
   return (
-    <section className="card bg-base-200 border border-base-300">
-      <div className="card-body p-4 sm:p-5 gap-3">
+    <section className="border-t border-base-300 pt-4">
+      <div className="flex flex-col gap-3">
         <div>
-          <h2 className="font-bold text-base">Distribution</h2>
-          <p className="text-xs opacity-50 mt-0.5">
+          <h2 className="text-lg font-semibold">Distribution</h2>
+          <p className="text-xs text-muted mt-0.5">
             How {pool.label} are spread across each category, counted from real games.
           </p>
         </div>
@@ -79,18 +79,18 @@ export const StatDistributionSection = ({
 
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs">
           <span>
-            <span className="opacity-50">This player </span>
+            <span className="text-muted">This player </span>
             <span className="font-semibold tabular-nums">{formatStat(active.player_value)}</span>
           </span>
           {percentile && (
             <span>
-              <span className="opacity-50">Percentile </span>
+              <span className="text-muted">Percentile </span>
               <span className="font-semibold tabular-nums">
                 {ordinal(clampPercentile(percentile.percentile))}
               </span>
             </span>
           )}
-          <span className="opacity-50 tabular-nums">
+          <span className="text-muted tabular-nums">
             pool mean {formatStat(active.mean)} · sd {formatStat(active.stddev)}
           </span>
         </div>
@@ -115,19 +115,19 @@ export const StatDistributionSection = ({
                 contentStyle={{
                   background: colors.surface,
                   border: `1px solid ${colors.grid}`,
-                  borderRadius: '0.5rem',
+                  borderRadius: '2px',
                   color: colors.content,
                   fontSize: '0.75rem',
                 }}
                 labelStyle={{ color: colors.content }}
                 formatter={(value) => [`${chartNumber(String(value))} players`, statLabel(active.stat)]}
               />
-              <Bar dataKey="count" fill={colors.secondary} radius={[2, 2, 0, 0]} />
+              <Bar dataKey="count" fill={colors.content} fillOpacity={0.35} isAnimationActive={false} />
               {playerBucket && (
                 <ReferenceLine
                   x={playerBucket.label}
                   stroke={colors.primary}
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   label={{
                     value: percentile
                       ? `${formatStat(active.player_value)} · ${ordinal(clampPercentile(percentile.percentile))}`

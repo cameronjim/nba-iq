@@ -7,27 +7,27 @@ export const REASON_META: Record<
 > = {
   ROLE_INCREASE: {
     label: 'Role increase',
-    badgeClass: 'badge-success',
+    badgeClass: 'badge-success badge-outline',
     description: 'Projected for at least 4 more minutes than usual.',
   },
   SHOT_VOLUME_SURGE: {
     label: 'Shot volume',
-    badgeClass: 'badge-primary',
+    badgeClass: 'badge-outline',
     description: 'Projected to take more shots than usual.',
   },
   RETURNING_FROM_ABSENCE: {
     label: 'Just back',
-    badgeClass: 'badge-info',
+    badgeClass: 'badge-outline',
     description: 'Expected back after a week or more out.',
   },
   HOT_STREAK: {
     label: 'Hot streak',
-    badgeClass: 'badge-warning',
+    badgeClass: 'badge-outline',
     description: 'Scoring well above his usual over his last 5 games.',
   },
   TEAMMATE_ABSENCE: {
     label: 'Teammate out',
-    badgeClass: 'badge-accent',
+    badgeClass: 'badge-outline',
     description: 'A teammate who usually plays 28+ minutes is unlikely to play.',
   },
 };

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { Home, BarChart3, CalendarDays, Eye, History, Gamepad2, Users, TrendingUp, Dices, LogIn, User } from 'lucide-react';
 import { StatusBadge } from './StatusBadge';
 import { ThemePicker } from './ThemePicker';
 import { getCurrentUser } from '../api/client';
@@ -11,15 +10,15 @@ interface NavbarProps {
 }
 
 const tabs = [
-  { to: '/', label: 'Home', icon: Home },
-  { to: '/stats', label: 'Stats', icon: BarChart3 },
-  { to: '/projections', label: 'Projections', icon: CalendarDays },
-  { to: '/watchlist', label: 'Watchlist', icon: Eye },
-  { to: '/history', label: 'History', icon: History },
-  { to: '/ratings', label: '2K Ratings', icon: Gamepad2 },
-  { to: '/fantasy', label: 'My Team', icon: Users },
-  { to: '/improve', label: 'Improve Team', icon: TrendingUp },
-  { to: '/betting', label: 'Betting', icon: Dices },
+  { to: '/', label: 'Home' },
+  { to: '/stats', label: 'Stats' },
+  { to: '/projections', label: 'Projections' },
+  { to: '/watchlist', label: 'Watchlist' },
+  { to: '/history', label: 'History' },
+  { to: '/ratings', label: '2K Ratings' },
+  { to: '/fantasy', label: 'My Team' },
+  { to: '/improve', label: 'Improve Team' },
+  { to: '/betting', label: 'Betting' },
 ];
 
 export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
@@ -64,61 +63,58 @@ export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
   };
 
   return (
-    <div className="navbar bg-base-200 border-b border-base-300 sticky top-0 z-50 px-4">
-      <div className="flex-1 flex items-center gap-2">
-        <NavLink to="/" className="text-xl font-bold tracking-tight">
-          NBA <span className="text-primary">IQ</span>
+    <header className="navbar sticky top-0 z-50 flex-wrap gap-x-4 border-b border-base-300 bg-base-200 px-4 py-0 min-h-0">
+      <div className="flex items-center gap-3 py-2">
+        <NavLink to="/" className="font-display text-2xl font-semibold uppercase leading-none tracking-wide">
+          NBA <span className="text-accent">IQ</span>
         </NavLink>
         <StatusBadge />
       </div>
-      <div className="flex-none gap-1">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <NavLink
-              key={tab.to}
-              to={tab.to}
-              end={tab.to === '/'}
-              className={({ isActive }) =>
-                `btn btn-sm ${isActive ? 'btn-primary' : 'btn-ghost'}`
-              }
-            >
-              <Icon size={16} />
-              <span className="hidden sm:inline">{tab.label}</span>
-            </NavLink>
-          );
-        })}
 
+      <nav
+        aria-label="Primary"
+        className="order-3 -mx-4 flex w-[calc(100%+2rem)] gap-5 overflow-x-auto px-4 no-scrollbar md:order-none md:mx-0 md:w-auto md:flex-1 md:px-0"
+      >
+        {tabs.map((tab) => (
+          <NavLink
+            key={tab.to}
+            to={tab.to}
+            end={tab.to === '/'}
+            className={({ isActive }) =>
+              `whitespace-nowrap border-b-2 py-2.5 text-sm ${
+                isActive
+                  ? 'border-accent font-semibold text-base-content'
+                  : 'border-transparent text-muted hover:text-base-content'
+              }`
+            }
+          >
+            {tab.label}
+          </NavLink>
+        ))}
+      </nav>
+
+      <div className="ml-auto flex items-center gap-1 py-1">
         <ThemePicker />
 
         {isLoggedIn ? (
-          <div className="dropdown dropdown-end ml-1">
-            <button tabIndex={0} className="btn btn-ghost btn-sm gap-1">
-              <User size={16} />
-              <span className="hidden sm:inline text-xs">Account</span>
+          <div className="dropdown dropdown-end">
+            <button tabIndex={0} className="btn btn-ghost btn-sm">
+              Account
             </button>
-            <ul tabIndex={0} className="dropdown-content menu bg-base-200 rounded-box z-50 w-52 p-2 shadow-lg border border-base-300 mt-1">
+            <ul tabIndex={0} className="dropdown-content menu z-50 mt-1 w-52 border border-base-300 bg-base-200 p-2 rounded-box">
               <li>
-                <button onClick={() => goAndBlur('/profile')}>
-                  My Profile
-                </button>
+                <button onClick={() => goAndBlur('/profile')}>My Profile</button>
               </li>
               <li>
-                <button onClick={() => goAndBlur('/preferences')}>
-                  Team Preferences
-                </button>
+                <button onClick={() => goAndBlur('/preferences')}>Team Preferences</button>
               </li>
               {isAdmin && (
-                <li className="border-t border-base-300 mt-1 pt-1">
-                  <button onClick={() => goAndBlur('/admin')}>
-                    Developer Tools
-                  </button>
+                <li className="mt-1 border-t border-base-300 pt-1">
+                  <button onClick={() => goAndBlur('/admin')}>Developer Tools</button>
                 </li>
               )}
-              <li className="border-t border-base-300 mt-1 pt-1">
-                <button onClick={() => goAndBlur('/about')}>
-                  About
-                </button>
+              <li className="mt-1 border-t border-base-300 pt-1">
+                <button onClick={() => goAndBlur('/about')}>About</button>
               </li>
               <li>
                 <button onClick={handleSignOut} className="text-error">
@@ -128,12 +124,11 @@ export function Navbar({ isLoggedIn, onLogout }: NavbarProps): JSX.Element {
             </ul>
           </div>
         ) : (
-          <button onClick={goToSignIn} className="btn btn-primary btn-sm ml-1 gap-1">
-            <LogIn size={16} />
-            <span className="hidden sm:inline">Sign In</span>
+          <button onClick={goToSignIn} className="btn btn-primary btn-sm">
+            Sign In
           </button>
         )}
       </div>
-    </div>
+    </header>
   );
 }

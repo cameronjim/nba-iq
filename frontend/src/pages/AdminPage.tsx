@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
-import { ShieldAlert, Users, Eye, Activity } from 'lucide-react';
 import {
   getAuthToken, getCurrentUser, getAdminStats, getAdminUsers, getAdminViews,
   type AdminStats, type AdminUser, type AdminPageView,
 } from '../api/client';
+import { SkeletonBlock, SkeletonTable } from '../components/Skeleton';
 import { STAT_PLACEHOLDER } from '../utils/stats';
 
 type AdminState =
@@ -54,8 +54,10 @@ export const AdminPage = (): JSX.Element => {
 
   if (state.status === 'loading') {
     return (
-      <div className="flex justify-center py-24">
-        <span className="loading loading-spinner loading-lg" />
+      <div className="mx-auto max-w-6xl space-y-8 px-4 py-8" role="status" aria-label="Loading developer tools">
+        <SkeletonBlock className="h-8 w-56" />
+        <SkeletonBlock className="h-20 w-full" />
+        <SkeletonTable rows={6} cols={6} label="Loading users" />
       </div>
     );
   }
@@ -63,9 +65,8 @@ export const AdminPage = (): JSX.Element => {
   if (state.status === 'forbidden') {
     return (
       <div className="max-w-md mx-auto py-24 px-4 text-center">
-        <ShieldAlert size={40} className="mx-auto mb-4 text-warning" />
-        <h1 className="text-xl font-bold mb-2">Admin access required</h1>
-        <p className="opacity-70">Your account doesn't have access to the developer tools.</p>
+        <h1 className="mb-2 font-display text-3xl font-semibold uppercase tracking-wide">Admin access required</h1>
+        <p className="text-muted">Your account doesn't have access to the developer tools.</p>
       </div>
     );
   }
@@ -73,7 +74,9 @@ export const AdminPage = (): JSX.Element => {
   if (state.status === 'error') {
     return (
       <div className="max-w-md mx-auto py-24 px-4">
-        <div className="alert alert-error">Failed to load developer tools. Try refreshing.</div>
+        <p className="border border-error px-4 py-3 text-error" role="alert">
+          Failed to load developer tools. Try refreshing.
+        </p>
       </div>
     );
   }
@@ -82,15 +85,12 @@ export const AdminPage = (): JSX.Element => {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 space-y-8">
-      <h1 className="text-2xl font-bold flex items-center gap-2">
-        <Activity size={24} className="text-primary" />
-        Developer Tools
-      </h1>
+      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Developer Tools</h1>
 
-      <div className="stats stats-vertical sm:stats-horizontal shadow w-full">
+      <div className="stats stats-vertical sm:stats-horizontal w-full border border-base-300">
         <div className="stat">
           <div className="stat-title">Total users</div>
-          <div className="stat-value text-primary">{stats.totals.total_users}</div>
+          <div className="stat-value">{stats.totals.total_users}</div>
           <div className="stat-desc">+{stats.totals.new_users_7d} in the last 7 days</div>
         </div>
         <div className="stat">
@@ -106,12 +106,9 @@ export const AdminPage = (): JSX.Element => {
       </div>
 
       <section>
-        <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-          <Users size={18} />
-          Users ({users.length})
-        </h2>
+        <h2 className="mb-3 font-display text-2xl font-semibold uppercase tracking-wide">Users ({users.length})</h2>
         {users.length === 0 ? (
-          <p className="opacity-70">No users yet.</p>
+          <p className="text-muted">No users yet.</p>
         ) : (
           <div className="overflow-x-auto border border-base-300 rounded-box">
             <table className="table table-sm">
@@ -130,7 +127,7 @@ export const AdminPage = (): JSX.Element => {
                   <tr key={user.id}>
                     <td className="font-medium">
                       {user.username}
-                      {user.is_admin && <span className="badge badge-primary badge-sm ml-2">admin</span>}
+                      {user.is_admin && <span className="badge badge-outline badge-sm ml-2">admin</span>}
                     </td>
                     <td>{user.email ?? STAT_PLACEHOLDER}</td>
                     <td>
@@ -152,12 +149,9 @@ export const AdminPage = (): JSX.Element => {
 
       <div className="grid lg:grid-cols-2 gap-8">
         <section>
-          <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-            <Eye size={18} />
-            Top pages (7 days)
-          </h2>
+          <h2 className="mb-3 font-display text-2xl font-semibold uppercase tracking-wide">Top pages (7 days)</h2>
           {stats.top_paths.length === 0 ? (
-            <p className="opacity-70">No page views recorded yet.</p>
+            <p className="text-muted">No page views recorded yet.</p>
           ) : (
             <div className="overflow-x-auto border border-base-300 rounded-box">
               <table className="table table-sm">
@@ -181,12 +175,9 @@ export const AdminPage = (): JSX.Element => {
         </section>
 
         <section>
-          <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-            <Activity size={18} />
-            Recent activity
-          </h2>
+          <h2 className="mb-3 font-display text-2xl font-semibold uppercase tracking-wide">Recent activity</h2>
           {views.length === 0 ? (
-            <p className="opacity-70">No activity yet.</p>
+            <p className="text-muted">No activity yet.</p>
           ) : (
             <div className="overflow-x-auto border border-base-300 rounded-box max-h-96 overflow-y-auto">
               <table className="table table-sm">
@@ -201,7 +192,7 @@ export const AdminPage = (): JSX.Element => {
                   {views.map((view) => (
                     <tr key={view.id}>
                       <td className="whitespace-nowrap">{formatDate(view.created_at)}</td>
-                      <td>{view.username ?? <span className="opacity-50">anonymous</span>}</td>
+                      <td>{view.username ?? <span className="text-faint">anonymous</span>}</td>
                       <td className="font-mono">{view.path}</td>
                     </tr>
                   ))}

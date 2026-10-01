@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { History, Search } from 'lucide-react';
+import { IconSearch } from '../components/icons';
+import { SkeletonLines, SkeletonTable } from '../components/Skeleton';
 import { SeasonPlayerTable } from '../components/player/SeasonPlayerTable';
 import { PlayerCareerModal } from '../components/player/PlayerCareerModal';
 import { getHistoryPlayers, getHistorySeasons, type HistoryPlayersResponse } from '../api/client';
@@ -50,22 +51,16 @@ export const HistoryPage = (): JSX.Element => {
 
   const renderBody = (): JSX.Element => {
     if (loadingRows) {
-      return (
-        <div className="flex items-center justify-center py-20">
-          <span className="loading loading-spinner loading-lg" />
-        </div>
-      );
+      return <SkeletonTable rows={12} cols={10} label="Loading season stats" />;
     }
 
     if (rowsError) {
       return (
-        <div className="card bg-base-200">
-          <div className="card-body flex flex-col items-center py-12 gap-4">
-            <p className="text-error text-sm">{rowsError}</p>
-            <button onClick={() => void reloadRows()} className="btn btn-primary btn-sm">
-              Try Again
-            </button>
-          </div>
+        <div className="flex flex-col items-center py-12 gap-4 border border-base-300">
+          <p className="text-error text-sm">{rowsError}</p>
+          <button onClick={() => void reloadRows()} className="btn btn-primary btn-sm">
+            Try Again
+          </button>
         </div>
       );
     }
@@ -76,38 +71,30 @@ export const HistoryPage = (): JSX.Element => {
   return (
     <div className="pb-20">
       <div className="max-w-[1400px] mx-auto px-4 py-6">
-        <div className="flex items-center gap-2 mb-1">
-          <History size={20} className="opacity-60" />
-          <h1 className="text-xl font-bold">Season History</h1>
-        </div>
-        <p className="text-sm opacity-50 mb-5">
+        <h1 className="font-display text-3xl font-semibold uppercase tracking-wide mb-1">
+          Season History
+        </h1>
+        <p className="text-sm text-muted mb-5">
           Per-game averages for every player, season by season. Click a player for his other
           seasons.
         </p>
 
         {loadingSeasons ? (
-          <div className="flex items-center justify-center py-20">
-            <span className="loading loading-spinner loading-lg" />
-          </div>
+          <SkeletonLines lines={2} label="Loading seasons" />
         ) : seasonsError ? (
-          <div className="card bg-base-200">
-            <div className="card-body flex flex-col items-center py-12 gap-4">
-              <p className="text-error text-sm">{seasonsError}</p>
-              <button onClick={() => void reloadSeasons()} className="btn btn-primary btn-sm">
-                Try Again
-              </button>
-            </div>
+          <div className="flex flex-col items-center py-12 gap-4 border border-base-300">
+            <p className="text-error text-sm">{seasonsError}</p>
+            <button onClick={() => void reloadSeasons()} className="btn btn-primary btn-sm">
+              Try Again
+            </button>
           </div>
         ) : seasonList.length === 0 ? (
-          <div className="card bg-base-200">
-            <div className="card-body items-center text-center py-12 gap-2">
-              <History size={32} className="opacity-30" />
-              <p className="font-semibold">No historical data available yet</p>
-              <p className="text-sm opacity-60 max-w-md">
-                Season-by-season stats show up here once historical seasons have been
-                imported. Current-season stats are on the Stats tab in the meantime.
-              </p>
-            </div>
+          <div className="flex flex-col items-center text-center py-12 gap-2 border border-base-300">
+            <p className="font-semibold">No historical data available yet</p>
+            <p className="text-sm text-muted max-w-md">
+              Season-by-season stats show up here once historical seasons have been
+              imported. Current-season stats are on the Stats tab in the meantime.
+            </p>
           </div>
         ) : (
           <>
@@ -124,7 +111,7 @@ export const HistoryPage = (): JSX.Element => {
               </select>
 
               <label className="input input-bordered input-sm flex items-center gap-2 flex-1 min-w-[200px] max-w-[360px]">
-                <Search size={14} className="opacity-50" />
+                <IconSearch size={14} className="text-muted" />
                 <input
                   type="text"
                   value={search}
@@ -136,7 +123,7 @@ export const HistoryPage = (): JSX.Element => {
               </label>
 
               {truncated && (
-                <span className="text-xs opacity-40">
+                <span className="text-xs text-faint">
                   showing the top {rows.length} of {total}
                 </span>
               )}

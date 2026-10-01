@@ -28,4 +28,23 @@ describe('BettingOddsBoard', () => {
     expect(screen.getByText('52.8%')).toBeInTheDocument();
     expect(screen.queryByText('NaN%')).not.toBeInTheDocument();
   });
+
+  it('renders a ruled table with one away row and one home row per game', () => {
+    // arrange + act
+    render(<BettingOddsBoard games={[unpricedGame]} loading={false} error="" onRetry={vi.fn()} />);
+
+    // assert
+    expect(screen.getByRole('columnheader', { name: 'Spread' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Moneyline' })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: 'San Antonio Spurs' })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: 'New York Knicks' })).toBeInTheDocument();
+  });
+
+  it('shows a skeleton table while loading', () => {
+    // arrange + act
+    render(<BettingOddsBoard games={[]} loading error="" onRetry={vi.fn()} />);
+
+    // assert
+    expect(screen.getByRole('status', { name: /Loading upcoming games/ })).toBeInTheDocument();
+  });
 });

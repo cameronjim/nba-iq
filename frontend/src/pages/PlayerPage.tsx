@@ -1,5 +1,6 @@
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { IconChevronLeft } from '../components/icons';
+import { SkeletonBlock, SkeletonLines, SkeletonTable } from '../components/Skeleton';
 import { PercentilePanel } from '../components/player/PercentilePanel';
 import { StatDistributionSection } from '../components/player/StatDistributionSection';
 import { PlayerTrendsSection } from '../components/player/PlayerTrendsSection';
@@ -21,7 +22,7 @@ const injuryAlertClass = (status: string): string => {
 
 const BackLink = (): JSX.Element => (
   <Link to="/stats" className="btn btn-ghost btn-xs gap-1 -ml-2 mb-2">
-    <ArrowLeft size={14} />
+    <IconChevronLeft size={14} />
     Back to stats
   </Link>
 );
@@ -40,7 +41,7 @@ export const PlayerPage = (): JSX.Element => {
   // a separate request on purpose, so a failure here renders nothing rather than
   // taking the page down. `from` is deliberately not passed: with no date filter the
   // section stays non-empty while the only published run is a backtest.
-  const { data: predictions } = useCachedResource<PlayerPredictionsResponse>(
+  const { data: predictions, loading: loadingPredictions } = useCachedResource<PlayerPredictionsResponse>(
     playerPredictionsKey(playerId),
     () => getPlayerPredictions(playerId),
     { enabled: valid, errorMessage: 'Failed to load upcoming predictions' }
@@ -50,11 +51,9 @@ export const PlayerPage = (): JSX.Element => {
     return (
       <div className="max-w-[900px] mx-auto px-4 py-6">
         <BackLink />
-        <div className="card bg-base-200">
-          <div className="card-body items-center text-center py-12 gap-2">
-            <p className="font-semibold">Unknown player</p>
-            <p className="text-sm opacity-60">That link doesn&apos;t point at a player we have.</p>
-          </div>
+        <div className="flex flex-col items-center text-center py-12 gap-2 border border-base-300">
+          <p className="font-semibold">Unknown player</p>
+          <p className="text-sm text-muted">That link doesn&apos;t point at a player we have.</p>
         </div>
       </div>
     );
@@ -66,20 +65,25 @@ export const PlayerPage = (): JSX.Element => {
       return (
         <div className="max-w-[900px] mx-auto px-4 py-6">
           <BackLink />
-          <div className="card bg-base-200">
-            <div className="card-body flex flex-col items-center py-12 gap-4">
-              <p className="text-error text-sm">{error}</p>
-              <button onClick={() => void reload()} className="btn btn-primary btn-sm">
-                Try Again
-              </button>
-            </div>
+          <div className="flex flex-col items-center py-12 gap-4 border border-base-300">
+            <p className="text-error text-sm">{error}</p>
+            <button onClick={() => void reload()} className="btn btn-primary btn-sm">
+              Try Again
+            </button>
           </div>
         </div>
       );
     }
     return (
-      <div className="flex items-center justify-center py-20">
-        <span className="loading loading-spinner loading-lg" />
+      <div className="max-w-[900px] mx-auto px-4 py-6 flex flex-col gap-5">
+        <BackLink />
+        <div className="flex items-start gap-4">
+          <SkeletonBlock className="h-16 w-16" />
+          <div className="flex-1">
+            <SkeletonLines lines={3} label="Loading player" />
+          </div>
+        </div>
+        <SkeletonTable rows={5} cols={7} label="Loading player stats" />
       </div>
     );
   }
@@ -97,7 +101,7 @@ export const PlayerPage = (): JSX.Element => {
         <header className="flex items-start gap-3 sm:gap-4 mb-5">
           {player.headshot_url && (
             <div className="avatar shrink-0">
-              <div className="w-14 sm:w-16 rounded-full ring ring-primary ring-offset-base-100 ring-offset-2">
+              <div className="w-14 sm:w-16 rounded-box border border-base-300">
                 <img
                   src={player.headshot_url}
                   alt={player.name}
@@ -109,8 +113,10 @@ export const PlayerPage = (): JSX.Element => {
             </div>
           )}
           <div className="min-w-0">
-            <h1 className="font-bold text-xl sm:text-2xl leading-tight">{player.name}</h1>
-            <p className="text-sm opacity-60">
+            <h1 className="font-display text-3xl font-semibold uppercase tracking-wide leading-tight">
+              {player.name}
+            </h1>
+            <p className="text-sm text-muted">
               {[player.team, player.position].filter(Boolean).join(' · ')}
             </p>
             {player.injury_status && (
@@ -121,7 +127,7 @@ export const PlayerPage = (): JSX.Element => {
                   {player.injury_status.replace(/_/g, ' ')}
                 </span>
                 {player.injury_detail && (
-                  <span className="text-[11px] opacity-80">· {player.injury_detail}</span>
+                  <span className="text-[11px] text-muted">· {player.injury_detail}</span>
                 )}
               </div>
             )}
@@ -131,7 +137,11 @@ export const PlayerPage = (): JSX.Element => {
         <div className="flex flex-col gap-5">
           {prediction && <PlayerPredictionCard prediction={prediction} />}
 
-          <PlayerUpcomingGames data={predictions} />
+          {loadingPredictions && !predictions ? (
+            <SkeletonTable rows={4} cols={6} label="Loading upcoming games" />
+          ) : (
+            <PlayerUpcomingGames data={predictions} />
+          )}
 
           <PercentilePanel percentiles={percentiles} pool={pool} />
 
@@ -142,14 +152,12 @@ export const PlayerPage = (): JSX.Element => {
           />
 
           {noTrends ? (
-            <div className="card bg-base-200 border border-base-300">
-              <div className="card-body p-4 sm:p-5 items-center text-center gap-1">
-                <p className="text-sm font-semibold">No game logs yet</p>
-                <p className="text-xs opacity-60 max-w-md">
-                  Per-game trends and recent box scores appear here once this player&apos;s game
-                  logs have been ingested. The percentiles above are unaffected.
-                </p>
-              </div>
+            <div className="border-t border-base-300 pt-4 flex flex-col items-center text-center gap-1">
+              <p className="text-sm font-semibold">No game logs yet</p>
+              <p className="text-xs text-muted max-w-md">
+                Per-game trends and recent box scores appear here once this player&apos;s game
+                logs have been ingested. The percentiles above are unaffected.
+              </p>
             </div>
           ) : (
             <>
@@ -161,7 +169,7 @@ export const PlayerPage = (): JSX.Element => {
           <PlayerCareerSection nbaPlayerId={player.nba_id} framed />
         </div>
 
-        <footer className="text-[11px] opacity-40 mt-6 pt-3 border-t border-base-300 flex flex-wrap gap-x-4 gap-y-1">
+        <footer className="text-[11px] text-faint mt-6 pt-3 border-t border-base-300 flex flex-wrap gap-x-4 gap-y-1">
           <span>Game logs as of {logsAt ?? 'no game logs yet'}</span>
           <span>Distributions as of {distributionsAt ?? 'unknown'}</span>
         </footer>

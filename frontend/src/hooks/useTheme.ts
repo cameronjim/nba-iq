@@ -9,18 +9,14 @@ export interface ThemeOption {
 }
 
 export const THEMES: readonly ThemeOption[] = [
-  { id: 'lofi', label: 'Light', scheme: 'light' },
-  { id: 'cream', label: 'Cream', scheme: 'light' },
-  { id: 'sage', label: 'Sage', scheme: 'light' },
-  { id: 'slate', label: 'Slate', scheme: 'light' },
-  { id: 'ocean', label: 'Ocean', scheme: 'light' },
-  { id: 'business', label: 'Dark', scheme: 'dark' },
-  { id: 'graphite', label: 'Graphite', scheme: 'dark' },
+  { id: 'paper', label: 'Paper', scheme: 'light' },
+  { id: 'contrast', label: 'High contrast', scheme: 'light' },
+  { id: 'night', label: 'Night', scheme: 'dark' },
 ];
 
 const THEME_IDS = new Set(THEMES.map((t) => t.id));
-const DEFAULT_LIGHT = 'lofi';
-const DEFAULT_DARK = 'business';
+const DEFAULT_LIGHT = 'paper';
+const DEFAULT_DARK = 'night';
 
 function getInitialTheme(): string {
   if (typeof window === 'undefined') return DEFAULT_LIGHT;

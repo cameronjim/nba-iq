@@ -102,12 +102,13 @@ describe('Rating2kModal', () => {
     expect(screen.getByText(/Not affiliated/)).toBeInTheDocument();
   });
 
-  it('shows a spinner while loading, with the summary header already in place', () => {
+  it('shows skeletons while loading, with the summary header already in place', () => {
     detailMock.mockReturnValue(new Promise(() => {}));
 
     render(<Rating2kModal slug="nikola-jokic" summary={summary} onClose={() => {}} />);
 
-    expect(document.body.querySelector('.loading-spinner')).not.toBeNull();
+    expect(screen.getAllByRole('status', { name: 'Loading 2K ratings' }).length).toBeGreaterThan(0);
+    expect(document.body.querySelector('.loading-spinner')).toBeNull();
     expect(screen.getByRole('heading', { name: 'Nikola Jokic' })).toBeInTheDocument();
   });
 
