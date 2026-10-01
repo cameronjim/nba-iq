@@ -675,7 +675,7 @@ export function rankCandidates(
     .slice(0, limit);
 }
 
-type PredictionRow = {
+export type WindowPredictionRow = {
   game_date: unknown;
   nba_game_id: unknown;
   nba_player_id: unknown;
@@ -704,12 +704,12 @@ const COND_PIVOT_SQL = CONDITIONAL_STATS.map(
                        THEN pgp.value END)::float AS c_${stat}`
 ).join(',\n              ');
 
-async function fetchPredictions(
+export async function fetchWindowPredictionRows(
   runId: number,
   from: string,
   to: string
-): Promise<PredictionRow[]> {
-  return rowsOrEmpty<PredictionRow>(() =>
+): Promise<WindowPredictionRow[]> {
+  return rowsOrEmpty<WindowPredictionRow>(() =>
     query(
       `SELECT pgp.game_date,
               pgp.nba_game_id,
@@ -749,7 +749,7 @@ interface GameRow {
   away_team_abbr: unknown;
 }
 
-async function fetchGameTeams(
+export async function fetchGameTeams(
   from: string,
   to: string
 ): Promise<Map<string, [string | null, string | null]>> {
@@ -789,7 +789,7 @@ export function opponentOf(
 }
 
 export function buildCandidates(
-  rows: PredictionRow[],
+  rows: WindowPredictionRow[],
   baselines: Map<string, PlayerBaseline>,
   gameTeams: Map<string, [string | null, string | null]>,
   date: string
@@ -923,7 +923,7 @@ export async function fetchWatchlistWindow(
     candidates: [],
   };
 
-  const rows = await fetchPredictions(runId, window.from, window.to);
+  const rows = await fetchWindowPredictionRows(runId, window.from, window.to);
   if (rows.length === 0) return empty;
 
   const baselines = await fetchBaselines(window.from);

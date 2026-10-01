@@ -10,7 +10,7 @@ import type { AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 
-const PROMPT_VERSION = 'v5-fp-formula';
+const PROMPT_VERSION = 'v6-ranked-candidates';
 
 async function getRosterHash(userId: number): Promise<string> {
   const result = await query(
@@ -227,6 +227,7 @@ router.get('/waiver-suggestions', async (req: Request, res: Response): Promise<v
 
 Rules:
 - Only recommend players from the candidate lists provided. Do not invent player names.
+- The candidate lists are already ranked numerically by marginal value to this roster. Explain and sanity-check that ranking rather than re-ranking from scratch: favor the top of each list, and if you skip a higher-ranked player, say why in the reasoning of the player you chose instead.
 - Each player name must appear at most once across the entire response.
 - The "reasoning" field must be plain text only — no markdown, no rank numbers, no meta-commentary.
 - Do not include phrases like "Duplicate entry", "instead recommend", or any self-correction notes.
