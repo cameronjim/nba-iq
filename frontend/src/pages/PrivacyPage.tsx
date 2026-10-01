@@ -22,7 +22,7 @@ const sections: LegalSection[] = [
         <p>
           If you use the tools: your fantasy roster, your Team Preferences answers (including any free-text notes),
           and the bets you log (market, game, selection, line, odds, description, stake, and result). The latest
-          Claude team analysis, waiver suggestions, and betting picks are cached per account so they do not have to
+          Claude team analysis and waiver suggestions are cached per account so they do not have to
           be regenerated.
         </p>
         <p>

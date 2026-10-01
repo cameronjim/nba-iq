@@ -110,7 +110,7 @@ export const AboutPage = (): JSX.Element => {
         </p>
         <p className="mt-3 leading-relaxed">
           Stats come from NBA.com, injury reports from CBS Sports, odds from ESPN, and 2K ratings from nba2kapi.com.
-          The Claude features (team analysis, waiver suggestions, betting picks, and chat) send your roster and
+          The Claude features (team analysis, waiver suggestions, and chat) send your roster and
           preferences to Anthropic. The <Link to="/privacy" className="link">privacy page</Link> lists exactly what
           is sent and stored.
         </p>

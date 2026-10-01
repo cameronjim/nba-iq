@@ -36,7 +36,7 @@ const sections: LegalSection[] = [
     heading: 'Projections and AI output',
     body: (
       <p>
-        Projections come from a statistical model. Team analysis, waiver suggestions, betting picks, and chat replies
+        Projections and prop picks come from a statistical model. Team analysis, waiver suggestions, and chat replies
         are written by Claude, an AI model from Anthropic, using the data and preferences you provide. Both can be
         wrong. Treat them as one input among many.
       </p>
