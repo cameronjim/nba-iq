@@ -2,35 +2,29 @@ import { useState } from 'react';
 import { getSlate } from '../api/client';
 import { todayInEastern } from '../utils/dates';
 import { useCachedResource } from './useCachedResource';
-import type { SlateResponse, SlateSort } from '../types';
+import type { SlateResponse } from '../types';
 
 export interface UseSlate {
   date: string;
-  // the date is today on the eastern calendar, which is what the picker opens on.
-  isToday: boolean;
   setDate: (date: string) => void;
-  sort: SlateSort;
-  setSort: (sort: SlateSort) => void;
   data: SlateResponse | null;
   loading: boolean;
   error: string;
   reload: () => Promise<void>;
 }
 
-export function useSlate(): UseSlate {
+// always the server's default order (impact), so every caller shares one cached request.
+export function useSlate(enabled = true): UseSlate {
   const [date, setDateState] = useState(todayInEastern);
-  const [sort, setSort] = useState<SlateSort>('impact');
 
   const { data, loading, error, reload } = useCachedResource<SlateResponse>(
-    `slate:${date}:${sort}`,
-    () => getSlate(date, sort),
-    { errorMessage: 'Failed to load the slate' }
+    `slate:${date}:impact`,
+    () => getSlate(date),
+    { enabled, errorMessage: 'Failed to load the slate' }
   );
 
   // a cleared date input falls back to today rather than requesting an empty date.
   const setDate = (next: string): void => setDateState(next || todayInEastern());
 
-  const isToday = date === todayInEastern();
-
-  return { date, isToday, setDate, sort, setSort, data, loading, error, reload };
+  return { date, setDate, data, loading, error, reload };
 }

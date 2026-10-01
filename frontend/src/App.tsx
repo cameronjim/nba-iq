@@ -7,8 +7,7 @@ import { StatsPage } from './pages/StatsPage';
 import { HistoryPage } from './pages/HistoryPage';
 import { PlayerPage } from './pages/PlayerPage';
 import { Ratings2kPage } from './pages/Ratings2kPage';
-import { SlatePage } from './pages/SlatePage';
-import { WatchlistPage } from './pages/WatchlistPage';
+import { ProjectionsPage, WatchlistRedirect } from './pages/ProjectionsPage';
 import { FantasyPage } from './pages/FantasyPage';
 import { ImproveTeamPage } from './pages/ImproveTeamPage';
 import { BettingPage } from './pages/BettingPage';
@@ -63,8 +62,8 @@ export const App = (): JSX.Element => {
               <Route path="/" element={<HomePage isLoggedIn={isLoggedIn} />} />
               <Route path="/stats" element={<StatsPage />} />
               <Route path="/player/:id" element={<PlayerPage />} />
-              <Route path="/projections" element={<SlatePage />} />
-              <Route path="/watchlist" element={<WatchlistPage />} />
+              <Route path="/projections" element={<ProjectionsPage />} />
+              <Route path="/watchlist" element={<WatchlistRedirect />} />
               <Route path="/history" element={<HistoryPage />} />
               <Route path="/ratings" element={<Ratings2kPage />} />
               <Route path="/fantasy" element={<FantasyPage isLoggedIn={isLoggedIn} />} />

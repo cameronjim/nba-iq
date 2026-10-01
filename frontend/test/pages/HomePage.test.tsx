@@ -112,7 +112,6 @@ describe('HomePage', () => {
     const sections: Array<[string, string]> = [
       ['Stats', '/stats'],
       ['Projections', '/projections'],
-      ['Watchlist', '/watchlist'],
       ['History', '/history'],
       ['2K Ratings', '/ratings'],
       ['My Team', '/fantasy'],

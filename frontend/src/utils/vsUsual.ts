@@ -7,11 +7,8 @@ import type {
   WatchlistEvidence,
 } from '../types';
 
-// a projected swing smaller than this is noise, so a row without a reason stays quiet.
-export const VS_USUAL_MIN_DELTA_SHOWN = 2;
-
 // short labels matching the Projections category line.
-export const VS_USUAL_LABELS: Record<VsUsualCategory | 'minutes' | 'pts', string> = {
+const VS_USUAL_LABELS: Record<VsUsualCategory | 'minutes' | 'pts', string> = {
   minutes: 'MIN',
   pts: 'PTS',
   reb: 'REB',
@@ -27,7 +24,7 @@ export function signedStat(value: NumericLike | null | undefined): string {
   return `${n > 0 ? '+' : ''}${formatStat(n)}`;
 }
 
-// the reason-specific evidence lines, shared by the Watchlist and the Projections page.
+// the reason-specific evidence lines, shared by both projection scopes.
 export function reasonEvidenceLines(
   evidence: WatchlistEvidence,
   usualPoints: NumericLike | null
@@ -79,19 +76,4 @@ export function slateEvidenceLines(player: SlatePlayer): string[] {
     ),
   ].filter((line): line is string => line !== null);
   return [...lines, ...reasonEvidenceLines(player.evidence, vs.points.usual)];
-}
-
-export function showsVsUsual(player: SlatePlayer): boolean {
-  if (player.reasons.length > 0) return true;
-  const delta = toStatNumber(player.vs_usual?.minutes.delta);
-  return delta !== null && Math.abs(delta) >= VS_USUAL_MIN_DELTA_SHOWN;
-}
-
-export function compactVsUsual(player: SlatePlayer): string | null {
-  const vs = player.vs_usual;
-  if (!vs) return null;
-  const parts: string[] = [];
-  if (toStatNumber(vs.minutes.delta) !== null) parts.push(`MIN ${signedStat(vs.minutes.delta)}`);
-  for (const c of vs.categories) parts.push(`${VS_USUAL_LABELS[c.stat] ?? c.stat} ${signedStat(c.delta)}`);
-  return parts.length === 0 ? null : parts.join(' · ');
 }

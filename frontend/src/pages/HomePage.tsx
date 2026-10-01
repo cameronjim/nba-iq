@@ -25,8 +25,7 @@ interface Destination {
 
 const destinations: Destination[] = [
   { title: 'Stats', to: '/stats', description: 'Per-game averages for every player and team. Sort, filter, and compare.', needsAuth: false },
-  { title: 'Projections', to: '/projections', description: "Predicted stat lines for tonight's games, ranked by fantasy impact.", needsAuth: false },
-  { title: 'Watchlist', to: '/watchlist', description: 'Players putting up numbers above their own baseline.', needsAuth: false },
+  { title: 'Projections', to: '/projections', description: 'Projected lines for tonight and the players to watch over the next 7 days.', needsAuth: false },
   { title: 'History', to: '/history', description: 'Season-by-season stats from past years.', needsAuth: false },
   { title: '2K Ratings', to: '/ratings', description: 'NBA 2K ratings and attribute breakdowns.', needsAuth: false },
   { title: 'My Team', to: '/fantasy', description: 'Your roster with category averages.', needsAuth: true },
