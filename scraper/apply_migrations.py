@@ -22,10 +22,37 @@ from run_scraper import TARGET_DEV, TARGET_PROD, resolve_database_url  # noqa: E
 logger = logging.getLogger(__name__)
 
 
+def ledger_floor(classification: dict[str, list[str]]) -> str | None:
+    """the first filename the ledger knows; files below it predate the ledger.
+
+    the floor is the ledger's oldest entry, not its newest: an unapplied file
+    numbered between two recorded ones is a gap to fill, not history.
+    """
+    known = [*classification["applied"], *classification["mismatched"]]
+    return min(known) if known else None
+
+
+def predates_ledger(classification: dict[str, list[str]]) -> list[str]:
+    """unapplied files that sort below the ledger floor.
+
+    schema_migrations only exists from 013 on, so 001-012 are applied on every
+    database but recorded nowhere; re-running them is not a forward migration.
+    """
+    floor = ledger_floor(classification)
+    if floor is None:
+        return []
+    return sorted(name for name in classification["unapplied"] if name < floor)
+
+
 def plan_migrations(
-    classification: dict[str, list[str]], only: list[str] | None = None
+    classification: dict[str, list[str]],
+    only: list[str] | None = None,
+    include_older: bool = False,
 ) -> list[str]:
     unapplied = sorted(classification["unapplied"])
+    if not include_older:
+        older = set(predates_ledger(classification))
+        unapplied = [name for name in unapplied if name not in older]
     if not only:
         return unapplied
     not_pending = sorted(set(only) - set(unapplied))
@@ -99,18 +126,34 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.set_defaults(apply=False)
     parser.add_argument(
         "--only",
-        dest="only",
-        metavar="FILENAME",
-        action="append",
-        default=[],
-        help="restrict the plan to this unapplied file; repeatable",
+        dest="only_csv",
+        metavar="FILENAMES",
+        default=None,
+        help="restrict the plan to these unapplied files, comma-separated",
     )
-    parser.add_argument(
+    mismatch = parser.add_mutually_exclusive_group()
+    mismatch.add_argument(
         "--allow-mismatch",
         action="store_true",
         help="skip files whose recorded checksum no longer matches instead of refusing",
     )
-    return parser.parse_args(argv)
+    mismatch.add_argument(
+        "--rerecord-mismatch",
+        action="store_true",
+        help="re-record the current checksum of mismatched files (comment-only "
+             "edits to an applied migration) and continue",
+    )
+    parser.add_argument(
+        "--include-older",
+        action="store_true",
+        help="also plan unapplied files below the highest recorded migration; off "
+             "by default because those predate the ledger",
+    )
+    args = parser.parse_args(argv)
+    args.only = [
+        part.strip() for part in (args.only_csv or "").split(",") if part.strip()
+    ]
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -140,20 +183,35 @@ def main(argv: list[str] | None = None) -> int:
         for name in result["orphaned"]:
             logger.warning("    NO SUCH FILE %s (recorded, but not on disk)", name)
 
-        if refuses_on_mismatch(result, args.allow_mismatch):
+        if refuses_on_mismatch(result, args.allow_mismatch or args.rerecord_mismatch):
             for name in result["mismatched"]:
                 logger.error("    CHECKSUM     %s (file edited since it was applied)", name)
             logger.error(
                 "refusing to proceed: %d recorded migration(s) changed on disk. "
-                "Pass --allow-mismatch to skip them.",
+                "Pass --allow-mismatch to skip them, or --rerecord-mismatch if the "
+                "edit was comment-only and the migration is applied.",
                 len(result["mismatched"]),
             )
             return 1
         for name in result["mismatched"]:
-            logger.warning("    SKIPPED      %s (checksum mismatch, --allow-mismatch)", name)
+            if args.rerecord_mismatch:
+                logger.warning(
+                    "    RERECORD     %s (%s -> %s)%s", name,
+                    recorded[name][:12], on_disk[name][:12],
+                    "" if args.apply else " [dry run: not written]",
+                )
+                if args.apply:
+                    _record(conn, name, on_disk[name])
+            else:
+                logger.warning("    SKIPPED      %s (checksum mismatch, --allow-mismatch)", name)
+        for name in predates_ledger(result):
+            logger.warning(
+                "    PREDATES     %s (below the ledger floor %s; not planned, "
+                "--include-older overrides)", name, ledger_floor(result),
+            )
 
         try:
-            plan = plan_migrations(result, args.only)
+            plan = plan_migrations(result, args.only, include_older=args.include_older)
         except ValueError as exc:
             logger.error("%s", exc)
             return 1

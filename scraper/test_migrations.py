@@ -1,6 +1,12 @@
 import pytest
 
-from apply_migrations import _parse_args, plan_migrations, refuses_on_mismatch
+from apply_migrations import (
+    _parse_args,
+    ledger_floor,
+    plan_migrations,
+    predates_ledger,
+    refuses_on_mismatch,
+)
 from check_migrations import classify
 
 
@@ -84,9 +90,64 @@ def test_no_mismatch_never_refuses():
 def test_dry_run_is_the_default_and_apply_must_be_explicit():
     # act
     default = _parse_args(["--prod"])
-    applying = _parse_args(["--dev", "--apply", "--only", "015_a.sql", "--only", "016_b.sql"])
+    applying = _parse_args(["--dev", "--apply", "--only", "015_a.sql,016_b.sql"])
 
     # assert
     assert default.apply is False
     assert applying.apply is True
     assert applying.only == ["015_a.sql", "016_b.sql"]
+
+
+def test_files_below_the_ledger_floor_are_not_planned():
+    # arrange: the ledger knows 013 (applied) and 014 (edited); 001-012 predate it
+    classification = {
+        "applied": ["013_truth_layer.sql"],
+        "mismatched": ["014_predictions.sql"],
+        "unapplied": ["001_a.sql", "012_b.sql", "015_c.sql", "016_d.sql"],
+        "orphaned": [],
+    }
+
+    # act
+    plan = plan_migrations(classification)
+
+    # assert
+    assert ledger_floor(classification) == "013_truth_layer.sql"
+    assert predates_ledger(classification) == ["001_a.sql", "012_b.sql"]
+    assert plan == ["015_c.sql", "016_d.sql"]
+
+
+def test_include_older_puts_the_older_files_back():
+    # arrange
+    classification = {
+        "applied": ["013_truth_layer.sql"],
+        "mismatched": [],
+        "unapplied": ["001_a.sql", "015_c.sql"],
+        "orphaned": [],
+    }
+
+    # act + assert
+    assert plan_migrations(classification, include_older=True) == ["001_a.sql", "015_c.sql"]
+
+
+def test_an_empty_ledger_has_no_floor():
+    # arrange
+    classification = {"applied": [], "mismatched": [], "unapplied": ["001_a.sql"], "orphaned": []}
+
+    # act + assert
+    assert ledger_floor(classification) is None
+    assert plan_migrations(classification) == ["001_a.sql"]
+
+
+def test_only_accepts_a_comma_separated_list():
+    # act
+    args = _parse_args(["--only", "015_c.sql, 016_d.sql"])
+
+    # assert
+    assert args.only == ["015_c.sql", "016_d.sql"]
+
+
+def test_rerecord_and_allow_mismatch_are_exclusive():
+    # act + assert
+    with pytest.raises(SystemExit):
+        _parse_args(["--allow-mismatch", "--rerecord-mismatch"])
+    assert _parse_args(["--rerecord-mismatch"]).rerecord_mismatch is True
