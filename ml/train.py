@@ -48,6 +48,8 @@ from fnba_ml.intervals import (  # noqa: E402
     QUANTILE_TARGETS,
     QuantileOffsets,
     fit_residual_quantiles,
+    fit_residual_quantiles_by_tier,
+    tiered_quantiles_as_dict,
 )
 from fnba_ml.models import (  # noqa: E402
     AvailabilityModel,
@@ -86,6 +88,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help=f"training cutoff. policy: {CUTOFF_POLICY}")
     parser.add_argument("--holdout-days", type=int, default=DEFAULT_HOLDOUT_DAYS)
     parser.add_argument("--models-dir", type=Path, default=MODELS_DIR)
+    parser.add_argument(
+        "--tiered-quantiles", action="store_true",
+        help="also write challenger per-minutes-tier offsets under "
+             "production.quantiles_by_tier (nothing serves them)",
+    )
     return parser.parse_args(argv)
 
 
@@ -144,13 +151,13 @@ def holdout_metrics(
     return metrics
 
 
-def holdout_quantiles(
+def holdout_points(
     features: pd.DataFrame,
     feature_cols: list[str],
     cutoff: pd.Timestamp,
     holdout_days: int,
-) -> dict[str, QuantileOffsets]:
-    """P10/P50/P90 offsets for the conditional champion, per target."""
+) -> tuple[pd.DataFrame, dict[str, object], tuple[str, str]] | None:
+    """holdout appearance rows, the shipped conditional point per target, the window."""
     # residuals are measured on APPEARANCES only, and against the estimator that
     # ships: a band fitted to one point estimate does not cover another.
     split_at = cutoff - pd.Timedelta(days=holdout_days)
@@ -160,27 +167,60 @@ def holdout_quantiles(
     )
     if train.empty or valid.empty:
         log.warning("holdout window is empty; no quantile offsets will be written")
-        return {}
+        return None
 
     window = (str(split_at.date()), str(pd.Timestamp(cutoff).date()))
     minutes_model = MinutesModel(kind=CHAMPIONS["minutes"]).fit(train, feature_cols, split_at)
     minutes_pred = minutes_model.predict(valid)
 
-    offsets: dict[str, QuantileOffsets] = {}
+    points: dict[str, object] = {}
     for target in QUANTILE_TARGETS:
         if target not in valid.columns:
             log.warning("no %s in the dataset; skipping its quantiles", target)
             continue
         if target == MINUTES_TARGET:
-            point = minutes_pred
+            points[target] = minutes_pred
         else:
-            point = conditional_estimate(
+            points[target] = conditional_estimate(
                 minutes_pred, PerMinuteRate(target).fit(train).predict(valid)
             )
-        offsets[target] = fit_residual_quantiles(
-            valid[target], point, target, window=window
-        )
-    return offsets
+    return valid, points, window
+
+
+def holdout_quantiles(
+    features: pd.DataFrame,
+    feature_cols: list[str],
+    cutoff: pd.Timestamp,
+    holdout_days: int,
+) -> dict[str, QuantileOffsets]:
+    """P10/P50/P90 offsets for the conditional champion, per target."""
+    held = holdout_points(features, feature_cols, cutoff, holdout_days)
+    if held is None:
+        return {}
+    valid, points, window = held
+    return {
+        target: fit_residual_quantiles(valid[target], point, target, window=window)
+        for target, point in points.items()
+    }
+
+
+def holdout_quantiles_by_tier(
+    features: pd.DataFrame,
+    feature_cols: list[str],
+    cutoff: pd.Timestamp,
+    holdout_days: int,
+) -> dict[str, dict[str, object]]:
+    """the challenger per-tier offsets, json-ready, over the same holdout rows."""
+    held = holdout_points(features, feature_cols, cutoff, holdout_days)
+    if held is None:
+        return {}
+    valid, points, window = held
+    out: dict[str, dict[str, object]] = {}
+    for target, point in points.items():
+        frame = valid.assign(_point=point)
+        by_tier = fit_residual_quantiles_by_tier(frame, target, "_point", window=window)
+        out[target] = tiered_quantiles_as_dict(by_tier)
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -256,6 +296,10 @@ def main(argv: list[str] | None = None) -> int:
         "fallbacks": {k: round(v, 6) for k, v in fallbacks.items()},
         "quantiles": {target: q.as_dict() for target, q in quantiles.items()},
     }
+    if args.tiered_quantiles:
+        production["quantiles_by_tier"] = holdout_quantiles_by_tier(
+            features, feature_cols, cutoff, args.holdout_days
+        )
 
     metadata = {
         "model_version": version,
