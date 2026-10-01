@@ -434,6 +434,7 @@ class TestArgs:
     def test_the_scheduled_invocation_needs_no_arguments(self) -> None:
         args = daily_run.parse_args([])
         assert args.window_days == 2
+        assert args.extended_days == 7
         assert args.window_start is None
         assert args.dry_run is False
 
@@ -444,3 +445,103 @@ class TestArgs:
         args = daily_run.parse_args([])
         assert args.out_dir != config.DATA_DIR
         assert args.out_dir.parent == config.DATA_DIR
+
+    def test_the_extended_window_defaults_to_seven_days(self) -> None:
+        assert daily_run.parse_args([]).extended_days == 7
+
+    def test_the_extended_window_may_equal_the_prospective_one(self) -> None:
+        assert daily_run.parse_args(["--extended-days", "2"]).extended_days == 2
+
+    def test_the_extended_window_may_not_be_shorter(self) -> None:
+        with pytest.raises(SystemExit):
+            daily_run.parse_args(["--extended-days", "1"])
+        with pytest.raises(SystemExit):
+            daily_run.parse_args(["--window-days", "3", "--extended-days", "2"])
+
+
+def _extended_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "GAME_ID": ["0012600001", "0022600001", "0022600002", "0022600003"],
+            "PLAYER_ID": ["1", "2", "3", "4"],
+            "GAME_DATE": pd.to_datetime(
+                ["2026-10-20", "2026-10-20", "2026-10-21", "2026-10-22"]
+            ),
+        }
+    )
+
+
+def _extended_schedule() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "GAME_ID": ["0012600001", "0022600001", "0022600002", "0022600003"],
+            "SEASON_TYPE": ["Pre Season", "Regular Season", "Regular Season",
+                            "Regular Season"],
+        }
+    )
+
+
+class TestSplitProspective:
+    def test_keeps_regular_season_games_inside_the_window(self) -> None:
+        kept = daily_run.split_prospective(
+            _extended_frame(), _extended_schedule(),
+            date(2026, 10, 20), date(2026, 10, 21),
+        )
+        assert list(kept["GAME_ID"]) == ["0022600001", "0022600002"]
+
+    def test_preseason_is_excluded_even_inside_the_window(self) -> None:
+        kept = daily_run.split_prospective(
+            _extended_frame(), _extended_schedule(),
+            date(2026, 10, 20), date(2026, 10, 20),
+        )
+        assert "0012600001" not in set(kept["GAME_ID"])
+
+    def test_games_after_the_window_are_excluded(self) -> None:
+        kept = daily_run.split_prospective(
+            _extended_frame(), _extended_schedule(),
+            date(2026, 10, 20), date(2026, 10, 21),
+        )
+        assert "0022600003" not in set(kept["GAME_ID"])
+
+    def test_an_all_preseason_slate_yields_an_empty_frame(self) -> None:
+        schedule = _extended_schedule().assign(SEASON_TYPE="Pre Season")
+        kept = daily_run.split_prospective(
+            _extended_frame(), schedule, date(2026, 10, 20), date(2026, 10, 21)
+        )
+        assert kept.empty
+        assert list(kept.columns) == list(_extended_frame().columns)
+
+    def test_it_does_not_mutate_its_input(self) -> None:
+        frame = _extended_frame()
+        before = frame.copy()
+        daily_run.split_prospective(
+            frame, _extended_schedule(), date(2026, 10, 20), date(2026, 10, 21)
+        )
+        pd.testing.assert_frame_equal(frame, before)
+
+
+class TestExtendedNotes:
+    def test_never_carries_the_prospective_label(self) -> None:
+        note = daily_run.extended_notes(7, [])
+        assert config.PROSPECTIVE_RUN_NOTE_LABEL not in note
+        assert note.startswith("NOT PROSPECTIVE (extended 7-day serving window")
+
+    def test_carries_no_horizon_token_and_keeps_the_tail(self) -> None:
+        note = daily_run.extended_notes(
+            7, ["season_type Pre Season is not Regular Season"]
+        )
+        assert "horizon=" not in note
+        assert "Pre Season" in note
+        assert f"feature_set={config.SERVED_FEATURE_SET}; shadow=false" in note
+
+    def test_staleness_is_appended(self) -> None:
+        note = daily_run.extended_notes(7, [], "STALE truth layer")
+        assert "STALE truth layer" in note
+
+    def test_the_label_cannot_be_smuggled_in_through_a_condition(self) -> None:
+        with pytest.raises(AssertionError):
+            daily_run.extended_notes(7, [config.PROSPECTIVE_RUN_NOTE_LABEL])
+
+    def test_the_slate_widens_only_the_slate_query(self) -> None:
+        assert "Pre Season" in daily_run.SLATE_SEASON_TYPES
+        assert config.SEASON_TYPES == ["Regular Season"]

@@ -79,6 +79,9 @@ TARGETS = (MINUTES_TARGET, *PRODUCTION_TARGETS)
 
 BIASED_UNIVERSE = "approximation"
 
+# a multi-day run has no single horizon bucket; this records none rather than a false one
+NO_HORIZON = "none"
+
 KEY_COLS = ["PLAYER_ID", "PLAYER_NAME", "GAME_ID", "TEAM_ID", "OPP_TEAM_ID",
             "GAME_DATE", "SEASON", "IS_HOME", "MIN_TIER"]
 
@@ -102,8 +105,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="parquet or csv of latest injury designations")
     parser.add_argument("--statuses-as-of", default=None,
                         help="information boundary for the injury reports")
-    parser.add_argument("--horizon", choices=tuple(HORIZONS), default=DEFAULT_HORIZON,
-                        help="when this run is being made relative to tipoff")
+    parser.add_argument("--horizon", choices=(*HORIZONS, NO_HORIZON),
+                        default=DEFAULT_HORIZON,
+                        help="when this run is being made relative to tipoff; 'none' "
+                             "writes no horizon label (multi-day runs)")
     return parser.parse_args(argv)
 
 
@@ -294,7 +299,7 @@ def horizon_metadata(
     features: pd.DataFrame,
     statuses: pd.DataFrame | None,
     as_of: pd.Timestamp,
-    requested: str,
+    requested: str | None,
 ) -> dict[str, object]:
     """the per-run horizon facts config.HORIZON_RUN_METADATA names."""
     boundary = pd.Timestamp(as_of)
@@ -339,7 +344,7 @@ def horizon_metadata(
         first_deadline_passed = bool(boundary >= deadline)
 
     return {
-        "horizon_requested": horizon_label(requested),
+        "horizon_requested": horizon_label(requested) if requested else NO_HORIZON,
         "horizon_measured": horizon_for_offset(median) or "outside every window",
         "hours_to_tip_min": round(float(hours.min()), 3) if len(hours) else None,
         "hours_to_tip_median": round(median, 3) if len(hours) else None,
@@ -363,7 +368,7 @@ def write_run(
     metadata: dict,
     forecast_cutoff: pd.Timestamp,
     notes: str | None,
-    horizon: str,
+    horizon: str | None,
     horizon_facts: dict[str, object] | None = None,
 ) -> tuple[int, int]:
     """build the rows, insert them in one transaction, link the run back."""
@@ -397,7 +402,7 @@ def write_run(
             # what a database consumer reads, the registry entry is what an audit of
             # the artifact reads, and neither should have to join to the other to
             # answer "how far before tipoff was this claim made".
-            "horizon": horizon_label(horizon),
+            "horizon": horizon_label(horizon) if horizon else NO_HORIZON,
             # the measured facts behind the label. a horizon comparison that has only
             # labels to work with cannot separate "the later run had better
             # information" from "the later run was made three hours later"; these are
@@ -470,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
 
     source = universe_source(upcoming, metadata)
     notes = args.notes
+    horizon = None if args.horizon == NO_HORIZON else args.horizon
 
     # the run-level half of the cold-start flag. Prepended to notes on the same
     # pattern ``store.build_run_record`` uses for the horizon, and for the same
@@ -501,20 +507,20 @@ def main(argv: list[str] | None = None) -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     predictions.to_parquet(args.out, index=False)
 
-    horizon_facts = horizon_metadata(upcoming, statuses, statuses_as_of, args.horizon)
-    if horizon_facts["horizon_measured"] != args.horizon:
+    horizon_facts = horizon_metadata(upcoming, statuses, statuses_as_of, horizon)
+    if horizon and horizon_facts["horizon_measured"] != horizon:
         log.warning(
             "this run was labelled %r but its measured median offset (%s h) puts it "
             "in %r. the label is what gets stored; the measurement is what should be "
             "believed.",
-            args.horizon, horizon_facts["hours_to_tip_median"],
+            horizon, horizon_facts["hours_to_tip_median"],
             horizon_facts["horizon_measured"],
         )
 
     written: tuple[int, int] | None = None
     if args.write_db:
         written = write_run(
-            predictions, metadata, run_at, notes, args.horizon, horizon_facts
+            predictions, metadata, run_at, notes, horizon, horizon_facts
         )
 
     summary = override_summary(predictions)
@@ -522,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
     print("--- PREDICT ---")
     print(f"version   : {args.version}")
     print(f"run at    : {run_at.date()} (model cutoff {pd.Timestamp(model.cutoff).date()})")
-    print(f"horizon   : {horizon_label(args.horizon)}")
+    print(f"horizon   : {horizon_label(horizon) if horizon else NO_HORIZON}")
     for key, value in horizon_facts.items():
         if key != "horizon_requested":
             print(f"  {key:22s} {value}")
