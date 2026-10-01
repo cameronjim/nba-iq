@@ -7,6 +7,7 @@ const { query } = await import('../../src/db.js');
 const { clearUpcomingPredictionsCache, DEFAULT_UPCOMING_LIMIT, MAX_UPCOMING_LIMIT } = await import(
   '../../src/services/playerPredictions.js'
 );
+const { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } = await import('../../src/services/slate.js');
 const queryMock = vi.mocked(query);
 
 
@@ -331,5 +332,22 @@ describe('GET /api/players/:id/predictions', () => {
     const res = await request(app).get('/api/players/373/predictions');
 
     expect(res.status).toBe(500);
+  });
+});
+
+describe('GET /api/players/:id/predictions run channel', () => {
+  it('reads the run from the production channel only', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult([playerRow]))
+      .mockResolvedValueOnce(pgResult([runRow]))
+      .mockResolvedValueOnce(pgResult(HOME_GAME));
+
+    // act
+    const res = await request(app).get('/api/players/373/predictions');
+
+    // assert
+    expect(res.status).toBe(200);
+    expect(queryMock.mock.calls[1][1]).toEqual([COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
   });
 });

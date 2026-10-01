@@ -6,8 +6,10 @@ import argparse
 import json
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -22,9 +24,15 @@ from fnba_ml.cli import (  # noqa: E402
     version_dir,
 )
 from fnba_ml import registry  # noqa: E402
+from fnba_ml.coherence import (  # noqa: E402
+    COHERENCE_NONE,
+    COHERENCE_VARIANTS,
+    apply_coherence,
+)
 from fnba_ml.config import (  # noqa: E402
     DATA_DIR,
     DEFAULT_HORIZON,
+    FEATURE_SETS,
     HORIZONS,
     INITIAL_REPORT_DEADLINE_HOUR,
     MINUTES_TARGET,
@@ -34,11 +42,14 @@ from fnba_ml.config import (  # noqa: E402
     PRODUCTION_TARGETS,
     PROSPECTIVE_COLD_START_FLAG,
     PROSPECTIVE_COLD_START_THROUGH,
+    SERVED_FEATURE_SET,
+    TEAMMATE_FEATURE_COLS,
     horizon_for_offset,
     horizon_label,
     is_cold_start,
 )
 from fnba_ml.features import attach_expected_context  # noqa: E402
+from fnba_ml.prospective import SOURCE_PROSPECTIVE  # noqa: E402
 from fnba_ml.intervals import (  # noqa: E402
     QUANTILE_LEVELS,
     QuantileOffsets,
@@ -66,7 +77,10 @@ from fnba_ml.overrides import (  # noqa: E402
     override_summary,
     resolve_overrides,
 )
+from fnba_ml.scenarios import scenario_summary, score_with_scenarios  # noqa: E402
 from fnba_ml.store import (  # noqa: E402
+    PRODUCTION_CHANNEL,
+    RUN_CHANNELS,
     build_prediction_rows,
     build_run_record,
     utc_now,
@@ -94,7 +108,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--models-dir", type=Path, default=MODELS_DIR)
     parser.add_argument("--out", type=Path, default=DATA_DIR / "predictions.parquet")
     parser.add_argument("--run-at", default=None,
-                        help="only score games on or after this date")
+                        help="only score games on or after this date (a game-date "
+                             "selector, not an information boundary; defaults to the "
+                             "model cutoff)")
     parser.add_argument("--write-db", action="store_true",
                         help="also insert the run into prediction_runs / "
                              "player_game_predictions")
@@ -104,16 +120,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--statuses", type=Path, default=None,
                         help="parquet or csv of latest injury designations")
     parser.add_argument("--statuses-as-of", default=None,
-                        help="information boundary for the injury reports")
+                        help="information boundary for the injury reports; stored "
+                             "as prediction_runs.information_as_of (default: now)")
+    parser.add_argument("--history-through", default=None,
+                        help="last game date whose outcomes fed the features, for a "
+                             "frame that holds no played rows (default: derived from "
+                             "the dataset)")
+    parser.add_argument("--channel", choices=RUN_CHANNELS, default=PRODUCTION_CHANNEL,
+                        help="prediction_runs.channel; only 'production' is served")
     parser.add_argument("--horizon", choices=(*HORIZONS, NO_HORIZON),
                         default=DEFAULT_HORIZON,
                         help="when this run is being made relative to tipoff; 'none' "
                              "writes no horizon label (multi-day runs)")
+    parser.add_argument("--coherence", choices=COHERENCE_VARIANTS, default=COHERENCE_NONE,
+                        help="serving-time coherence correction: team minutes to 240, "
+                             "the points identity, both, or none (frozen serving)")
+    parser.add_argument("--scenarios", action="store_true",
+                        help="score team-games with a questionable or doubtful star "
+                             "once per play/sit world and mix the outputs (off by "
+                             "default); writes a <out>_scenarios.parquet audit")
     return parser.parse_args(argv)
 
 
+def artifact_feature_set(metadata: dict) -> str:
+    """the feature set an artifact was trained on; older artifacts predate the key."""
+    return str(metadata.get("feature_set", SERVED_FEATURE_SET))
+
+
+def uses_teammate_context(metadata: dict) -> bool:
+    """whether the artifact's feature set reads any teammate-context column."""
+    name = artifact_feature_set(metadata)
+    columns = FEATURE_SETS.get(name, metadata.get("feature_cols", []))
+    return bool(set(columns) & set(TEAMMATE_FEATURE_COLS))
+
+
 def load_version(version: str, models_dir: Path):
-    """the three models and their shared metadata."""
+    """the models and their shared metadata; the base model is None without context."""
     dir_ = version_dir(version, models_dir)
     model_path = dir_ / "availability_model.joblib"
     minutes_path = dir_ / "minutes_model.joblib"
@@ -126,21 +168,27 @@ def load_version(version: str, models_dir: Path):
             f"no minutes model at {minutes_path}. this version predates the "
             f"minutes-propagating composition; retrain with train.py to score it."
         )
-    if not base_path.exists():
+    with open(meta_path, encoding="utf-8") as fh:
+        metadata = json.load(fh)
+    needs_base = uses_teammate_context(metadata)
+    if needs_base and not base_path.exists():
         raise SystemExit(
             f"no base availability model at {base_path}. this version predates the "
             f"two-stage probabilistic teammate context (feature_version v3); the "
             f"served context features cannot be built for an unplayed slate without "
             f"it. retrain with train.py."
         )
-    with open(meta_path, encoding="utf-8") as fh:
-        metadata = json.load(fh)
     return (
         joblib.load(model_path),
         joblib.load(minutes_path),
-        joblib.load(base_path),
+        joblib.load(base_path) if needs_base else None,
         metadata,
     )
+
+
+def scenario_audit_path(out: Path) -> Path:
+    """where --scenarios writes its per-pivotal-player audit, beside --out."""
+    return out.with_name(f"{out.stem}_scenarios.parquet")
 
 
 def load_statuses(path: Path | None) -> pd.DataFrame | None:
@@ -177,16 +225,29 @@ def rebuild_context(
     statuses: pd.DataFrame | None,
     as_of: pd.Timestamp,
     policy=DEFAULT_POLICY,
+    forced_probabilities: dict[str, float] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """returns (features with the expected context rebuilt, a per-row audit frame)."""
+    """returns (features with the expected context rebuilt, a per-row audit frame).
+
+    ``forced_probabilities`` maps a player id to the p_j his teammates' sums read,
+    applied after the injury override; the scenario path uses it to pin one world.
+    """
     # the override must land on base p BEFORE the teammate sums are taken, or a
     # ruled-out star's minutes never move to his teammates.
     base_p = base_model.predict_proba(features)
     resolved = resolve_overrides(
         features["PLAYER_ID"], base_p, statuses, policy, as_of=as_of
     )
+    probability = resolved.probability
+    forced = None
+    if forced_probabilities:
+        pinned = features["PLAYER_ID"].astype(str).map(
+            {str(k): float(v) for k, v in forced_probabilities.items()}
+        )
+        forced = pinned.notna().to_numpy()
+        probability = np.where(forced, pinned.to_numpy(dtype=float), probability)
     rebuilt = attach_expected_context(
-        features, resolved.probability, pd.Timestamp(base_model.cutoff)
+        features, probability, pd.Timestamp(base_model.cutoff)
     )
     validate_out_of_fold(rebuilt, P_CONTEXT, P_CONTEXT_CUTOFF, "p_context")
 
@@ -194,15 +255,35 @@ def rebuild_context(
         "PLAYER_ID": features["PLAYER_ID"].to_numpy(),
         "GAME_ID": features["GAME_ID"].to_numpy(),
         "P_CONTEXT_BASE": base_p,
-        "P_CONTEXT": resolved.probability,
+        "P_CONTEXT": probability,
         "CONTEXT_OVERRIDDEN": resolved.applies,
     })
+    if forced is not None:
+        audit["CONTEXT_FORCED"] = forced
     log.info(
         "context rebuilt from base p on %d rows; %d of them corrected by the injury "
         "report before the teammate sums were taken",
         len(features), resolved.n_applied,
     )
     return rebuilt, audit
+
+
+def prepare_context(
+    features: pd.DataFrame,
+    base_model,
+    metadata: dict,
+    statuses: pd.DataFrame | None,
+    as_of: pd.Timestamp,
+    policy=DEFAULT_POLICY,
+) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """rebuild_context for a context artifact; a no-op (audit None) for one without."""
+    if not uses_teammate_context(metadata):
+        log.info(
+            "feature_set %s carries no teammate context; skipping rebuild_context",
+            artifact_feature_set(metadata),
+        )
+        return features, None
+    return rebuild_context(features, base_model, statuses, as_of, policy)
 
 
 def build_predictions(
@@ -357,6 +438,49 @@ def horizon_metadata(
     }
 
 
+def history_through(features: pd.DataFrame) -> date | None:
+    """the last GAME_DATE with a played outcome in the frame, or None."""
+    if "GAME_DATE" not in features.columns or features.empty:
+        return None
+    if "PLAYED" in features.columns:
+        played = features[pd.to_numeric(features["PLAYED"], errors="coerce") == 1]
+    elif "UNIVERSE_SOURCE" in features.columns:
+        played = features[features["UNIVERSE_SOURCE"].astype(str) != SOURCE_PROSPECTIVE]
+    else:
+        return None
+    if played.empty:
+        return None
+    newest = pd.to_datetime(played["GAME_DATE"], errors="coerce").max()
+    return None if pd.isna(newest) else pd.Timestamp(newest).date()
+
+
+def as_utc(value: object) -> pd.Timestamp:
+    """an aware UTC timestamp; a naive one is taken to already be UTC."""
+    stamp = pd.Timestamp(value)  # type: ignore[arg-type]
+    return stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+
+
+def forecast_cutoff(run_at: pd.Timestamp, information_as_of: pd.Timestamp) -> pd.Timestamp:
+    """the latest instant any input was allowed to see: max(start of run_at day, info)."""
+    return max(as_utc(pd.Timestamp(run_at).normalize()), as_utc(information_as_of))
+
+
+def run_notes(
+    cold_rows: int, n_rows: int, notes: str | None, coherence: str = COHERENCE_NONE
+) -> str:
+    """the run-level notes: cold-start count, user text, then the coherence choice.
+
+    the token is written only for a non-default choice, so the frozen serving run's
+    note text is byte-identical to what section 13 pinned.
+    """
+    return "; ".join(filter(None, [
+        f"{PROSPECTIVE_COLD_START_FLAG}={cold_rows}/{n_rows} rows "
+        f"(GAME_DATE <= {PROSPECTIVE_COLD_START_THROUGH})",
+        notes,
+        f"coherence={coherence}" if coherence != COHERENCE_NONE else None,
+    ]))
+
+
 def universe_source(features: pd.DataFrame, metadata: dict) -> str:
     if "UNIVERSE_SOURCE" in features.columns and len(features) > 0:
         return str(features["UNIVERSE_SOURCE"].iloc[0])
@@ -366,26 +490,36 @@ def universe_source(features: pd.DataFrame, metadata: dict) -> str:
 def write_run(
     predictions: pd.DataFrame,
     metadata: dict,
-    forecast_cutoff: pd.Timestamp,
+    run_at: pd.Timestamp,
     notes: str | None,
     horizon: str | None,
     horizon_facts: dict[str, object] | None = None,
+    channel: str = PRODUCTION_CHANNEL,
+    information_as_of: pd.Timestamp | None = None,
+    history_through_date: date | None = None,
+    coherence: str = COHERENCE_NONE,
 ) -> tuple[int, int]:
     """build the rows, insert them in one transaction, link the run back."""
     rows = build_prediction_rows(predictions, TARGETS, QUANTILE_LEVELS)
     predicted_at = utc_now()
+    information = (
+        as_utc(information_as_of).to_pydatetime() if information_as_of is not None else None
+    )
     run_record = build_run_record(
         metadata,
         predicted_at=predicted_at,
-        # the information boundary: every game at or after it is what the run is
-        # predicting, and nothing at or after it was visible to the model.
-        forecast_cutoff_at=pd.Timestamp(forecast_cutoff).to_pydatetime(),
+        # the start of the first scored day; build_run_record stores the later of
+        # it and information_as_of, so the column is a true boundary.
+        forecast_cutoff_at=as_utc(pd.Timestamp(run_at).normalize()).to_pydatetime(),
         # the commit that made the PREDICTION. the commit that trained the model
         # is a different fact and lives in the registry entry.
         code_sha=registry.git_commit(),
         status="complete",
         notes=notes,
         horizon=horizon,
+        channel=channel,
+        information_as_of=information,
+        history_through=history_through_date,
     )
     run_id = write_predictions(rows, run_record)
     overridden = (
@@ -397,7 +531,10 @@ def write_run(
         {
             "run_id": run_id,
             "predicted_at": predicted_at.isoformat(timespec="seconds"),
-            "forecast_cutoff_at": str(pd.Timestamp(forecast_cutoff)),
+            "forecast_cutoff_at": pd.Timestamp(run_record["forecast_cutoff_at"]).isoformat(),
+            "channel": channel,
+            "information_as_of": information.isoformat() if information else None,
+            "history_through": str(history_through_date) if history_through_date else None,
             # the horizon lands in both places on purpose: prediction_runs.notes is
             # what a database consumer reads, the registry entry is what an audit of
             # the artifact reads, and neither should have to join to the other to
@@ -412,6 +549,7 @@ def write_run(
             "rows": len(rows),
             "player_games": int(len(predictions)),
             "status_overrides": overridden,
+            "coherence": coherence,
             "override_policy": DEFAULT_POLICY.as_dict() if overridden else None,
         },
     )
@@ -440,14 +578,20 @@ def main(argv: list[str] | None = None) -> int:
         pd.Timestamp(args.statuses_as_of) if args.statuses_as_of
         else pd.Timestamp(utc_now())
     )
+    run_history_through = (
+        pd.Timestamp(args.history_through).date() if args.history_through
+        else history_through(features)
+    )
+    run_cutoff = forecast_cutoff(run_at, statuses_as_of)
 
     # STAGES 1-3 BEFORE ANY FINAL SCORING. the report has to reach the teammate
     # context, not only the row's own probability, or the projections page would
     # correctly show a ruled-out star at ~0 and still show his backup the minutes of
     # a night the star plays.
+    slate = upcoming
     try:
-        upcoming, context_audit = rebuild_context(
-            upcoming, base_model, statuses, statuses_as_of, DEFAULT_POLICY
+        upcoming, context_audit = prepare_context(
+            upcoming, base_model, metadata, statuses, statuses_as_of, DEFAULT_POLICY
         )
     except LeakageError as exc:
         raise SystemExit(
@@ -472,9 +616,29 @@ def main(argv: list[str] | None = None) -> int:
     predictions = apply_status_overrides(
         predictions, statuses, DEFAULT_POLICY, as_of=statuses_as_of
     )
+    scenario_audit: pd.DataFrame | None = None
+    if args.scenarios:
+        try:
+            predictions, scenario_audit = score_with_scenarios(
+                slate, base_model, model, minutes_model, metadata, statuses,
+                statuses_as_of, DEFAULT_POLICY,
+                baseline=predictions, rebuild=rebuild_context, score=build_predictions,
+            )
+        except LeakageError as exc:
+            raise SystemExit(f"refusing to emit scenario predictions: {exc}") from exc
+
+    # last: after the overrides so the minute sums use the served P(play), and
+    # after the scenario mix so a rescored team-game is corrected too.
+    predictions = apply_coherence(predictions, args.coherence)
 
     source = universe_source(upcoming, metadata)
     notes = args.notes
+    if scenario_audit is not None:
+        scenario_facts = scenario_summary(scenario_audit)
+        notes = "; ".join(filter(None, [
+            f"scenarios=on; scenario_team_games={scenario_facts['team_games']}",
+            notes,
+        ]))
     horizon = None if args.horizon == NO_HORIZON else args.horizon
 
     # the run-level half of the cold-start flag. Prepended to notes on the same
@@ -485,11 +649,7 @@ def main(argv: list[str] | None = None) -> int:
     # entirely outside the cold-start window" is a fact a look report needs to be
     # able to read, and an absent note cannot say it.
     cold_rows = int(predictions[PROSPECTIVE_COLD_START_FLAG].sum())
-    notes = "; ".join(filter(None, [
-        f"{PROSPECTIVE_COLD_START_FLAG}={cold_rows}/{len(predictions)} rows "
-        f"(GAME_DATE <= {PROSPECTIVE_COLD_START_THROUGH})",
-        notes,
-    ]))
+    notes = run_notes(cold_rows, len(predictions), notes, args.coherence)
 
     if args.write_db and source == BIASED_UNIVERSE:
         if not args.allow_biased_universe:
@@ -506,6 +666,9 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     predictions.to_parquet(args.out, index=False)
+    scenario_path = scenario_audit_path(args.out)
+    if scenario_audit is not None:
+        scenario_audit.to_parquet(scenario_path, index=False)
 
     horizon_facts = horizon_metadata(upcoming, statuses, statuses_as_of, horizon)
     if horizon and horizon_facts["horizon_measured"] != horizon:
@@ -520,7 +683,11 @@ def main(argv: list[str] | None = None) -> int:
     written: tuple[int, int] | None = None
     if args.write_db:
         written = write_run(
-            predictions, metadata, run_at, notes, horizon, horizon_facts
+            predictions, metadata, run_at, notes, horizon, horizon_facts,
+            channel=args.channel,
+            information_as_of=statuses_as_of,
+            history_through_date=run_history_through,
+            coherence=args.coherence,
         )
 
     summary = override_summary(predictions)
@@ -528,15 +695,24 @@ def main(argv: list[str] | None = None) -> int:
     print("--- PREDICT ---")
     print(f"version   : {args.version}")
     print(f"run at    : {run_at.date()} (model cutoff {pd.Timestamp(model.cutoff).date()})")
+    print(f"channel   : {args.channel}")
+    print(f"cutoff    : {run_cutoff.isoformat()} (latest instant any input could see)")
+    print(f"info as of: {as_utc(statuses_as_of).isoformat()} (injury reports)")
+    print(f"history   : outcomes through {run_history_through or 'unknown'}")
     print(f"horizon   : {horizon_label(horizon) if horizon else NO_HORIZON}")
     for key, value in horizon_facts.items():
         if key != "horizon_requested":
             print(f"  {key:22s} {value}")
     print(f"universe  : {source}")
-    print(f"context p : mean {upcoming[P_CONTEXT].mean():.4f} "
-          f"(base {context_audit['P_CONTEXT_BASE'].mean():.4f}, "
-          f"{int(context_audit['CONTEXT_OVERRIDDEN'].sum()):,} rows corrected by the "
-          f"report before the teammate sums)")
+    print(f"coherence : {args.coherence}")
+    if context_audit is None:
+        print(f"context p : none (feature_set {artifact_feature_set(metadata)} has no "
+              f"teammate context)")
+    else:
+        print(f"context p : mean {upcoming[P_CONTEXT].mean():.4f} "
+              f"(base {context_audit['P_CONTEXT_BASE'].mean():.4f}, "
+              f"{int(context_audit['CONTEXT_OVERRIDDEN'].sum()):,} rows corrected by the "
+              f"report before the teammate sums)")
     print(f"rows      : {len(predictions):,}")
     print(f"games     : {predictions['GAME_ID'].nunique():,}")
     print(f"cold start: {cold_rows:,} of {len(predictions):,} rows "
@@ -555,6 +731,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"overrides : {int(summary['rows'].sum()):,} rows, as of {statuses_as_of}")
         print(summary.to_string(index=False))
+    if scenario_audit is None:
+        print("scenarios : off")
+    else:
+        facts = scenario_summary(scenario_audit)
+        print(f"scenarios : {facts['team_games']:,} team-games, "
+              f"{facts['pivotal_players']:,} pivotal players, "
+              f"{facts['scenarios']:,} worlds scored; backup E[MIN|plays] delta "
+              f"mean {facts['mean_backup_min_delta']}, max {facts['max_backup_min_delta']}")
+        if not scenario_audit.empty:
+            print(scenario_audit[[
+                "GAME_ID", "TEAM_ID", "PLAYER_ID", "STATUS", "P_PLAY",
+                "BACKUP_PLAYER_ID", "BACKUP_MIN_DELTA",
+            ]].to_string(index=False))
+        print(f"            audit -> {scenario_path}")
     print(f"saved     -> {args.out}")
     if written is not None:
         print(f"database  -> prediction_runs id {written[0]}, {written[1]:,} prediction rows")

@@ -28,6 +28,14 @@ function slatePlayer(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
     pts_vs_usual: 1.5,
     baseline_games: 15,
     impact: 6.2,
+    edge: 0.1,
+    vs_usual: {
+      minutes: { usual: 32.4, projected: 33.1, delta: 0.7 },
+      points: { usual: 26.9, projected: 28.4, delta: 1.5 },
+      categories: [],
+    },
+    reasons: [],
+    evidence: {},
     spotlight: true,
     slate_spotlight: true,
     ...overrides,
@@ -37,6 +45,7 @@ function slatePlayer(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
 function payload(overrides: Partial<SlateResponse> = {}): SlateResponse {
   return {
     date: '2026-02-04',
+    sort: 'impact',
     run: { model_version: 'v1-decomposed', predicted_at: '2026-02-04T11:00:00Z' },
     pool: {
       key: 'slate',
@@ -60,6 +69,7 @@ function payload(overrides: Partial<SlateResponse> = {}): SlateResponse {
         away_team_id: '1610612744',
         away_team_abbr: 'GSW',
         top_impact: 6.2,
+        top_edge: 1.3,
         players: [
           slatePlayer(),
           slatePlayer({
@@ -76,6 +86,21 @@ function payload(overrides: Partial<SlateResponse> = {}): SlateResponse {
             pts_vs_usual: -5.5,
             baseline_games: 15,
             impact: 2.1,
+            edge: 1.3,
+            vs_usual: {
+              minutes: { usual: 24.3, projected: 30.5, delta: 6.2 },
+              points: { usual: 24.1, projected: 26, delta: 1.9 },
+              categories: [
+                { stat: 'ast', usual: 6.1, projected: 8.4, delta: 2.3 },
+                { stat: 'reb', usual: 5, projected: 7.2, delta: 2.2 },
+              ],
+            },
+            reasons: ['ROLE_INCREASE', 'TEAMMATE_ABSENCE'],
+            evidence: {
+              teammate_out: 'Anthony Davis',
+              teammate_out_minutes: 35.1,
+              teammate_out_prob_active: 0.1,
+            },
             spotlight: true,
             slate_spotlight: false,
           }),
@@ -265,7 +290,7 @@ describe('SlatePage', () => {
     fireEvent.change(screen.getByLabelText('Game date'), { target: { value: '2026-02-06' } });
 
     expect(await screen.findByText('No games scheduled')).toBeInTheDocument();
-    expect(slateMock).toHaveBeenLastCalledWith('2026-02-06');
+    expect(slateMock).toHaveBeenLastCalledWith('2026-02-06', 'impact');
   });
 
   it('shows an error state with a retry button when the request fails', async () => {
@@ -277,31 +302,39 @@ describe('SlatePage', () => {
     expect(screen.getByRole('button', { name: /Try Again/i })).toBeInTheDocument();
   });
 
-  it('chips a player whose minutes depart from his own usual, and leaves the rest alone', async () => {
+  it('badges the reasons a row departs from his usual, with a compact vs-usual line', async () => {
     renderPage();
     await screen.findByText('Stephen Curry');
 
-    expect(screen.getByText(/\+6\.2 min vs usual/)).toBeInTheDocument();
-    expect(screen.queryByText(/\+0\.7 min vs usual/)).not.toBeInTheDocument();
+    const row = screen.getByText('LeBron James').closest('li') as HTMLElement;
+    expect(within(row).getByText('Role increase')).toBeInTheDocument();
+    expect(within(row).getByText('Teammate out')).toBeInTheDocument();
+    expect(within(row).getByText('MIN +6.2 · AST +2.3 · REB +2.2')).toBeInTheDocument();
   });
 
-  it('keeps the chip meaning in its tooltip rather than restating the threshold', async () => {
+  it('keeps a row quiet when no reason fired and his minutes barely moved', async () => {
     renderPage();
     await screen.findByText('Stephen Curry');
 
-    expect(
-      screen.getByTitle('Usually 24.3 min, tonight 30.5. Points -5.5 vs usual.')
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/last 15 games played before this date/i)).toBeNull();
+    expect(screen.queryByTestId('vs-usual-201939')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('reasons-201939')).not.toBeInTheDocument();
   });
 
-  it('chips a minutes drop too, in a different tone', async () => {
+  it('shows the vs-usual line for a two-minute swing even without a reason', async () => {
     slateMock.mockResolvedValue(
       payload({
         games: [
           {
             ...payload().games[0],
-            players: [slatePlayer({ usual_min: 34, min_vs_usual: -5.1 })],
+            players: [
+              slatePlayer({
+                vs_usual: {
+                  minutes: { usual: 34, projected: 31.9, delta: -2.1 },
+                  points: { usual: 26.9, projected: 25, delta: -1.9 },
+                  categories: [{ stat: 'fg3m', usual: 4.8, projected: 4.1, delta: -0.7 }],
+                },
+              }),
+            ],
           },
         ],
       })
@@ -310,10 +343,24 @@ describe('SlatePage', () => {
     renderPage();
     await screen.findByText('Stephen Curry');
 
-    expect(screen.getByText(/-5\.1 min vs usual/)).toBeInTheDocument();
+    expect(screen.getByTestId('vs-usual-201939')).toHaveTextContent('MIN -2.1 · 3PM -0.7');
+    expect(screen.queryByTestId('reasons-201939')).not.toBeInTheDocument();
   });
 
-  it('shows no chip for a player with too little history to have a usual', async () => {
+  it('opens a row to the evidence behind its reasons', async () => {
+    renderPage();
+    await screen.findByText('Stephen Curry');
+
+    fireEvent.click(screen.getByTestId('vs-usual-2544').querySelector('summary') as HTMLElement);
+
+    const details = screen.getByTestId('vs-usual-2544');
+    expect(details).toHaveAttribute('open');
+    expect(details).toHaveTextContent('Minutes: 30.5 projected, usually 24.3 (+6.2)');
+    expect(details).toHaveTextContent('AST: 8.4 projected, usually 6.1 (+2.3)');
+    expect(details).toHaveTextContent('Usage freed: Anthony Davis usually plays 35.1 minutes, 10% to play');
+  });
+
+  it('shows no vs-usual line for a player with too little history to have a usual', async () => {
     slateMock.mockResolvedValue(
       payload({
         games: [
@@ -326,6 +373,8 @@ describe('SlatePage', () => {
                 min_vs_usual: null,
                 pts_vs_usual: null,
                 baseline_games: 0,
+                edge: null,
+                vs_usual: null,
               }),
             ],
           },
@@ -336,26 +385,22 @@ describe('SlatePage', () => {
     renderPage();
 
     expect(await screen.findByText('Stephen Curry')).toBeInTheDocument();
-    expect(screen.queryByText(/min vs usual/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/vs usual:/)).not.toBeInTheDocument();
   });
 
-  it('shows no chips at all when the server sent no baseline descriptor', async () => {
-    slateMock.mockResolvedValue(
-      payload({
-        baseline: {
-          window_games: 0,
-          min_games: 0,
-          notable_min_delta: 0,
-          label: '',
-          definition: '',
-        },
-      })
-    );
-
+  it('refetches ranked by edge when the sort toggle flips, and says what the order means', async () => {
     renderPage();
     await screen.findByText('Stephen Curry');
+    expect(screen.getByRole('button', { name: 'Impact' })).toHaveAttribute('aria-pressed', 'true');
 
-    expect(screen.queryByText(/min vs usual/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Edge vs usual' }));
+
+    expect(screen.getByRole('button', { name: 'Edge vs usual' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    );
+    expect(slateMock).toHaveBeenLastCalledWith(expect.any(String), 'edge');
+    expect(await screen.findByTestId('slate-order-note')).toHaveTextContent(/own usual/);
   });
 
   it('orders the players as the server ranked them', async () => {

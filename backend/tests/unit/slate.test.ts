@@ -1,5 +1,10 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { query } from '../../src/db.js';
+import { pgResult } from '../helpers/mockDb.js';
 import {
+  COMPLETE_RUN_STATUS,
+  PRODUCTION_CHANNEL,
+  getLatestCompleteRun,
   IMPACT_CATEGORIES,
   PLACEHOLDER_NAME_SUFFIX,
   POINTS_UNCOND_STAT,
@@ -13,15 +18,23 @@ import {
   num,
   parsePredictionDate,
   poolRates,
+  edgeOf,
+  parseSlateSort,
+  playerVsUsualOf,
   rankSlatePlayers,
+  rankSlatePlayersByEdge,
+  sortSlateGames,
+  topCategoryDeltas,
   resolvePlayerName,
   round,
   toIsoDay,
   topImpactIds,
   uncondStat,
   type ImpactInput,
+  type SlateGame,
   type SlatePlayer,
 } from '../../src/services/slate.js';
+import type { ReasonInput } from '../../src/services/projectionReasons.js';
 
 function player(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
   return {
@@ -39,6 +52,10 @@ function player(overrides: Partial<SlatePlayer> = {}): SlatePlayer {
     pts_vs_usual: 1,
     baseline_games: 15,
     impact: null,
+    edge: null,
+    vs_usual: null,
+    reasons: [],
+    evidence: {},
     spotlight: false,
     slate_spotlight: false,
     injury_status: null,
@@ -468,5 +485,193 @@ describe('injuryOverlayFields', () => {
       RUN_AT
     );
     expect(fields.injury_status).toBe('unknown');
+  });
+});
+
+describe('getLatestCompleteRun', () => {
+  const queryMock = vi.mocked(query);
+
+  beforeEach(() => {
+    queryMock.mockReset();
+  });
+
+  it('selects only complete runs on the production channel', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(
+      pgResult([{ id: 7, model_version: 'v3', predicted_at: new Date('2026-09-30T12:00:00.000Z') }])
+    );
+
+    // act
+    const run = await getLatestCompleteRun();
+
+    // assert
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(params).toEqual([COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
+    expect(sql).toMatch(/channel = \$2/);
+    expect(run).toEqual({ id: 7, model_version: 'v3', predicted_at: '2026-09-30T12:00:00.000Z' });
+  });
+
+  it('returns null when no production run exists', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const run = await getLatestCompleteRun();
+
+    // assert
+    expect(run).toBeNull();
+  });
+});
+
+describe('parseSlateSort', () => {
+  it('defaults to impact so the old request still gets the old page', () => {
+    // act + assert
+    expect(parseSlateSort(undefined)).toBe('impact');
+    expect(parseSlateSort('')).toBe('impact');
+  });
+
+  it('accepts both published sorts, ignoring case and padding', () => {
+    // act + assert
+    expect(parseSlateSort('edge')).toBe('edge');
+    expect(parseSlateSort(' Impact ')).toBe('impact');
+  });
+
+  it('rejects anything else', () => {
+    // act + assert
+    expect(parseSlateSort('points')).toBeNull();
+    expect(parseSlateSort(['edge'])).toBeNull();
+  });
+});
+
+describe('playerVsUsualOf', () => {
+  it('rounds the minutes and points comparison to one decimal', () => {
+    // arrange
+    const input = {
+      minutes: { usual: 24.34, projected: 30.06, delta: 5.72 },
+      points: { usual: 11.11, projected: null, delta: null },
+    } as unknown as ReasonInput;
+
+    // act
+    const result = playerVsUsualOf(input);
+
+    // assert
+    expect(result).toEqual({
+      minutes: { usual: 24.3, projected: 30.1, delta: 5.7 },
+      points: { usual: 11.1, projected: null, delta: null },
+    });
+  });
+});
+
+describe('topCategoryDeltas', () => {
+  const usual = { minutes: 30, pts: 15, reb: 6, ast: 4, stl: 1, blk: 0.5, fg3m: 2, fga: 12 };
+  const line = { pts: 15, reb: 8, ast: 4.5, stl: 1, blk: 1.1, fg3m: 2, fga: 12 };
+
+  it('picks the two biggest moves in units of the slate spread, each with his usual', () => {
+    // arrange
+    const scales = new Map([
+      ['reb', 2],
+      ['ast', 1],
+      ['blk', 0.2],
+    ] as const);
+
+    // act
+    const result = topCategoryDeltas(line, usual, new Map(scales));
+
+    // assert
+    expect(result).toEqual([
+      { stat: 'blk', usual: 0.5, projected: 1.1, delta: 0.6 },
+      { stat: 'reb', usual: 6, projected: 8, delta: 2 },
+    ]);
+  });
+
+  it('skips categories that did not move or have no usual', () => {
+    // act
+    const result = topCategoryDeltas(
+      { ...line, reb: 6, blk: null },
+      usual,
+      new Map(),
+      5
+    );
+
+    // assert
+    expect(result).toEqual([{ stat: 'ast', usual: 4, projected: 4.5, delta: 0.5 }]);
+  });
+});
+
+describe('edgeOf', () => {
+  it('scores a drop as strongly as an equal rise', () => {
+    // arrange
+    const scales = new Map([['minutes', 2]] as const);
+
+    // act
+    const up = edgeOf({ minutes: 4 }, new Map(scales));
+    const down = edgeOf({ minutes: -4 }, new Map(scales));
+
+    // assert
+    expect(up).toBe(2);
+    expect(down).toBe(2);
+  });
+
+  it('has no edge without a comparable delta', () => {
+    // act + assert
+    expect(edgeOf({}, new Map([['minutes', 2]] as const))).toBeNull();
+  });
+});
+
+describe('rankSlatePlayersByEdge', () => {
+  it('orders by edge, not by how good the player is', () => {
+    // arrange
+    const star = player({ nba_player_id: 'star', name: 'Star', impact: 9, edge: 0.1 });
+    const riser = player({ nba_player_id: 'riser', name: 'Riser', impact: -1, edge: 1.4 });
+    const flat = player({ nba_player_id: 'flat', name: 'No Usual', impact: 3, edge: null });
+
+    // act
+    const ranked = rankSlatePlayersByEdge([star, flat, riser]);
+
+    // assert
+    expect(ranked.map((p) => p.nba_player_id)).toEqual(['riser', 'star', 'flat']);
+  });
+
+  it('breaks an edge tie on impact and caps the game at the published depth', () => {
+    // arrange
+    const many = Array.from({ length: 12 }, (_, i) =>
+      player({ nba_player_id: String(i), name: `P${i}`, edge: 1, impact: i })
+    );
+
+    // act
+    const ranked = rankSlatePlayersByEdge(many);
+
+    // assert
+    expect(ranked).toHaveLength(TOP_PLAYERS_PER_GAME);
+    expect(ranked[0].nba_player_id).toBe('11');
+  });
+});
+
+describe('sortSlateGames', () => {
+  function game(id: string, topImpact: number | null, topEdge: number | null): SlateGame {
+    return {
+      nba_game_id: id,
+      game_status: null,
+      home_team_id: null,
+      home_team_abbr: null,
+      away_team_id: null,
+      away_team_abbr: null,
+      top_impact: topImpact,
+      top_edge: topEdge,
+      players: [],
+    };
+  }
+
+  it('orders games by the sort the page asked for', () => {
+    // arrange
+    const games = [game('a', 9, 0.2), game('b', 2, 1.5), game('c', null, null)];
+
+    // act
+    const byImpact = sortSlateGames(games, 'impact').map((g) => g.nba_game_id);
+    const byEdge = sortSlateGames(games, 'edge').map((g) => g.nba_game_id);
+
+    // assert
+    expect(byImpact).toEqual(['a', 'b', 'c']);
+    expect(byEdge).toEqual(['b', 'a', 'c']);
   });
 });

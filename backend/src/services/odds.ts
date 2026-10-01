@@ -7,23 +7,21 @@ const ODDS_CACHE_TTL = 10 * 60_000;
 
 const FUTURE_WINDOW_DAYS = 2;
 
-export const DEFAULT_LINE_PRICE = -110;
-
 export interface SpreadMarket {
   home_line: number;
   away_line: number;
-  home_price: number;
-  away_price: number;
-  home_implied: number;
-  away_implied: number;
+  home_price: number | null;
+  away_price: number | null;
+  home_implied: number | null;
+  away_implied: number | null;
 }
 
 export interface TotalMarket {
   line: number;
-  over_price: number;
-  under_price: number;
-  over_implied: number;
-  under_implied: number;
+  over_price: number | null;
+  under_price: number | null;
+  over_implied: number | null;
+  under_implied: number | null;
 }
 
 export interface MoneylineMarket {
@@ -34,7 +32,7 @@ export interface MoneylineMarket {
 }
 
 export interface BettingGame {
-  nba_game_id: string;
+  espn_event_id: string;
   home_team: string;
   away_team: string;
   home_abbrev: string;
@@ -108,6 +106,10 @@ export function parseSpreadDetails(
   return undefined;
 }
 
+function impliedOrNull(price: number | undefined): number | null {
+  return price == null ? null : americanToImpliedProb(price);
+}
+
 function parseSpreadMarket(odds: EspnOddsNode, homeAbbrev: string, awayAbbrev: string): SpreadMarket | undefined {
   const homeLine = parseLine(odds.pointSpread?.home?.close?.line);
   const homePrice = parseAmerican(odds.pointSpread?.home?.close?.odds);
@@ -119,15 +121,13 @@ function parseSpreadMarket(odds: EspnOddsNode, homeAbbrev: string, awayAbbrev: s
     parseSpreadDetails(odds.details, homeAbbrev, awayAbbrev);
   if (line == null) return undefined;
 
-  const hp = homePrice ?? DEFAULT_LINE_PRICE;
-  const ap = awayPrice ?? DEFAULT_LINE_PRICE;
   return {
     home_line: line,
     away_line: -line,
-    home_price: hp,
-    away_price: ap,
-    home_implied: americanToImpliedProb(hp),
-    away_implied: americanToImpliedProb(ap),
+    home_price: homePrice ?? null,
+    away_price: awayPrice ?? null,
+    home_implied: impliedOrNull(homePrice),
+    away_implied: impliedOrNull(awayPrice),
   };
 }
 
@@ -137,14 +137,14 @@ function parseTotalMarket(odds: EspnOddsNode): TotalMarket | undefined {
     (typeof odds.overUnder === 'number' ? odds.overUnder : undefined);
   if (line == null) return undefined;
 
-  const overPrice = parseAmerican(odds.total?.over?.close?.odds) ?? DEFAULT_LINE_PRICE;
-  const underPrice = parseAmerican(odds.total?.under?.close?.odds) ?? DEFAULT_LINE_PRICE;
+  const overPrice = parseAmerican(odds.total?.over?.close?.odds);
+  const underPrice = parseAmerican(odds.total?.under?.close?.odds);
   return {
     line,
-    over_price: overPrice,
-    under_price: underPrice,
-    over_implied: americanToImpliedProb(overPrice),
-    under_implied: americanToImpliedProb(underPrice),
+    over_price: overPrice ?? null,
+    under_price: underPrice ?? null,
+    over_implied: impliedOrNull(overPrice),
+    under_implied: impliedOrNull(underPrice),
   };
 }
 
@@ -173,7 +173,7 @@ export function parseEventOdds(event: EspnEvent): BettingGame | null {
   const awayAbbrev = away.team.abbreviation ?? '';
 
   const game: BettingGame = {
-    nba_game_id: event.id,
+    espn_event_id: event.id,
     home_team: home.team.displayName,
     away_team: away.team.displayName,
     home_abbrev: homeAbbrev,
@@ -200,15 +200,17 @@ export function parseEventOdds(event: EspnEvent): BettingGame | null {
 
 let oddsCache: { data: BettingGame[]; fetchedAt: number } = { data: [], fetchedAt: 0 };
 
-export async function getUpcomingOdds(): Promise<BettingGame[]> {
-  if (Date.now() - oddsCache.fetchedAt < ODDS_CACHE_TTL && oddsCache.data.length > 0) {
-    return oddsCache.data;
-  }
+const SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
 
-  const start = etIsoDate(0).replace(/-/g, '');
-  const end = etIsoDate(FUTURE_WINDOW_DAYS).replace(/-/g, '');
-  const url = `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${start}-${end}`;
+// espn rejects date ranges with 400, so each day needs its own request
+export function scoreboardUrls(days: number): string[] {
+  return Array.from({ length: days }, (_, i) => {
+    const date = etIsoDate(i).replace(/-/g, '');
+    return `${SCOREBOARD_URL}?dates=${date}`;
+  });
+}
 
+async function fetchScoreboardDay(url: string): Promise<EspnEvent[]> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10_000);
   let resp: globalThis.Response;
@@ -225,12 +227,36 @@ export async function getUpcomingOdds(): Promise<BettingGame[]> {
   }
 
   const data = (await resp.json()) as { events?: EspnEvent[] };
-  const games = (data.events ?? [])
-    .filter((e) => e.status?.type?.name === 'STATUS_SCHEDULED')
-    .map(parseEventOdds)
-    .filter((g): g is BettingGame => g !== null);
+  return data.events ?? [];
+}
 
-  if (games.length > 0) {
+export async function getUpcomingOdds(): Promise<BettingGame[]> {
+  if (Date.now() - oddsCache.fetchedAt < ODDS_CACHE_TTL && oddsCache.data.length > 0) {
+    return oddsCache.data;
+  }
+
+  const results = await Promise.allSettled(
+    scoreboardUrls(FUTURE_WINDOW_DAYS + 1).map(fetchScoreboardDay)
+  );
+
+  const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failures.length === results.length) {
+    throw failures[0].reason;
+  }
+
+  const seen = new Set<string>();
+  const games: BettingGame[] = [];
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue;
+    for (const event of result.value) {
+      if (event.status?.type?.name !== 'STATUS_SCHEDULED' || seen.has(event.id)) continue;
+      seen.add(event.id);
+      const game = parseEventOdds(event);
+      if (game) games.push(game);
+    }
+  }
+
+  if (failures.length === 0 && games.length > 0) {
     oddsCache = { data: games, fetchedAt: Date.now() };
   }
   return games;
@@ -243,9 +269,9 @@ export function computeOddsHash(games: BettingGame[]): string {
       const t = g.markets.total;
       const m = g.markets.moneyline;
       return [
-        g.nba_game_id,
-        s ? `${s.home_line}@${s.home_price}/${s.away_price}` : '-',
-        t ? `${t.line}@${t.over_price}/${t.under_price}` : '-',
+        g.espn_event_id,
+        s ? `${s.home_line}@${s.home_price ?? 'n'}/${s.away_price ?? 'n'}` : '-',
+        t ? `${t.line}@${t.over_price ?? 'n'}/${t.under_price ?? 'n'}` : '-',
         m ? `${m.home}/${m.away}` : '-',
       ].join(':');
     })

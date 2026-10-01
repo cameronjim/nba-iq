@@ -1,7 +1,22 @@
 import { query } from '../db.js';
 import { activeProviderKind, getNarrator } from './aiProvider.js';
-import { getRankedPlayers } from './fantasyScore.js';
+import {
+  CATEGORY_LABELS,
+  rankTradeTargets,
+  rankWaiverCandidates,
+  type RankedCandidate,
+  type RankingPlayer,
+} from './candidateRanking.js';
+import { etIsoDate } from './dates.js';
+import { getRankedPlayers, type PlayerWithScore } from './fantasyScore.js';
 import type { BettingGame } from './odds.js';
+import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } from './slate.js';
+import {
+  DEFAULT_PROJECTION_DAYS,
+  fetchWindowProjections,
+  type WindowProjection,
+  type WindowProjectionSet,
+} from './windowProjections.js';
 
 export function extractJSON(text: string): string {
   const fenced = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
@@ -84,7 +99,8 @@ async function buildRosterAnalyticsBlock(
        ),
        run AS (
          SELECT id FROM prediction_runs
-         WHERE status = 'complete'
+         WHERE status = $2
+           AND channel = $3
          ORDER BY predicted_at DESC, id DESC
          LIMIT 1
        ),
@@ -109,7 +125,7 @@ async function buildRosterAnalyticsBlock(
               pr.prob_active
        FROM agg a
        LEFT JOIN prob pr ON pr.nba_player_id = a.nba_player_id`,
-      [ids]
+      [ids, COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]
     );
 
     const nameById = new Map(roster.map((p) => [p.nba_id, p.name]));
@@ -165,6 +181,95 @@ function rosterNbaIds(rows: PlayerRow[]): Array<{ nba_id: string; name: string }
   return out;
 }
 
+type ProjectionLoad =
+  | { kind: 'loaded'; set: WindowProjectionSet }
+  | { kind: 'failed' };
+
+async function loadWindowProjections(): Promise<ProjectionLoad> {
+  try {
+    return { kind: 'loaded', set: await fetchWindowProjections(etIsoDate(0), DEFAULT_PROJECTION_DAYS) };
+  } catch {
+    return { kind: 'failed' };
+  }
+}
+
+const PROJECTION_HEADING = `PROJECTED NEXT ${DEFAULT_PROJECTION_DAYS} DAYS`;
+
+function signed(value: number, digits: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`;
+}
+
+function formatProjectionTotals(p: WindowProjection): string {
+  const t = p.totals;
+  const count = (label: string, value: number | null): string | null =>
+    value === null ? null : `${label} ${value.toFixed(1)}`;
+  const rate = (label: string, made: number | null, attempted: number | null, unit: string): string | null =>
+    made === null || attempted === null || attempted <= 0
+      ? null
+      : `${label} ${((made / attempted) * 100).toFixed(1)} (${attempted.toFixed(1)} ${unit})`;
+
+  return [
+    count('PTS', t.pts),
+    count('REB', t.reb),
+    count('AST', t.ast),
+    count('STL', t.stl),
+    count('BLK', t.blk),
+    count('3PM', t.fg3m),
+    rate('FG%', t.fgm, t.fga, 'FGA'),
+    rate('FT%', t.ftm, t.fta, 'FTA'),
+    count('TO', t.tov),
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' ');
+}
+
+function formatRosterProjectionBlock(rows: PlayerRow[], load: ProjectionLoad): string {
+  if (load.kind === 'failed') {
+    return `\n${PROJECTION_HEADING}: not available, the projection store could not be read.\n`;
+  }
+  const { set } = load;
+  if (!set.run) {
+    return `\n${PROJECTION_HEADING}: not available, no complete production model run exists yet.\n`;
+  }
+
+  const lines: string[] = [];
+  let anyProjected = false;
+  for (const row of rows) {
+    if (row.nba_id === null || row.nba_id === undefined || row.nba_id === '') continue;
+    const name = String(row.name ?? '');
+    const team = row.team === null || row.team === undefined ? null : String(row.team);
+    const scheduled = team ? set.scheduled_games.get(team) ?? 0 : 0;
+    const projection = set.players.get(String(row.nba_id));
+
+    if (!projection) {
+      lines.push(`${name}: not projected by the latest run; ${scheduled} scheduled games`);
+      continue;
+    }
+    anyProjected = true;
+    let line = `${name}: ${projection.games} of ${scheduled} scheduled games`;
+    if (projection.mean_prob_active !== null) {
+      line += `, P(play) ${Math.round(projection.mean_prob_active * 100)}%`;
+    }
+    line += `, ${formatProjectionTotals(projection)}`;
+    if (projection.min_vs_usual !== null) line += `, MIN vs usual ${signed(projection.min_vs_usual, 1)}`;
+    lines.push(line);
+  }
+
+  const span = `${set.window.from} to ${set.window.to}`;
+  if (!anyProjected) {
+    return (
+      `\n${PROJECTION_HEADING}: not available, the latest production run (${set.run.model_version}) ` +
+      `has no projections for this roster between ${span}.\n`
+    );
+  }
+
+  const heading =
+    `${PROJECTION_HEADING} (${span}, production model ${set.run.model_version}; ` +
+    'unconditional totals, so sitting risk is priced in; MIN vs usual = projected median minutes ' +
+    'minus his recent per-game average):';
+  return `\n${heading}\n${lines.join('\n')}\n`;
+}
+
 export async function buildTeamContext(userId: number): Promise<string> {
   const rosterResult = await query(
     `SELECT p.nba_id, p.name, p.team, p.position,
@@ -193,10 +298,64 @@ export async function buildTeamContext(userId: number): Promise<string> {
     `3PM:${avg('three_pointers_made')} TO:${avg('turnovers_per_game')}\n\n`;
   context += `MY ROSTER (${players.length}):\n`;
   for (const p of players) context += formatPlayerLine(p) + '\n';
-  context += await buildRosterAnalyticsBlock(rosterNbaIds(players));
+  const ids = rosterNbaIds(players);
+  context += await buildRosterAnalyticsBlock(ids);
+  if (ids.length > 0) context += formatRosterProjectionBlock(players, await loadWindowProjections());
 
   return context;
 }
+
+function toRankingPlayer(row: PlayerRow): RankingPlayer {
+  const n = (key: string): number => Number(row[key]) || 0;
+  const optionalText = (key: string): string | null =>
+    row[key] === null || row[key] === undefined || row[key] === '' ? null : String(row[key]);
+  return {
+    id: Number(row.id),
+    nba_id: optionalText('nba_id'),
+    name: String(row.name ?? ''),
+    team: optionalText('team'),
+    position: optionalText('position'),
+    points_per_game: n('points_per_game'),
+    rebounds_per_game: n('rebounds_per_game'),
+    assists_per_game: n('assists_per_game'),
+    steals_per_game: n('steals_per_game'),
+    blocks_per_game: n('blocks_per_game'),
+    three_pointers_made: n('three_pointers_made'),
+    turnovers_per_game: n('turnovers_per_game'),
+    field_goal_percentage: n('field_goal_percentage'),
+    free_throw_percentage: n('free_throw_percentage'),
+  };
+}
+
+function formatRankedLine(rank: number, c: RankedCandidate, player: PlayerWithScore | undefined): string {
+  let basis: string;
+  if (c.basis === 'projection') {
+    basis = `projection, ${c.projected_games}g`;
+    if (c.mean_prob_play !== null) basis += `, P(play) ${Math.round(c.mean_prob_play * 100)}%`;
+  } else {
+    basis = c.projected_games === null
+      ? 'season_average, per game (schedule unknown)'
+      : `season_average, ${c.projected_games} scheduled g`;
+  }
+  const drivers = c.drivers
+    .map((d) => `${CATEGORY_LABELS[d.category]} ${signed(d.value, 3)}`)
+    .join(', ');
+  const stats = player
+    ? formatPlayerLine(player as unknown as PlayerRow)
+    : `${c.name} (${c.position}/${c.team})`;
+  return `${rank}. [score ${c.score.toFixed(3)} | ${basis}] ${stats} | drivers: ${drivers}`;
+}
+
+export const RANKED_LIST_INSTRUCTIONS =
+  'RANKING METHOD: both candidate lists below are pre-ranked numerically, best first. ' +
+  `score = expected 9-category matchup wins the player adds to MY ROSTER over the next ${DEFAULT_PROJECTION_DAYS} days, ` +
+  'computed from z-scores of his projected category totals against a typical opponent built from the rostered tier, ' +
+  'so it already rewards filling my weak categories and discounts categories I already win. ' +
+  "basis projection = the production model's unconditional projections (sitting risk priced in); " +
+  'basis season_average = season per-game averages times scheduled games, with FG% and FT% treated as neutral. ' +
+  'drivers = the three categories contributing most to the score. ' +
+  'Your job is to explain and sanity-check this ranking (injury news, role changes, schedule, fit with my preferences), ' +
+  'not to re-rank from scratch: favor the top of each list, and if you pass over a higher-ranked player, say why.';
 
 export async function buildWaiverContext(userId: number, leagueSize?: number): Promise<string> {
   const ranked = await getRankedPlayers();
@@ -222,21 +381,18 @@ export async function buildWaiverContext(userId: number, leagueSize?: number): P
   const teams = leagueSize && leagueSize >= 4 ? leagueSize : 10;
   const rosteredCutoff = teams * ROSTER_DEPTH;
 
-  const tradeCandidates = ranked
-    .filter((p) => p.fantasy_rank != null && p.fantasy_rank <= rosteredCutoff && !rosterIds.has(p.id));
-  shuffleInPlace(tradeCandidates);
-  const tradeTargets = tradeCandidates.slice(0, 20);
+  const tradePool = ranked.filter(
+    (p) => p.fantasy_rank != null && p.fantasy_rank <= rosteredCutoff && !rosterIds.has(p.id)
+  );
 
   const waiverBandWidth = 250;
-  const waiverCandidates = ranked
-    .filter((p) =>
+  const waiverPool = ranked.filter(
+    (p) =>
       p.fantasy_rank != null &&
       p.fantasy_rank > rosteredCutoff &&
       p.fantasy_rank <= rosteredCutoff + waiverBandWidth &&
       !rosterIds.has(p.id)
-    );
-  shuffleInPlace(waiverCandidates);
-  const waiverPickups = waiverCandidates.slice(0, 25);
+  );
 
   const avg = (key: string): string => {
     const vals = players.map((p: PlayerRow) => Number(p[key]) || 0);
@@ -251,44 +407,57 @@ export async function buildWaiverContext(userId: number, leagueSize?: number): P
     `3PM:${avg('three_pointers_made')} TO:${avg('turnovers_per_game')}\n\n`;
   context += `MY ROSTER (${players.length}):\n`;
   for (const p of players) context += formatPlayerLine(p) + '\n';
-  context += await buildRosterAnalyticsBlock(rosterNbaIds(players));
+  const ids = rosterNbaIds(players);
+  context += await buildRosterAnalyticsBlock(ids);
 
-  context += `\nWAIVER CANDIDATES (fantasy rank ${rosteredCutoff + 1} – ${rosteredCutoff + waiverBandWidth}, presumed unrostered in a ${teams}-team league):\n`;
-  for (const p of waiverPickups) {
-    context += `[#${p.fantasy_rank}] ` + formatPlayerLine(p as unknown as PlayerRow) + '\n';
-  }
+  const load = await loadWindowProjections();
+  if (ids.length > 0) context += formatRosterProjectionBlock(players, load);
 
-  context += `\nTRADE TARGETS (top ${rosteredCutoff}, presumed rostered by other managers):\n`;
-  for (const p of tradeTargets) {
-    context += `[#${p.fantasy_rank}] ` + formatPlayerLine(p as unknown as PlayerRow) + '\n';
-  }
+  const roster = players.map(toRankingPlayer);
+  const rankingOptions = {
+    scheduledGames: load.kind === 'loaded' ? load.set.scheduled_games : new Map<string, number>(),
+    population: [...roster, ...tradePool, ...waiverPool],
+    rosteredPool: tradePool,
+  };
+  const projections = load.kind === 'loaded' ? load.set.players : new Map<string, WindowProjection>();
+  const waiverPickups = rankWaiverCandidates(roster, waiverPool, projections, rankingOptions);
+  const tradeTargets = rankTradeTargets(roster, tradePool, projections, rankingOptions);
+  const byId = new Map<number, PlayerWithScore>(ranked.map((p) => [p.id, p]));
+
+  context += `\n${RANKED_LIST_INSTRUCTIONS}\n`;
+
+  context += `\nWAIVER CANDIDATES (top ${waiverPickups.length} by score from fantasy rank ${rosteredCutoff + 1} to ${rosteredCutoff + waiverBandWidth}, presumed unrostered in a ${teams}-team league):\n`;
+  waiverPickups.forEach((c, i) => {
+    context += formatRankedLine(i + 1, c, byId.get(c.id)) + '\n';
+  });
+
+  context += `\nTRADE TARGETS (top ${tradeTargets.length} by score from the top ${rosteredCutoff}, presumed rostered by other managers):\n`;
+  tradeTargets.forEach((c, i) => {
+    context += formatRankedLine(i + 1, c, byId.get(c.id)) + '\n';
+  });
 
   return context;
 }
 
-function shuffleInPlace<T>(arr: T[]): void {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-}
-
 const pct = (p: number): string => `${(p * 100).toFixed(1)}%`;
+
+const priceText = (price: number | null, implied: number | null): string =>
+  price == null || implied == null ? 'n/a' : `${price}, implied ${pct(implied)}`;
 
 function formatMarketLines(game: BettingGame): string[] {
   const lines: string[] = [];
   const s = game.markets.spread;
   if (s) {
     lines.push(
-      `  SPREAD: home ${s.home_line > 0 ? '+' : ''}${s.home_line} (${s.home_price}, implied ${pct(s.home_implied)}) / ` +
-      `away ${s.away_line > 0 ? '+' : ''}${s.away_line} (${s.away_price}, implied ${pct(s.away_implied)})`
+      `  SPREAD: home ${s.home_line > 0 ? '+' : ''}${s.home_line} (${priceText(s.home_price, s.home_implied)}) / ` +
+      `away ${s.away_line > 0 ? '+' : ''}${s.away_line} (${priceText(s.away_price, s.away_implied)})`
     );
   }
   const t = game.markets.total;
   if (t) {
     lines.push(
-      `  TOTAL: ${t.line}: over (${t.over_price}, implied ${pct(t.over_implied)}) / ` +
-      `under (${t.under_price}, implied ${pct(t.under_implied)})`
+      `  TOTAL: ${t.line}: over (${priceText(t.over_price, t.over_implied)}) / ` +
+      `under (${priceText(t.under_price, t.under_implied)})`
     );
   }
   const m = game.markets.moneyline;
@@ -423,7 +592,7 @@ export async function buildBettingContext(games: BettingGame[]): Promise<string>
 
   const blocks = games.map((g) => {
     const lines = [
-      `GAME ${g.nba_game_id}: ${g.away_team} @ ${g.home_team} (${g.game_date}, ${g.tipoff})`,
+      `GAME ${g.espn_event_id}: ${g.away_team} @ ${g.home_team} (${g.game_date}, ${g.tipoff})`,
       ...formatMarketLines(g),
       teamLine(g.home_team),
       teamLine(g.away_team),

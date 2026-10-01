@@ -1,7 +1,7 @@
 import json
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 
 from config import (
@@ -47,6 +47,7 @@ _INJURY_STATUS_BUCKETS: tuple[tuple[str, str], ...] = (
     ("questionable", "questionable"),
     ("doubtful", "doubtful"),
     ("probable", "probable"),
+    ("cleared", "cleared"),
     ("available", "available"),
     ("active", "available"),
     ("out", "out"),
@@ -266,6 +267,17 @@ def normalize_injury_status(raw: object) -> str:
         if phrase in text:
             return bucket
     return "unknown"
+
+
+def cleared_player_ids(
+    previously_listed: Iterable[str], currently_listed: Iterable[str]
+) -> list[str]:
+    current = {str(player_id) for player_id in currently_listed}
+    # an empty page is an outage, not a league with no injuries.
+    if not current:
+        return []
+    previous = {str(player_id) for player_id in previously_listed if player_id}
+    return sorted(previous - current)
 
 
 def box_score_violations(row: Mapping) -> list[str]:

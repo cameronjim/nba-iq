@@ -138,6 +138,15 @@ class TestAvailabilityRisk:
     def test_an_empty_week_carries_no_risk(self):
         assert availability_risk([]) == 0.0
 
+    def test_is_an_upper_bound_when_absences_are_perfectly_dependent(self):
+        rows = [game(MONDAY, 0.5), game(SUNDAY, 0.5)]
+        one_shared_injury_risk = 0.5
+
+        risk = availability_risk(rows)
+
+        assert risk == pytest.approx(0.75)
+        assert risk >= one_shared_injury_risk
+
 
 class TestWeeklyProjection:
     def test_assembles_the_whole_week(self):

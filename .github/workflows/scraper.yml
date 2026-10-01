@@ -12,6 +12,10 @@ on:
     # no nba_api calls. offset to :30 so the 00:00/18:00 full scrapes never
     # overlap this lane.
     - cron: "30 15,19,20,21,22,23,0,1,2 * * *"
+    # odds snapshot only, every 30 minutes 15:00-03:30 utc, so the odds history
+    # brackets every tip-off. one espn request, no nba_api calls. a slot shared
+    # with another lane runs as its own workflow and only adds a snapshot.
+    - cron: "*/30 15-23,0-3 * * *"
   workflow_dispatch:          # also allows manual trigger from GitHub UI
 
 jobs:
@@ -33,10 +37,19 @@ jobs:
         run: pip install -r scraper/requirements.txt
 
       # github.event.schedule carries the cron expression that fired, which is
-      # how one workflow runs two cadences. a manual dispatch runs the full
-      # scrape (schedule is empty, the flag is omitted).
+      # how one workflow runs three cadences. each pattern below must match its
+      # cron line above character for character; an unknown schedule fails the
+      # run rather than silently falling through to the full scrape.
+      # a manual dispatch has an empty schedule and runs the full scrape.
       - name: Run scraper
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
-          python scraper/run_scraper.py ${{ github.event.schedule == '30 15,19,20,21,22,23,0,1,2 * * *' && '--injuries-only' || '' }}
+          case "$SCHEDULE" in
+            "0 */6 * * *" | "") flag="" ;;
+            "30 15,19,20,21,22,23,0,1,2 * * *") flag="--injuries-only" ;;
+            "*/30 15-23,0-3 * * *") flag="--odds-only" ;;
+            *) echo "unknown schedule '$SCHEDULE'" >&2; exit 1 ;;
+          esac
+          python scraper/run_scraper.py $flag

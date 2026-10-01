@@ -18,10 +18,17 @@ from config import (
 from database import TARGET_DEV, TARGET_PROD, get_db, resolve_database_url  # noqa: F401
 from parsing import parse_team_types, season_range, season_start_year
 from fetching import stats_nba_reachable
+from injury_report import scrape_official_injuries
+from odds import scrape_odds_snapshots
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
-from truth_layer import scrape_game_logs, scrape_game_status, scrape_schedule
+from truth_layer import (
+    backfill_box_details,
+    scrape_game_logs,
+    scrape_game_status,
+    scrape_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,10 +126,43 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--backfill-box-details",
+        dest="backfill_box_details",
+        action="store_true",
+        help=(
+            "fill started, position, oreb/dreb/pf and dnp_reason from one "
+            "boxscoretraditionalv3 call per game for --season, oldest first; "
+            "resumable, honours --limit and --dry-run"
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        dest="limit",
+        type=int,
+        default=None,
+        help=(
+            "with --backfill-box-details, stop after this many games "
+            "(default: all remaining). At the 5s request delay about 300 games "
+            "fit in a 30-minute GitHub Actions job"
+        ),
+    )
+    parser.add_argument(
         "--injuries-only",
         dest="injuries_only",
         action="store_true",
-        help="run ONLY the injury-report scrape, skipping every other phase",
+        help="run ONLY the injury scrapes (CBS, then the official report)",
+    )
+    parser.add_argument(
+        "--official-injuries-only",
+        dest="official_injuries_only",
+        action="store_true",
+        help="run ONLY the official nba injury report, skipping CBS",
+    )
+    parser.add_argument(
+        "--odds-only",
+        dest="odds_only",
+        action="store_true",
+        help="run ONLY the espn odds snapshot, skipping every other phase",
     )
     parser.add_argument(
         "--dry-run",
@@ -153,6 +193,14 @@ def _run_phase(name: str, phase: Callable[[], object]) -> bool:
         return False
 
 
+def _injury_phases(conn: psycopg2.extensions.connection, dry_run: bool) -> None:
+    # official second so its game-specific designations overwrite CBS's on players.
+    _run_phase("injuries (cbs)", lambda: scrape_injuries(conn, dry_run=dry_run))
+    _run_phase(
+        "injuries (official)", lambda: scrape_official_injuries(conn, dry_run=dry_run)
+    )
+
+
 def _truth_layer_phases(
     conn: psycopg2.extensions.connection, season: str, dry_run: bool
 ) -> bool:
@@ -166,7 +214,7 @@ def _truth_layer_phases(
     _run_phase(
         "game status", lambda: scrape_game_status(conn, season, dry_run=dry_run)
     )
-    _run_phase("injuries", lambda: scrape_injuries(conn, dry_run=dry_run))
+    _injury_phases(conn, dry_run)
     return schedule_ok
 
 
@@ -195,6 +243,10 @@ def main(argv: list[str] | None = None) -> None:
             logger.error("%s", e)
             sys.exit(2)
 
+    if args.limit is not None and args.limit < 1:
+        logger.error("--limit must be at least 1")
+        sys.exit(2)
+
     team_types: list[str] = []
     if args.sync_2k:
         try:
@@ -215,6 +267,15 @@ def main(argv: list[str] | None = None) -> None:
             backfill_game_logs(conn, truth_from, truth_to, dry_run=args.dry_run)
         elif args.validate_game_logs:
             validate_game_logs(conn, truth_from, truth_to)
+        elif args.backfill_box_details:
+            # datacenter ips are often tarpitted; failing fast beats burning the
+            # whole job on per-game retries.
+            if not stats_nba_reachable():
+                logger.error("stats.nba.com is unreachable: box-detail backfill skipped")
+                sys.exit(1)
+            backfill_box_details(
+                conn, args.season, dry_run=args.dry_run, limit=args.limit
+            )
         elif args.sync_2k:
             sync_2k_ratings(conn, team_types)
         elif args.roster_snapshot:
@@ -225,7 +286,11 @@ def main(argv: list[str] | None = None) -> None:
         elif args.sync_truth:
             schedule_ok = _truth_layer_phases(conn, args.season, args.dry_run)
         elif args.injuries_only:
-            scrape_injuries(conn, dry_run=args.dry_run)
+            _injury_phases(conn, args.dry_run)
+        elif args.official_injuries_only:
+            scrape_official_injuries(conn, dry_run=args.dry_run)
+        elif args.odds_only:
+            scrape_odds_snapshots(conn, dry_run=args.dry_run)
         else:
             stats_reachable = stats_nba_reachable()
             if not stats_reachable:
@@ -238,7 +303,7 @@ def main(argv: list[str] | None = None) -> None:
             if stats_reachable:
                 scrape_teams(conn, dry_run=args.dry_run)
             scrape_scoreboard(conn, dry_run=args.dry_run)
-            scrape_injuries(conn, dry_run=args.dry_run)
+            _injury_phases(conn, args.dry_run)
             # truth layer runs last: the four scrapes above back user-visible
             # pages that must not be held hostage to it.
             # offseason trades, signings and rookies must land before predictions.
@@ -265,6 +330,11 @@ def main(argv: list[str] | None = None) -> None:
                     "game status",
                     lambda: scrape_game_status(conn, args.season, dry_run=args.dry_run),
                 )
+            # after the schedule sync, so new games map to an nba game id.
+            _run_phase(
+                "odds snapshot",
+                lambda: scrape_odds_snapshots(conn, dry_run=args.dry_run),
+            )
     finally:
         conn.close()
 

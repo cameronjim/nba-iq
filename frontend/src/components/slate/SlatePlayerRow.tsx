@@ -1,16 +1,11 @@
 import { Flame } from 'lucide-react';
 import { formatStat } from '../../utils/stats';
-import { AvailabilityBadge, CategoryLine, ImpactBadge, VsUsualChip } from './SlateBadges';
+import { AvailabilityBadge, CategoryLine, ImpactBadge } from './SlateBadges';
+import { SlateReasons, SlateVsUsual } from './SlateVsUsual';
 import { InjuryChip } from './SlateInjuryChip';
 import type { SlatePlayer } from '../../types';
 
-export const SlatePlayerRow = ({
-  player,
-  notableMinDelta,
-}: {
-  player: SlatePlayer;
-  notableMinDelta: number;
-}): JSX.Element => (
+export const SlatePlayerRow = ({ player }: { player: SlatePlayer }): JSX.Element => (
   <li
     className={
       'flex flex-col gap-0.5 py-1.5 px-2 -mx-2 rounded-md ' +
@@ -64,7 +59,13 @@ export const SlatePlayerRow = ({
       </span>
       <CategoryLine player={player} />
       <InjuryChip player={player} />
-      <VsUsualChip player={player} threshold={notableMinDelta} />
     </div>
+
+    {(player.reasons.length > 0 || player.vs_usual !== null) && (
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <SlateReasons player={player} />
+        <SlateVsUsual player={player} />
+      </div>
+    )}
   </li>
 );

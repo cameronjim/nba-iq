@@ -107,7 +107,7 @@ describe('GET /api/betting/odds', () => {
     expect(res.status).toBe(200);
     expect(res.body.games).toHaveLength(1);
     const game = res.body.games[0];
-    expect(game.nba_game_id).toBe('401859966');
+    expect(game.espn_event_id).toBe('401859966');
     expect(game.markets.spread.home_line).toBe(-2.5);
     expect(game.markets.spread.home_price).toBe(-105);
     expect(game.markets.total.line).toBe(216.5);
@@ -203,13 +203,76 @@ describe('GET /api/betting/picks', () => {
     expect(spreadPick.american_odds).toBe(-105);
     expect(spreadPick.line).toBe(-2.5);
     expect(spreadPick.implied_prob).toBeCloseTo(0.5122, 3);
-    expect(spreadPick.edge).toBeCloseTo(0.58 - 0.5122, 3);
+    expect(spreadPick.estimate_source).toBe('claude');
     expect(spreadPick.selection_label).toBe('New York Knicks -2.5');
     expect(res.body.parlay).toBeNull();
     const upsert = queryMock.mock.calls.find(([sql]) =>
       (sql as string).includes('INSERT INTO betting_cache')
     );
     expect(upsert).toBeDefined();
+  });
+
+  it('computes edge against the no-vig probability when both sides are priced', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult([{ ai_preferences: {} }]))
+      .mockResolvedValueOnce(pgResult([]));
+    claudeMock.mockResolvedValue(JSON.stringify({
+      picks: [{
+        game_id: '401859966', category: 'best_value', market: 'spread', selection: 'home',
+        estimated_win_prob: 0.58, rationale: 'edge', confidence: 'medium',
+      }],
+      parlay: null,
+      summary: 'ok',
+    }));
+    const noVigHome = 0.51220 / (0.51220 + 0.53488);
+
+    // act
+    const res = await request(app)
+      .get('/api/betting/picks')
+      .query({ refresh: 'true' })
+      .set('Authorization', bearerFor(5));
+
+    // assert
+    const pick = res.body.picks[0];
+    expect(pick.implied_prob_novig).toBeCloseTo(noVigHome, 3);
+    expect(pick.edge).toBeCloseTo(0.58 - noVigHome, 3);
+    expect(pick.edge).toBeGreaterThan(0.58 - pick.implied_prob);
+  });
+
+  it('drops a pick whose selected price is missing', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult([{ ai_preferences: {} }]))
+      .mockResolvedValueOnce(pgResult([]));
+    // odds cache is module-level; jump past its ttl so the stub is fetched
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 11 * 60_000);
+    const unpriced = structuredClone(espnEvent);
+    unpriced.competitions[0].odds[0].pointSpread = undefined as never;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ events: [unpriced] }),
+    } as Response));
+    claudeMock.mockResolvedValue(JSON.stringify({
+      picks: [
+        { game_id: '401859966', category: 'best_value', market: 'spread', selection: 'home', estimated_win_prob: 0.58, rationale: 'x', confidence: 'low' },
+        { game_id: '401859966', category: 'safe', market: 'moneyline', selection: 'home', estimated_win_prob: 0.6, rationale: 'x', confidence: 'low' },
+      ],
+      parlay: null,
+      summary: 'ok',
+    }));
+
+    // act
+    const res = await request(app)
+      .get('/api/betting/picks')
+      .query({ refresh: 'true' })
+      .set('Authorization', bearerFor(5));
+
+    // assert
+    vi.useRealTimers();
+    expect(res.body.picks).toHaveLength(1);
+    expect(res.body.picks[0].market).toBe('moneyline');
   });
 
   it('surfaces an empty result without caching when every pick fails validation', async () => {

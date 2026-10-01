@@ -20,6 +20,10 @@ from config import (
     ADVANCED_RATINGS_FIRST_SEASON_START_YEAR,
     BACKFILL_MAX_ATTEMPTS,
     BACKFILL_REQUEST_DELAY_SECONDS,
+    ESPN_MAX_ATTEMPTS,
+    ESPN_RETRY_DELAY_SECONDS,
+    ESPN_SCOREBOARD_URL,
+    ESPN_TIMEOUT_SECONDS,
     NBA_2K_API_URL,
     NBA_2K_MAX_ATTEMPTS,
     NBA_2K_PAGE_LIMIT,
@@ -248,6 +252,28 @@ def _fetch_espn_scoreboard(date_str: str) -> list[dict]:
     return games
 
 
+def fetch_espn_scoreboard_events(day: date) -> list[dict]:
+    # one day per request: espn answers a dates=start-end range with a 400, and
+    # a spoofed browser user agent with a 403.
+    dates = f"{day:%Y%m%d}"
+
+    def fetch() -> list[dict]:
+        resp = requests.get(
+            ESPN_SCOREBOARD_URL,
+            params={"dates": dates},
+            timeout=ESPN_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return list(resp.json().get("events") or [])
+
+    return _fetch_with_retry(
+        f"espn scoreboard {dates}",
+        fetch,
+        max_attempts=ESPN_MAX_ATTEMPTS,
+        initial_delay=ESPN_RETRY_DELAY_SECONDS,
+    )
+
+
 def fetch_injury_page() -> str:
     headers = {"User-Agent": BROWSER_USER_AGENT}
     resp = requests.get(
@@ -447,6 +473,22 @@ def _fetch_inactive_players(game_id: str, game_date: date | None) -> tuple[list[
     summary = _fetch_with_retry(f"box score summary v2 {game_id}", fetch_v2)
     rows = summary.inactive_players.get_data_frame().to_dict("records")
     return rows, "v2-suspect" if v2_unreliable else "v2"
+
+
+def fetch_box_score_traditional(game_id: str) -> dict[str, list[dict]]:
+    # the caller owns the delay between games; this only retries one game.
+    from nba_api.stats.endpoints import boxscoretraditionalv3
+
+    def fetch() -> object:
+        return boxscoretraditionalv3.BoxScoreTraditionalV3(
+            game_id=game_id, timeout=60, headers=STATS_HEADERS
+        )
+
+    box = _fetch_with_retry(f"box score traditional v3 {game_id}", fetch)
+    return {
+        "player_stats": box.player_stats.get_data_frame().to_dict("records"),
+        "team_stats": box.team_stats.get_data_frame().to_dict("records"),
+    }
 
 
 def _fetch_team_roster(

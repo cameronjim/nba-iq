@@ -6,18 +6,18 @@ export type BetStatus = 'pending' | 'won' | 'lost' | 'push';
 export interface SpreadMarket {
   home_line: number;
   away_line: number;
-  home_price: number;
-  away_price: number;
-  home_implied: number;
-  away_implied: number;
+  home_price: number | null;
+  away_price: number | null;
+  home_implied: number | null;
+  away_implied: number | null;
 }
 
 export interface TotalMarket {
   line: number;
-  over_price: number;
-  under_price: number;
-  over_implied: number;
-  under_implied: number;
+  over_price: number | null;
+  under_price: number | null;
+  over_implied: number | null;
+  under_implied: number | null;
 }
 
 export interface MoneylineMarket {
@@ -28,7 +28,7 @@ export interface MoneylineMarket {
 }
 
 export interface BettingGame {
-  nba_game_id: string;
+  espn_event_id: string;
   home_team: string;
   away_team: string;
   home_abbrev: string;
@@ -55,7 +55,9 @@ export interface BettingPick {
   line: number | null;
   american_odds: number;
   implied_prob: number;
+  implied_prob_novig: number | null;
   estimated_win_prob: number;
+  estimate_source: 'claude';
   edge: number;
   rationale: string;
   confidence: 'low' | 'medium' | 'high';

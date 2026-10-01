@@ -7,6 +7,8 @@ import pytest
 from fnba_ml.config import (
     EWMA_HALFLIFE,
     FEATURE_COLS,
+    OPP_FORM_MIN_PERIODS,
+    OPP_FORM_WINDOW,
     RATE_MINUTES_FLOOR,
     RATE_TARGETS,
     TARGET_COLS,
@@ -14,7 +16,9 @@ from fnba_ml.config import (
 from fnba_ml.features import (
     MIN_APPEARANCES_FOR_HISTORY,
     attach_per_minute_rates,
+    build_features,
     rate_column,
+    schedule_features,
 )
 
 RNG = np.random.default_rng(7)
@@ -321,3 +325,44 @@ def test_the_backfill_is_a_noop_when_the_columns_are_already_there(feats):
 def test_the_rate_columns_are_not_model_features():
     """they are composition inputs, not predictors."""
     assert not {rate_column(t) for t in RATE_TARGETS} & set(FEATURE_COLS)
+
+
+def _legacy_schedule_features(universe: pd.DataFrame) -> pd.DataFrame:
+    """schedule_features as it was before the schedule argument existed."""
+    sched = (
+        universe[["SEASON", "TEAM_ID", "GAME_ID", "GAME_DATE", "TEAM_PTS_ALLOWED"]]
+        .drop_duplicates(["SEASON", "TEAM_ID", "GAME_ID"])
+        .sort_values(["TEAM_ID", "GAME_DATE"])
+        .reset_index(drop=True)
+    )
+    grp = sched.groupby(["TEAM_ID", "SEASON"])
+    sched["TEAM_REST_DAYS"] = (sched["GAME_DATE"] - grp["GAME_DATE"].shift(1)).dt.days
+    sched["IS_B2B"] = (sched["TEAM_REST_DAYS"] == 1).astype(float)
+    sched.loc[sched["TEAM_REST_DAYS"].isna(), "IS_B2B"] = np.nan
+    sched["DEF_FORM"] = grp["TEAM_PTS_ALLOWED"].transform(
+        lambda s: s.shift(1).rolling(OPP_FORM_WINDOW, min_periods=OPP_FORM_MIN_PERIODS).mean()
+    )
+    return sched[["SEASON", "TEAM_ID", "GAME_ID", "TEAM_REST_DAYS", "IS_B2B", "DEF_FORM"]]
+
+
+def test_schedule_features_without_a_schedule_is_unchanged(features_status):
+    expected = _legacy_schedule_features(features_status)
+
+    actual = schedule_features(features_status, schedule=None)
+
+    pd.testing.assert_frame_equal(actual, expected)
+
+
+def test_build_features_without_a_schedule_is_the_default_build(
+    universe_status, features_status
+):
+    rebuilt = build_features(universe_status, schedule=None)
+
+    pd.testing.assert_frame_equal(rebuilt, features_status)
+    legacy = _legacy_schedule_features(features_status)
+    merged = features_status.merge(
+        legacy.rename(columns={"TEAM_REST_DAYS": "_rest", "IS_B2B": "_b2b"}),
+        on=["SEASON", "TEAM_ID", "GAME_ID"], how="left",
+    )
+    np.testing.assert_array_equal(merged["TEAM_REST_DAYS"], merged["_rest"])
+    np.testing.assert_array_equal(merged["IS_B2B"], merged["_b2b"])

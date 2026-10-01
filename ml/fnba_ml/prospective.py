@@ -35,6 +35,13 @@ structurally impossible rather than merely unlikely. It costs one feature build
 per date and buys a projection whose Thursday number does not depend on a Tuesday
 that has not happened.
 
+THE SCHEDULE IS THE EXCEPTION TO THAT RULE. Rest days, back-to-backs and
+defensive form are read from the calendar, not from outcomes, and the calendar is
+fully known: a Thursday game after a Wednesday game is a back-to-back whether or
+not Wednesday has been played. Each per-date build is therefore handed the whole
+known schedule (:func:`known_schedule`) for those columns, while every
+outcome-derived column still sees exactly one future date.
+
 WHAT IS DELIBERATELY NOT SOLVED HERE. The oracle teammate family
 (``vacated_*``, ``star_out``, …) is computed by ``build_features`` and is
 MEANINGLESS on future rows: its absence set is the target game's, and every future
@@ -192,6 +199,31 @@ def prospective_universe(
     ).reset_index(drop=True)
 
 
+def known_schedule(history: pd.DataFrame, future: pd.DataFrame) -> pd.DataFrame:
+    """every known team-game: the played history plus every future team-game.
+
+    Future games are taken from both sides of each row, so an opponent with no
+    rostered player still has its schedule and therefore its rest days. Their
+    ``TEAM_PTS_ALLOWED`` is null, which ``features.schedule_features`` reads as
+    unplayed.
+    """
+    from .features import SCHEDULE_COLS  # noqa: PLC0415 - avoids an import cycle
+
+    cols = list(SCHEDULE_COLS)
+    mirrored = future[["SEASON", "OPP_TEAM_ID", "GAME_ID", "GAME_DATE"]].rename(
+        columns={"OPP_TEAM_ID": "TEAM_ID"}
+    )
+    mirrored["TEAM_PTS_ALLOWED"] = np.nan
+    frame = pd.concat(
+        [history[cols], future[cols], mirrored[cols]], ignore_index=True
+    )
+    frame["GAME_DATE"] = pd.to_datetime(frame["GAME_DATE"])
+    # keep="first" so a played row wins over a mirrored null for the same team-game
+    return frame.drop_duplicates(
+        ["SEASON", "TEAM_ID", "GAME_ID"], keep="first"
+    ).reset_index(drop=True)
+
+
 def build_prospective_features(
     history: pd.DataFrame, future: pd.DataFrame
 ) -> pd.DataFrame:
@@ -200,7 +232,9 @@ def build_prospective_features(
     See the module docstring for why the loop is not an optimisation waiting to
     happen. Each iteration builds features over ``history`` plus exactly one future
     date and keeps that date's rows, so no future row is ever in the frame that
-    produces another future row's features.
+    produces another future row's outcome-derived features. The schedule-derived
+    columns are the exception: every iteration reads them from the whole known
+    schedule, so ``future`` should be the full window rather than one date.
 
     ``history`` is the played universe — the same frame ``build_dataset.py``
     feeds to ``build_features`` — and it must span far enough back for the career
@@ -224,11 +258,12 @@ def build_prospective_features(
         len(dates),
     )
 
+    schedule = known_schedule(history, future)
     out: list[pd.DataFrame] = []
     for index, game_date in enumerate(dates, start=1):
         day = future[future["GAME_DATE"] == game_date]
         combined = pd.concat([history, day], ignore_index=True)
-        built = build_features(combined)
+        built = build_features(combined, schedule=schedule)
         out.append(built[built["UNIVERSE_SOURCE"] == SOURCE_PROSPECTIVE])
         log.info(
             "  %d/%d  %s  %d rows", index, len(dates),

@@ -15,7 +15,9 @@ const makePick = (overrides: Partial<BettingPick> = {}): BettingPick => ({
   line: -2.5,
   american_odds: -105,
   implied_prob: 0.5122,
+  implied_prob_novig: 0.4891,
   estimated_win_prob: 0.58,
+  estimate_source: 'claude',
   edge: 0.0678,
   rationale: 'Home team has the rest advantage.',
   confidence: 'medium',
@@ -61,6 +63,20 @@ describe('BettingPicksPanel', () => {
     expect(screen.getAllByText('New York Knicks -2.5').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('New York Knicks ML (-130)')).toBeInTheDocument();
     expect(screen.getByText('San Antonio Spurs ML (+105)')).toBeInTheDocument();
+  });
+
+  it('labels the edge as a Claude estimate', () => {
+    render(
+      <BettingPicksPanel
+        picks={makeResponse({ picks: [makePick()], parlay: null })}
+        loading={false}
+        refreshing={false}
+        error=""
+        onReload={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('Claude estimate')).toBeInTheDocument();
   });
 
   it('shows implied probability, AI estimate, a signed edge, and the confidence badge', () => {

@@ -18,6 +18,7 @@ from fnba_ml import registry  # noqa: E402
 from fnba_ml.cli import (  # noqa: E402
     add_common_args,
     default_dataset_path,
+    feature_set_version,
     load_dataset,
     setup_logging,
     version_dir,
@@ -37,17 +38,21 @@ from fnba_ml.config import (  # noqa: E402
     MAGNITUDE_WINDOW,
     MINUTES_TARGET,
     MODELS_DIR,
+    PROSPECTIVE_SHADOW_FEATURE_SETS,
     RATE_ESTIMATORS,
     RATE_HALFLIVES,
     RATE_MINUTES_FLOOR,
     RATE_TARGETS,
+    SERVED_FEATURE_SET,
     resolve_cutoff,
 )
-from fnba_ml.features import available_features  # noqa: E402
+from fnba_ml.features import available_features, feature_set_columns  # noqa: E402
 from fnba_ml.intervals import (  # noqa: E402
     QUANTILE_TARGETS,
     QuantileOffsets,
     fit_residual_quantiles,
+    fit_residual_quantiles_by_tier,
+    tiered_quantiles_as_dict,
 )
 from fnba_ml.models import (  # noqa: E402
     AvailabilityModel,
@@ -71,6 +76,7 @@ BASE_MODEL_FILE = "base_availability_model.joblib"
 EWMA_FILE = "ewma_state.parquet"
 META_FILE = "metadata.json"
 DEFAULT_HOLDOUT_DAYS = 28
+TRAINABLE_FEATURE_SETS: tuple[str, ...] = (SERVED_FEATURE_SET, *PROSPECTIVE_SHADOW_FEATURE_SETS)
 
 
 def appearances(frame: pd.DataFrame) -> pd.DataFrame:
@@ -81,12 +87,57 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     add_common_args(parser)
     parser.add_argument("--dataset", type=Path, default=default_dataset_path())
-    parser.add_argument("--version", default=None, help="model version, default today's date")
+    parser.add_argument("--version", default=None,
+                        help="model version, default today's date. a non-served "
+                             "--feature-set is written to models/<version>-<set>/")
+    parser.add_argument("--feature-set", choices=TRAINABLE_FEATURE_SETS,
+                        default=SERVED_FEATURE_SET,
+                        help="v1 is the no-teammate shadow comparator (MODEL.md 13.4c); "
+                             "it skips the two-stage context pipeline")
     parser.add_argument("--cutoff", default=None,
                         help=f"training cutoff. policy: {CUTOFF_POLICY}")
     parser.add_argument("--holdout-days", type=int, default=DEFAULT_HOLDOUT_DAYS)
     parser.add_argument("--models-dir", type=Path, default=MODELS_DIR)
+    parser.add_argument(
+        "--tiered-quantiles", action="store_true",
+        help="also write challenger per-minutes-tier offsets under "
+             "production.quantiles_by_tier (nothing serves them)",
+    )
     return parser.parse_args(argv)
+
+
+def training_columns(features: pd.DataFrame, feature_set: str) -> list[str]:
+    """the columns both models are fitted on for this feature set."""
+    if feature_set == SERVED_FEATURE_SET:
+        return available_features(features)
+    return feature_set_columns(features, feature_set)
+
+
+def companion_cutoff(version: str, models_dir: Path) -> pd.Timestamp | None:
+    """the training cutoff of the served artifact with this version, if one exists."""
+    meta_path = version_dir(version, models_dir) / META_FILE
+    if not meta_path.exists():
+        return None
+    with open(meta_path, encoding="utf-8") as fh:
+        cutoff = json.load(fh).get("training_window", {}).get("cutoff")
+    return resolve_cutoff(cutoff) if cutoff else None
+
+
+def resolve_training_cutoff(
+    args: argparse.Namespace, features: pd.DataFrame, base_version: str
+) -> tuple[pd.Timestamp, str]:
+    """(cutoff, where it came from). a shadow inherits its served companion's cutoff."""
+    if args.cutoff:
+        return resolve_cutoff(args.cutoff), "--cutoff"
+    if args.feature_set != SERVED_FEATURE_SET:
+        inherited = companion_cutoff(base_version, args.models_dir)
+        if inherited is not None:
+            return inherited, f"models/{base_version}/{META_FILE}"
+        log.warning(
+            "no served artifact models/%s to inherit a cutoff from; using the "
+            "dataset default", base_version,
+        )
+    return features["GAME_DATE"].max() + pd.Timedelta(days=1), "dataset max + 1 day"
 
 
 def holdout_metrics(
@@ -144,13 +195,13 @@ def holdout_metrics(
     return metrics
 
 
-def holdout_quantiles(
+def holdout_points(
     features: pd.DataFrame,
     feature_cols: list[str],
     cutoff: pd.Timestamp,
     holdout_days: int,
-) -> dict[str, QuantileOffsets]:
-    """P10/P50/P90 offsets for the conditional champion, per target."""
+) -> tuple[pd.DataFrame, dict[str, object], tuple[str, str]] | None:
+    """holdout appearance rows, the shipped conditional point per target, the window."""
     # residuals are measured on APPEARANCES only, and against the estimator that
     # ships: a band fitted to one point estimate does not cover another.
     split_at = cutoff - pd.Timedelta(days=holdout_days)
@@ -160,27 +211,60 @@ def holdout_quantiles(
     )
     if train.empty or valid.empty:
         log.warning("holdout window is empty; no quantile offsets will be written")
-        return {}
+        return None
 
     window = (str(split_at.date()), str(pd.Timestamp(cutoff).date()))
     minutes_model = MinutesModel(kind=CHAMPIONS["minutes"]).fit(train, feature_cols, split_at)
     minutes_pred = minutes_model.predict(valid)
 
-    offsets: dict[str, QuantileOffsets] = {}
+    points: dict[str, object] = {}
     for target in QUANTILE_TARGETS:
         if target not in valid.columns:
             log.warning("no %s in the dataset; skipping its quantiles", target)
             continue
         if target == MINUTES_TARGET:
-            point = minutes_pred
+            points[target] = minutes_pred
         else:
-            point = conditional_estimate(
+            points[target] = conditional_estimate(
                 minutes_pred, PerMinuteRate(target).fit(train).predict(valid)
             )
-        offsets[target] = fit_residual_quantiles(
-            valid[target], point, target, window=window
-        )
-    return offsets
+    return valid, points, window
+
+
+def holdout_quantiles(
+    features: pd.DataFrame,
+    feature_cols: list[str],
+    cutoff: pd.Timestamp,
+    holdout_days: int,
+) -> dict[str, QuantileOffsets]:
+    """P10/P50/P90 offsets for the conditional champion, per target."""
+    held = holdout_points(features, feature_cols, cutoff, holdout_days)
+    if held is None:
+        return {}
+    valid, points, window = held
+    return {
+        target: fit_residual_quantiles(valid[target], point, target, window=window)
+        for target, point in points.items()
+    }
+
+
+def holdout_quantiles_by_tier(
+    features: pd.DataFrame,
+    feature_cols: list[str],
+    cutoff: pd.Timestamp,
+    holdout_days: int,
+) -> dict[str, dict[str, object]]:
+    """the challenger per-tier offsets, json-ready, over the same holdout rows."""
+    held = holdout_points(features, feature_cols, cutoff, holdout_days)
+    if held is None:
+        return {}
+    valid, points, window = held
+    out: dict[str, dict[str, object]] = {}
+    for target, point in points.items():
+        frame = valid.assign(_point=point)
+        by_tier = fit_residual_quantiles_by_tier(frame, target, "_point", window=window)
+        out[target] = tiered_quantiles_as_dict(by_tier)
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -188,17 +272,18 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(args.verbose)
 
     features = load_dataset(args.dataset)
-    feature_cols = available_features(features)
+    feature_set = args.feature_set
+    with_context = feature_set == SERVED_FEATURE_SET
+    feature_cols = training_columns(features, feature_set)
 
-    cutoff = (
-        resolve_cutoff(args.cutoff) if args.cutoff
-        else features["GAME_DATE"].max() + pd.Timedelta(days=1)
-    )
+    base_version = args.version or pd.Timestamp.now("UTC").strftime("%Y%m%d")
+    version = feature_set_version(base_version, feature_set)
+    cutoff, cutoff_source = resolve_training_cutoff(args, features, base_version)
+    log.info("feature set %s, cutoff %s (from %s)", feature_set, cutoff.date(), cutoff_source)
     train = features[features["GAME_DATE"] < cutoff]
     if train.empty:
         raise SystemExit(f"no training rows before cutoff {cutoff.date()}")
 
-    version = args.version or pd.Timestamp.now("UTC").strftime("%Y%m%d")
     out_dir = version_dir(version, args.models_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -217,10 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     # a third model, not the champion: a probability from a model that already saw
     # teammate context cannot be used to build teammate context.
     base_cols = [c for c in BASE_FEATURE_COLS if c in features.columns]
-    base_model = AvailabilityModel(kind=CHAMPIONS["availability"]).fit(
-        train, base_cols, cutoff
-    )
-    joblib.dump(base_model, out_dir / BASE_MODEL_FILE)
+    if with_context:
+        base_model = AvailabilityModel(kind=CHAMPIONS["availability"]).fit(
+            train, base_cols, cutoff
+        )
+        joblib.dump(base_model, out_dir / BASE_MODEL_FILE)
 
     ewma_state = snapshot_ewma_state(features, cutoff)
     fallbacks = dict(ewma_state.attrs.get("fallbacks", {}))
@@ -256,15 +342,13 @@ def main(argv: list[str] | None = None) -> int:
         "fallbacks": {k: round(v, 6) for k, v in fallbacks.items()},
         "quantiles": {target: q.as_dict() for target, q in quantiles.items()},
     }
+    if args.tiered_quantiles:
+        production["quantiles_by_tier"] = holdout_quantiles_by_tier(
+            features, feature_cols, cutoff, args.holdout_days
+        )
 
-    metadata = {
-        "model_version": version,
-        "feature_version": FEATURE_VERSION,
-        "git_commit": registry.git_commit(),
-        "artifact_checksum": registry.sha256_file(out_dir / MODEL_FILE),
-        "minutes_artifact_checksum": registry.sha256_file(out_dir / MINUTES_FILE),
-        "base_artifact_checksum": registry.sha256_file(out_dir / BASE_MODEL_FILE),
-        "context": {
+    if with_context:
+        context: dict[str, object] = {
             "stage1_feature_cols": base_cols,
             "stage2_cross_fit_freq": CROSS_FIT_FREQ,
             "stage2_min_train_rows": CROSS_FIT_MIN_TRAIN_ROWS,
@@ -273,7 +357,29 @@ def main(argv: list[str] | None = None) -> int:
             "magnitude_shrink_k": MAGNITUDE_SHRINK_K,
             "magnitude_priors": MAGNITUDE_PRIORS,
             "iterations": 1,
-        },
+        }
+    else:
+        context = {
+            "skipped": True,
+            "reason": f"feature_set {feature_set} has no teammate context, so stages "
+                      f"1-3 of the two-stage pipeline (base model for p_j) are not run",
+        }
+
+    metadata: dict[str, object] = {
+        "model_version": version,
+        "feature_version": FEATURE_VERSION,
+        "feature_set": feature_set,
+        "git_commit": registry.git_commit(),
+        "artifact_checksum": registry.sha256_file(out_dir / MODEL_FILE),
+        "minutes_artifact_checksum": registry.sha256_file(out_dir / MINUTES_FILE),
+    }
+    if with_context:
+        metadata["base_artifact_checksum"] = registry.sha256_file(out_dir / BASE_MODEL_FILE)
+    else:
+        metadata["shadow_of"] = base_version
+        metadata["cutoff_source"] = cutoff_source
+    metadata.update({
+        "context": context,
         "champions": CHAMPIONS,
         "availability_hyperparams": LGBM_PARAMS,
         "minutes_hyperparams": LGBM_PARAMS if CHAMPIONS["minutes"] != "ewma" else {},
@@ -282,7 +388,7 @@ def main(argv: list[str] | None = None) -> int:
         "universe_source": universe_source,
         "feature_cols": feature_cols,
         "metrics": metrics,
-    }
+    })
     with open(out_dir / META_FILE, "w", encoding="utf-8") as fh:
         json.dump(metadata, fh, indent=2)
         fh.write("\n")
@@ -299,23 +405,28 @@ def main(argv: list[str] | None = None) -> int:
             "availability": LGBM_PARAMS,
             "minutes": LGBM_PARAMS if CHAMPIONS["minutes"] != "ewma" else {},
             "production": production,
-            "context": metadata["context"],
+            "context": context,
         },
         metrics=metrics,
         champions=CHAMPIONS,
         universe_source=universe_source,
         feature_cols=feature_cols,
+        feature_set=feature_set,
     )
     registry.upsert(entry, args.models_dir / "registry.json")
 
     print("--- TRAIN ---")
     print(f"version          : {version}")
+    print(f"feature set      : {feature_set} (cutoff from {cutoff_source})")
     print(f"training window  : {training_window['start']} .. {training_window['end']} "
           f"(cutoff {training_window['cutoff']})")
     print(f"universe         : {universe_source}")
     print(f"availability     : {CHAMPIONS['availability']} on {len(feature_cols)} features")
-    print(f"base availability: {CHAMPIONS['availability']} on {len(base_cols)} "
-          f"teammate-free features (stage 1 of the two-stage pipeline)")
+    if with_context:
+        print(f"base availability: {CHAMPIONS['availability']} on {len(base_cols)} "
+              f"teammate-free features (stage 1 of the two-stage pipeline)")
+    else:
+        print("base availability: none (no teammate context, stages 1-3 skipped)")
     print(f"minutes|plays    : {CHAMPIONS['minutes']} on {len(train_app):,} appearance rows")
     print(f"production       : EWMA(halflife {production['halflife']}) of stat per minute "
           f"(denominator floor {RATE_MINUTES_FLOOR:g}m) - snapshot only, "

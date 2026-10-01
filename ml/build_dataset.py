@@ -26,7 +26,11 @@ from fnba_ml.teammates import (  # noqa: E402
     position_group_counts,
     teammate_feature_summary,
 )
-from fnba_ml.universe import build_universe, coverage_report  # noqa: E402
+from fnba_ml.universe import (  # noqa: E402
+    build_universe,
+    coverage_report,
+    universe_composition,
+)
 
 log = logging.getLogger("build_dataset")
 
@@ -50,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     source = build_source(args)
     universe = build_universe(source)
     coverage = coverage_report(universe, source.load_player_game_logs())
+    composition = universe_composition(universe)
     features = build_features(universe)
     features = attach_cross_fit_context(features)
     if not args.no_v4_candidate:
@@ -65,6 +70,13 @@ def main(argv: list[str] | None = None) -> int:
           + ("   <-- BIASED, fixture/backtest only" if universe_source == "approximation" else ""))
     for key, value in coverage.items():
         print(f"{key:17s}: {value:,.4f}")
+    print("universe composition (played, listed_inactive):")
+    for (played, inactive), count in composition["by_played_listed_inactive"].items():
+        label = "unknown" if inactive is None else str(inactive).lower()
+        print(f"  played={played} listed_inactive={label:7s} {count:>10,}")
+    box_rows = composition["box_score_rows"]
+    print("  active-DNP rows from boxscoretraditionalv3: "
+          + ("n/a (source not carried)" if box_rows is None else f"{box_rows:,}"))
     print(f"feature version  : {FEATURE_VERSION}")
     print(f"feature columns  : {len(FEATURE_COLS)}")
     print(f"rows             : {len(features):,}")

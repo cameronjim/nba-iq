@@ -265,7 +265,7 @@ describe('WatchlistPage', () => {
     expect(screen.getByText(/take more shots than usual/i)).toBeInTheDocument();
     expect(screen.getByText(/back after a week or more out/i)).toBeInTheDocument();
     expect(screen.getByText(/above his usual over his last 5 games/i)).toBeInTheDocument();
-    expect(screen.getByText(/teammate who usually starts is unlikely to play/i)).toBeInTheDocument();
+    expect(screen.getByText(/teammate who usually plays 28\+ minutes is unlikely to play/i)).toBeInTheDocument();
   });
 
   it('says the badges explain the ranking rather than being it', async () => {

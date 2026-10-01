@@ -4,8 +4,8 @@ import type {
   BettingGame, BettingPicksResponse, Bet, NewBet, LedgerSummary, BetStatus,
   PlayerSeasonRow, TeamSeasonRow,
   Rating2kSummary, Rating2kDetail, Rating2kTeamType,
-  PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, WatchlistResponse,
-  WatchlistPositionFilter,
+  PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, SlateSort, WatchlistResponse,
+  WatchlistPositionFilter, WeeklyOutlookResponse,
 } from '../types';
 
 const BASE_URL = import.meta.env.VITE_API_URL
@@ -188,17 +188,40 @@ export async function getPlayerPredictions(
   };
 }
 
-export async function getSlate(date?: string): Promise<SlateResponse> {
-  const { data } = await api.get<SlateResponse>('/predictions/slate', {
-    params: date ? { date } : {},
-  });
+// the default sort is omitted so the common request stays one cacheable url.
+export function slateParams(date?: string, sort?: SlateSort): Record<string, string> {
   return {
-    date: data.date,
+    ...(date ? { date } : {}),
+    ...(sort && sort !== 'impact' ? { sort } : {}),
+  };
+}
+
+export function normalizeSlate(data: Partial<SlateResponse>, sort: SlateSort): SlateResponse {
+  return {
+    date: data.date ?? '',
+    sort: data.sort ?? sort,
     run: data.run ?? null,
     pool: data.pool ?? { key: '', label: '', definition: '', sample_size: 0 },
     baseline: data.baseline ?? EMPTY_BASELINE,
-    games: (data.games ?? []).map((game) => ({ ...game, players: game.players ?? [] })),
+    games: (data.games ?? []).map((game) => ({
+      ...game,
+      top_edge: game.top_edge ?? null,
+      players: (game.players ?? []).map((player) => ({
+        ...player,
+        edge: player.edge ?? null,
+        vs_usual: player.vs_usual ?? null,
+        reasons: player.reasons ?? [],
+        evidence: player.evidence ?? {},
+      })),
+    })),
   };
+}
+
+export async function getSlate(date?: string, sort: SlateSort = 'impact'): Promise<SlateResponse> {
+  const { data } = await api.get<SlateResponse>('/predictions/slate', {
+    params: slateParams(date, sort),
+  });
+  return normalizeSlate(data ?? {}, sort);
 }
 
 // pages read an empty `definition` as "no baseline", so the zeroes are never used as thresholds.
@@ -381,6 +404,21 @@ export async function getRatings2kByName(name: string): Promise<Rating2kSummary 
 export async function getMyRoster(): Promise<RosterPlayer[]> {
   const { data } = await api.get('/fantasy/roster');
   return data;
+}
+
+export async function getWeeklyOutlook(
+  start?: string,
+  days?: number
+): Promise<WeeklyOutlookResponse> {
+  const params: Record<string, string | number> = {};
+  if (start) params.start = start;
+  if (days !== undefined) params.days = days;
+  const { data } = await api.get<WeeklyOutlookResponse>('/fantasy/weekly-outlook', { params });
+  return {
+    ...data,
+    categories: data.categories ?? [],
+    players: data.players ?? [],
+  };
 }
 
 export async function addToRoster(playerId: number): Promise<void> {

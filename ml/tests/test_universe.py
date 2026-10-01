@@ -13,6 +13,7 @@ from fnba_ml.universe import (
     build_universe,
     coverage_report,
     team_game_frame,
+    universe_composition,
     universe_from_status,
 )
 
@@ -132,3 +133,50 @@ def test_status_universe_rejects_games_absent_from_the_schedule(
 
     assert "9999999999" not in set(universe["GAME_ID"])
     assert any("absent from the schedule" in record.message for record in caplog.records)
+
+
+def _composition_frame() -> pd.DataFrame:
+    return pd.DataFrame({
+        "PLAYER_ID": ["1", "2", "3", "4", "5", "6"],
+        "PLAYED": [1, 1, 0, 0, 0, 0],
+        "LISTED_INACTIVE": pd.array([False, False, True, False, None, False], dtype="boolean"),
+        "STATUS_SOURCE": [
+            "boxscoresummaryv3+playergamelogs", "boxscoresummaryv3+playergamelogs",
+            "boxscoresummaryv3+playergamelogs", "boxscoretraditionalv3",
+            "boxscoretraditionalv3", None,
+        ],
+    })
+
+
+def test_composition_counts_rows_by_played_and_listed_inactive():
+    composition = universe_composition(_composition_frame())
+
+    assert composition["rows"] == 6
+    assert composition["by_played_listed_inactive"] == {
+        (0, False): 2, (0, None): 1, (0, True): 1, (1, False): 2,
+    }
+    assert sum(composition["by_played_listed_inactive"].values()) == 6
+
+
+def test_composition_counts_the_box_score_sourced_rows():
+    composition = universe_composition(_composition_frame())
+
+    assert composition["box_score_rows"] == 2
+
+
+def test_composition_without_a_source_column_reports_none_not_zero():
+    frame = _composition_frame().drop(columns=["STATUS_SOURCE"])
+
+    composition = universe_composition(frame)
+
+    assert composition["box_score_rows"] is None
+    assert composition["rows"] == 6
+
+
+def test_status_universe_carries_the_status_source(schedule, team_logs, raw_logs, status):
+    tagged = status.assign(STATUS_SOURCE="boxscoresummaryv3+playergamelogs")
+
+    universe = universe_from_status(schedule, team_logs, raw_logs, tagged)
+
+    assert "STATUS_SOURCE" in universe.columns
+    assert universe_composition(universe)["box_score_rows"] == 0

@@ -3,7 +3,6 @@ import {
   parseSpreadDetails,
   parseEventOdds,
   computeOddsHash,
-  DEFAULT_LINE_PRICE,
   type EspnEvent,
 } from '../../src/services/odds.js';
 
@@ -64,7 +63,7 @@ describe('parseEventOdds', () => {
     const game = parseEventOdds(scheduledEvent());
 
     expect(game).not.toBeNull();
-    expect(game!.nba_game_id).toBe('401859966');
+    expect(game!.espn_event_id).toBe('401859966');
     expect(game!.home_team).toBe('New York Knicks');
     expect(game!.away_team).toBe('San Antonio Spurs');
     expect(game!.game_date).toBe('2026-06-10'); // 00:30 UTC = 8:30 PM ET previous day
@@ -94,7 +93,7 @@ describe('parseEventOdds', () => {
     });
   });
 
-  it('falls back to flat fields with default juice when close prices are missing', () => {
+  it('falls back to flat fields and leaves missing line prices null', () => {
     const event = scheduledEvent();
     event.competitions[0].odds = [
       {
@@ -110,11 +109,41 @@ describe('parseEventOdds', () => {
     const game = parseEventOdds(event);
 
     expect(game!.markets.spread?.home_line).toBe(-2.5);
-    expect(game!.markets.spread?.home_price).toBe(DEFAULT_LINE_PRICE);
+    expect(game!.markets.spread?.home_price).toBeNull();
     expect(game!.markets.total?.line).toBe(216.5);
-    expect(game!.markets.total?.over_price).toBe(DEFAULT_LINE_PRICE);
+    expect(game!.markets.total?.over_price).toBeNull();
     expect(game!.markets.moneyline?.home).toBe(-130);
     expect(game!.markets.moneyline?.away).toBe(105);
+  });
+
+  it('yields null prices and null implied for a spread with no prices', () => {
+    // arrange
+    const event = scheduledEvent();
+    event.competitions[0].odds = [{ details: 'NY -2.5', spread: -2.5 }];
+
+    // act
+    const spread = parseEventOdds(event)!.markets.spread!;
+
+    // assert
+    expect(spread.home_price).toBeNull();
+    expect(spread.away_price).toBeNull();
+    expect(spread.home_implied).toBeNull();
+    expect(spread.away_implied).toBeNull();
+  });
+
+  it('yields a null under price when a total only has an over price', () => {
+    // arrange
+    const event = scheduledEvent();
+    event.competitions[0].odds = [{ total: { over: { close: { line: 'o216.5', odds: '-112' } } } }];
+
+    // act
+    const total = parseEventOdds(event)!.markets.total!;
+
+    // assert
+    expect(total.over_price).toBe(-112);
+    expect(total.over_implied).toBeCloseTo(0.5283, 3);
+    expect(total.under_price).toBeNull();
+    expect(total.under_implied).toBeNull();
   });
 
   it('returns the game with empty markets when no odds node exists', () => {
@@ -143,5 +172,22 @@ describe('computeOddsHash', () => {
 
     expect(computeOddsHash([a, b])).toBe(computeOddsHash([b, a]));
     expect(computeOddsHash([a, b])).not.toBe(computeOddsHash([aMoved, b]));
+  });
+
+  it('is stable when prices are null and differs from a priced market', () => {
+    // arrange
+    const event = scheduledEvent();
+    event.competitions[0].odds = [{ details: 'NY -2.5', spread: -2.5, overUnder: 216.5 }];
+    const a = parseEventOdds(event)!;
+    const b = parseEventOdds(event)!;
+    const priced = parseEventOdds(scheduledEvent())!;
+
+    // act
+    const hashA = computeOddsHash([a]);
+    const hashB = computeOddsHash([b]);
+
+    // assert
+    expect(hashA).toBe(hashB);
+    expect(hashA).not.toBe(computeOddsHash([priced]));
   });
 });

@@ -2135,6 +2135,8 @@ could drift.
 
 ## 13. `prospective_2026_27_v1` (FROZEN)
 
+*Re-frozen as `prospective_2026_27_v2` on 2026-10-01; see section 17 for what moved.*
+
 **Frozen 2026-08-17, 64 days before opening night. Append-only. Nothing in this
 section may be edited after 2026-10-20; before that date a change requires bumping to
 `prospective_2026_27_v2` and re-freezing the whole section.**
@@ -3549,3 +3551,602 @@ today + 6 Eastern (`--extended-days`, default 7) over both `Pre Season` and
 - **Known caveat, unchanged:** the prospective two-day run labels tomorrow's games
   `gameday` although their measured offset is roughly 24-36 hours. The label is part
   of the freeze and is not touched here.
+
+## 17. Phase 0 correctness and the `prospective_2026_27_v2` re-freeze (2026-10-01)
+
+**Section 13 is not edited.** Its text is the `v1` pre-registration and stays on the
+record as written. This section is the 13.2 re-freeze: it names what moved, what did
+not, and the two places where 13's wording is superseded (17.4, 17.5). Everything in
+13 that this section does not amend binds `v2` exactly as it bound `v1`.
+
+### 17.1 The verdict first
+
+**`v1` ended before it began.** No Regular Season slate has ever been scored under
+`v1`. Run A (16.7) only exists when the window holds a Regular Season game, and the
+first one is on 2026-10-20, so every run published so far is a run B: the extended
+seven-day window over preseason games, whose notes start `NOT PROSPECTIVE` and can
+never contain the label. The store holds zero rows a look report would select.
+
+So `v2` is a **clean start, not a mid-test change.** 13.2's rule is that a change
+made after opening night ends the test; a change made before it re-freezes the test,
+and this one lands 19 days early. There is no `v1` data to splice, discard or explain
+away. The bump is required because two of the fixes below (1 and 2) change an emitted
+number, which 13.2's last paragraph classes as a change to what is served.
+
+### 17.2 The seven defects
+
+**1. A recovered player stayed out forever.** The override layer took each player's
+newest report known at the boundary, with no age limit, and the CBS feed signals a
+recovery by *dropping the player from the page*, which wrote nothing. A player listed
+OUT in March was served at `P(play) = 0.02` in April. Found by an external code review on 2026-09-30 and
+verified against the code: the history table is append-only, so the absence of a row was the
+only clearance signal, and the model cannot read an absence. Fixed twice over. The scraper now appends a `cleared` row for every player
+who was listed last scrape and is not listed now, and a failed fetch or a page that
+parses to zero rows writes nothing at all (an empty page must never read as "everyone
+is healthy"). `overrides.REPORT_MAX_AGE_HOURS = 72.0` drops any report captured more
+than 72 hours before `as_of`, and `cleared` joins `PASSTHROUGH_STATUSES`, so a newer
+clearance supersedes an older OUT and the model stands. **Moves:** `prob_active` for
+every player whose last designation is stale or superseded, and, because the layer
+also runs on the base probabilities before the teammate sums (13.1), the
+expected-context features and `prob_active_model` of his teammates. Tested in
+`test_overrides.py` (a four-day-old OUT has expired, a one-day-old one applies, a
+newer clearance wins, `max_age_hours=None` and a missing boundary disable expiry) and
+in `scraper/test_truth_layer.py` (clearance rows, failed and empty scrapes write
+nothing, dry run writes nothing).
+
+**2. A future back-to-back did not read as one.** `build_prospective_features` builds
+one future date at a time so no future outcome can reach another future row (the
+section 14 rule). That rule was also applied to the *schedule*, which is not an
+outcome: a Nov 4 row built after a known Nov 3 game read its rest from the last
+*played* game, so the second night of a back-to-back carried `IS_B2B = 0` and a rest
+count one or more days too long. Found by the same external review, which reproduced it
+on a synthetic Nov 3 / Nov 4 pair; run B's seven-day windows made it routine. Now every per-date build is handed the whole
+known schedule (`prospective.known_schedule`: the played history plus both sides of
+every future team-game, so an opponent with no rostered player still has rest days),
+and `TEAM_REST_DAYS`, `IS_B2B`, `OPP_REST_DAYS` and `DEF_FORM` / `OPP_DEF_FORM` are
+read from it. Every outcome-derived column still sees exactly one future date.
+**Moves:** every row after the first scored day for a team that plays earlier in the
+window; on run A that is tomorrow's half of the two-day window, on run B most of it.
+`build_features(schedule=None)` is pinned to the old computation, so training and the
+pinned artifact are untouched. Tested in `test_prospective.py::TestScheduleIsReadWhole`
+and `test_features.py`.
+
+**3. `forecast_cutoff_at` understated what the run saw.** It was stored as midnight
+of the window's first date, while the run read injury reports through
+`statuses_as_of`, about 16:00 UTC that day. A column documented as the information
+boundary claimed sixteen hours less visibility than the run had. Now
+`forecast_cutoff_at = max(start of first scored day, information_as_of)`, and the two
+inputs are stored separately in new columns `information_as_of` and
+`history_through` (the last game date whose outcomes fed the features). **Moves:** no
+emitted number; provenance only. Tested in `test_predictions.py` and
+`test_daily_run.py::TestPredictArgv`.
+
+**4. Nothing but a note kept a shadow run off the app.** 13.4 promised that "a shadow
+never reaches the app" and made the note the separator, but every backend reader took
+the newest complete run regardless of its note. The first shadow written to the store
+would have been served. `prediction_runs.channel` (`production` | `shadow`, migration
+015, default `production`) is now written on every run, and every backend reader
+filters `channel = 'production'`. **Moves:** no emitted number. Tested in the backend
+`predictions`, `playerPredictions`, `slate`, `watchlist` and `aiContext` suites, and
+in `test_predictions.py` for the store record.
+
+**5. The look reports had no tool.** 16.6 recorded that 13.6's looks "still have to
+be computed by hand from the store", which for a season of append-only long-format
+rows is a way of guaranteeing a different computation at each look. New pure module
+`fnba_ml/scoring.py` and read-only loader `score_runs.py` score stored runs against
+completed games (17.5). **Moves:** nothing; it only reads. Tested in
+`test_scoring.py`.
+
+**6. `availability_risk` documented the wrong bound.** The weekly docstring called
+`1 - prod(prob_active)` a lower bound on the risk of missing a game. Absences are
+positively correlated, which raises `P(plays every game)` above the product, so it is
+an *upper* bound. Docstring only, plus a test at perfect dependence in
+`test_weekly.py`. Not protocol-relevant.
+
+**7. The betting board invented prices.** Outside the ML package, recorded because it
+shares the store's consumers. ESPN spread and total markets with no published price
+were filled with `-110`, a number nobody quoted. They are now null, and the edge on a
+pick is computed against the no-vig implied probability of the two priced sides and
+labelled a Claude estimate; a pick whose price is missing is dropped. The ESPN event
+id is now named `espn_event_id` rather than `nba_game_id`, because it is not one.
+Tested in `oddsParsing`, `oddsMath`, `betting` and `BettingPicksPanel`. Not
+protocol-relevant.
+
+### 17.3 What did not change
+
+- **Artifact `20260818`**, byte for byte. All six pinned checksums in 13.1 are
+  unchanged and `test_prospective_freeze.py` recomputes them from disk.
+- **`FEATURE_COLS`**: 51 columns, digest `914cdc17…`. Fix 2 changes how three
+  schedule columns are *computed* for future rows, not which columns exist.
+- **Champions, halflives, estimators, rate targets, coherence constraints**, exactly
+  as in 13.1.
+- **The `StatusPolicy` constants**: 0.02, 0.10, 0.6 / 0.60, 0.85 / 0.15.
+  `UNAVAILABLE_STATUSES` is unchanged.
+- **Horizons, the serving horizon (`gameday`), the nine cohorts, the cold-start window,
+  the October gate, the three look dates and row minimums, and every row of the
+  falsification table.** The thresholds were derived from retrospective block
+  variance (13.5), which none of these fixes touch.
+
+The frozen additions are two: `PROSPECTIVE_REPORT_MAX_AGE_HOURS = 72.0` and
+`PROSPECTIVE_PASSTHROUGH_STATUSES = {available, day_to_day, cleared, unknown}`, both
+hand-copied literals in `frozen.py` and both asserted against `overrides`. The 72
+hours is a hand-set constant in the same class as the five in `StatusPolicy`, with
+the same status: unmeasured, and frozen so it cannot drift during the season.
+
+### 17.4 Amendment to 13.4: the channel is the separator
+
+The run note's `shadow=` token is replaced by `channel=<production|shadow>`. A
+qualifying served run carries `prospective_2026_27_v2; feature_set=v3-honest;
+channel=production`, and a shadow carries `...; feature_set=v1; channel=shadow`.
+`daily_run.py` derives the token from the same constant it writes to the column, so
+the two cannot disagree.
+
+**The store's `channel` column is the authoritative separator; the note is a
+readable copy.** 13.4's "the label is what separates them" is superseded. A shadow
+run must be written with `predict.py --channel shadow`; a run written without it is a
+production run whatever its note says, and the app will serve it. `scoring.py` falls
+back to the note tokens only where the column is absent (015 not yet applied). Everything else in
+13.4 stands: same cutoff, same slate, same boundary, same override layer, one table.
+
+### 17.5 Ops: migration 015 and the scoring tool
+
+**Migration 015 must be applied to prod and to the dev branch before the first run of
+this code.** The run insert names the three new columns, so `--write-db` fails without
+them, and the backend readers filter on `channel`. It is applied by hand in the Neon
+SQL editor and recorded in `schema_migrations`, as 014 was. The 16.6 advice holds with
+more force: trigger the first production run by hand with `dry_run: true` before
+opening night.
+
+**Look reports are produced by `score_runs.py`** (13.8.6's markdown plus csv), scored
+per run and pooled per (channel, prospective label), keeping each player-game's latest
+pre-tip forecast once. It computes E1 Brier on both `prob_active` and
+`prob_active_model`, the override increment (F10), E2 slope and intercept (F9), E3,
+E4 for every stat, P10 to P90 coverage, and coverage misses, each split by
+`cold_start` and season type. **It now also computes** (Phase 3 package D) E1 skill
+against the shifted appearance rate (F1), F5, E5 (F6), the `ewma_state`-seeded rate
+families behind F7 and F8, F2 to F4 from paired served and v1 shadow runs, and the
+tier and vacated-minutes cohorts of 13.3, all rebuilt as of each game's date from
+the truth layer, with `--look` adding the falsification table; **it cannot compute**
+the `star_out = 1` cohort, which needs `usg_ewma` from team box totals, and F2 to F4
+until a shadow run exists, and a look report names every row it could not compute
+rather than leaving it blank.
+
+### 17.6 Open items this phase did not do
+
+- **ESPN to NBA game mapping.** Odds are keyed by ESPN event id and nothing joins them
+  to `nba_schedule`, so odds cannot be joined to the model's predictions.
+- **Odds history.** Odds are cached, not stored, so no line movement or closing-line
+  comparison exists.
+- **`matchup.py` computes rest days a second time** from its own team-game pairing.
+  It is the v4 candidate family and not served, but if promoted it must read the same
+  known schedule as fix 2 or it reintroduces the defect.
+- **Learning the override constants.** All six (five `StatusPolicy` values and the
+  72-hour expiry) are still hand-set. `player_injury_reports` now holds clearance rows,
+  which is the history a learned policy would need; F10 is the measurement.
+- **E5 in the scoring tool**, with the shifted-rate skill and the frozen-baseline rows
+  above. These are needed by the `dec1` look, where F1 and F6 bind.
+
+### 17.7 Rung (c) is wired: the daily v1 shadow
+
+16.6's "no shadow run" is closed. Section 13 is unchanged; this records how its
+rung (c) is now executed.
+
+- **The artifact.** `train.py --feature-set v1 --version 20260818` writes
+  `models/20260818-v1/`: availability and minutes models on the 36
+  `BASE_FEATURE_COLS`, the same `ewma_state` snapshot logic, `feature_set: v1` in
+  `metadata.json` and the registry entry. With no `--cutoff` it inherits the
+  cutoff of `models/20260818/metadata.json` (2026-04-13), and it is fitted from
+  the same dataset build as everything else in that run. Stages 1-3 of the
+  two-stage pipeline are skipped and recorded as skipped: v1 has no teammate
+  context, so there is no base model and `predict.py` skips `rebuild_context`.
+  `models/20260818/` is not touched.
+- **The run.** `daily_run.py --shadow-feature-set v1` publishes the shadow right
+  after run A from the same prospective frame, `statuses_as_of`, window and
+  horizon, with `predict.py --channel shadow`. Its note is
+  `prospective_2026_27_v2; feature_set=v1; channel=shadow` when run A qualifies:
+  a shadow at the served boundary is a qualifying prospective run, it is just not
+  served. It is `NOT PROSPECTIVE (...)` if run A is, or if its own artifact names
+  another feature set, has another cutoff, or fails its registry checksums. The
+  same row-level override layer applies; the context-stage override has nothing
+  to act on in v1.
+- **The served run is untouched.** Its argv, notes and code path are
+  byte-identical with or without the shadow. A missing shadow artifact is a
+  warning and a skip. A failed shadow is logged, run B still publishes, and the
+  job exits 1 afterwards. Run B gets no shadow.
+- **Not yet live.** The workflow passes `--shadow-feature-set v1`, but the
+  artifact must be trained (ML Evaluate, `train_shadow`, against prod), committed
+  with its registry entry and checked with `fnba_ml.registry.verify_artifacts`.
+  Until then rung (c), and F2 to F4 in `score_runs.py`, still have no data.
+
+### 17.8 Active-DNP rows enter `player_game_status` (the P5 gap, partly closed)
+
+The box-details pass (`boxscoretraditionalv3`, one request per game, both the
+`--backfill-box-details` backfill and the live hook in the game-status phase) now
+INSERTs a status row for every v3 player row with no minutes that has no
+`player_game_status` row for that game: `rostered` true, `played` false, `started`
+false, `dnp_reason` the verbatim box-score comment, `source = 'boxscoretraditionalv3'`.
+`listed_inactive` is false, except NULL when the comment starts `DND` or `NWT`, since
+those are injury and not-with-team designations the inactive list owns. The insert is
+`ON CONFLICT DO NOTHING`, so an inactive-list or game-log row always wins. Each run's
+notes record `active_dnp_rows=N`.
+
+**This changes the training universe.** These are exactly the "available and unused"
+rows 4.1 says the reconstruction cannot see, so once the backfill has run, the
+complement identity in 4.1 stops holding by construction (there is now a played-false,
+listed-inactive-false category), the availability base rate falls, and the
+vacated-resource sums change. Any retrain or dataset rebuild on a backfilled database
+is therefore a 13.2 item (7) change (the universe source) and requires a re-freeze to
+`prospective_2026_27_v3` before it may be served. The `v2` artifact is not retrained by
+this change, and nothing it serves moves until someone rebuilds against the new rows.
+
+**The magnitude is measured before deciding.** `build_dataset.py` now prints the
+universe composition (`universe.universe_composition`): row counts by
+(`PLAYED`, `LISTED_INACTIVE`) and the count of rows whose `STATUS_SOURCE` is
+`boxscoretraditionalv3`. That printout, run against the backfilled database, is the
+number that decides whether the re-freeze is worth taking. It does not close [P5]: the
+rows come from the same box score the appearances do, so they extend the
+reconstruction rather than audit it against an independent roster source. Games whose
+player rows were already stamped `details_fetched_at` before this change are not
+revisited by the backfill and gain no active-DNP rows until those stamps are cleared.
+
+## 18. Phase 2 challengers (2026-10-01): built, pre-registered, none served
+
+**Verdict first: everything Phase 2 built is a challenger or a serving option that is
+off by default, and none of it has been measured on real data.**
+`prospective_2026_27_v2` serves exactly as section 17 froze it: artifact `20260818`,
+the 51 `FEATURE_COLS` (digest `914cdc17…`), the 13.1 champions, and a `daily_run.py`
+that passes no Phase 2 flag except `--shadow-feature-set v1`, whose run is written
+`channel = 'shadow'` and never read by the app (17.4).
+`tests/test_prospective_freeze.py` is green. Sections 13 and 17 are not edited.
+
+### 18.1 What Phase 2 is and is not
+
+| Item | Kind | Switch (default) | Measured by |
+|---|---|---|---|
+| serving coherence | serving option | `predict.py --coherence` (`none`) | `report_coherence.py` |
+| scenario serving | serving option | `predict.py --scenarios` (off) | its audit parquet only (18.3d) |
+| `v5-stakes` | feature-set challenger | `FEATURE_SETS["v5-stakes"]` (not served) | `run_p3_bracket.py` |
+| residual rate | estimator challenger | `rate_model.py` (not served) | `run_p3_bracket.py` |
+| count models | estimator challenger | `count_model.py` (not served) | `report_counts.py` |
+| tiered intervals | interval challenger | `train.py --tiered-quantiles` (off) | `report_counts.py` |
+| v1 shadow | ladder rung (c) | `daily_run.py --shadow-feature-set v1` | `score_runs.py` (17.7) |
+| active-DNP rows | data | scraper box-details pass | `build_dataset.py` printout (17.8) |
+
+**Nothing here has a number yet.** This machine has no database, so every figure in
+this section comes from a synthetic test fixture and says how the code behaves, not
+what the challenger is worth. The measurement path is the ML Evaluate workflow's
+dataset build against prod, then `run_p3_bracket.py`, `report_coherence.py` and
+`report_counts.py` on that build. None of the three is a workflow step yet, and the
+workflow does not upload parquet, so a look is either a new step or a local run with
+`DATABASE_URL`. **One look per candidate, per 13.6**, as v4 got in 15.1: a result
+that disappoints is the result, and a fix is a new version with its own look.
+
+### 18.2 The pre-registered bars, quoted before any result exists
+
+From `config`'s P3 block, committed in `3574289` before `run_p3_bracket.py` had run:
+
+```
+P3_PROMOTION_FLOOR: float = 0.01
+P3_COHORT_REGRESSION_TOLERANCE: float = 0.01
+P3_V5_GATED_ENDPOINTS: tuple[str, ...] = ("availability_brier", "minutes_mae")
+P3_RATE_GATED_ENDPOINTS: tuple[str, ...] = ("cond_pts_mae", "uncond_pts_mae")
+```
+
+The rule is P2's (15.1), applied by the same `promotion.decide`: a paired 7-day
+moving-block bootstrap over game dates (2,000 replicates, the tournament's
+`bootstrap.py` loaded by path) on `DEV_ORIGINS` (the five `ORIGINS` plus the March
+2025 late-season origin, 15.3); a **95% CI excluding zero AND at least 1.0% pooled
+relative improvement on at least one gated endpoint, AND no cohort of a gated endpoint
+regressing by more than 1.0%**. 1% and not 2% for the reason 15.1 gives: `v5-stakes`
+is a feature-set change to an existing champion, and the rate is a correction to the
+champion rate rather than a new model class in its place.
+
+| Candidate | Gates | Reported only |
+|---|---|---|
+| `v5-stakes` | availability Brier, minutes MAE | unconditional PTS MAE |
+| residual rate | conditional PTS MAE, unconditional PTS MAE | AST, REB, FGA (both forms), clip rates, coherence endpoints |
+| serving coherence | none: report-only | unconditional PTS and MIN MAE, conditional MIN MAE, by cohort; the raw minute-sum diagnostic |
+| count models | none: report-only | conditional and unconditional MAE, conditional Poisson deviance, by tier |
+| tiered intervals | none: report-only | 80% coverage and mean width, pooled vs tiered, by tier |
+
+A pass on the bracket is a recommendation to re-freeze (18.4), not a promotion: the
+script changes no served constant. It refuses to overwrite an existing
+`<version>_p3_decision.csv`, so a second look needs a new `--version`, in the open.
+
+### 18.3 The challengers
+
+**(a) `v5-stakes` (`FEATURE_COLS` + 7).** 15.11's recommendation taken literally: the
+stakes family alone, so the dilution 15.11 blamed for −1.91% on the stakes cohort
+becoming +0.66% pooled is as small as it can be. `team_games_remaining`,
+`team_win_pct`, `team_games_over_500`, the three interactions
+`stakes_late_x_over500`, `stakes_x_minutes_share` and `stakes_x_veteran`, and
+`minutes_share`, kept as a column because the share interactions multiply it (15.2).
+Dropped: `late_season` and `stakes_lockedness` as columns (15.8: the model wanted the
+continuous count and the 15-game threshold carried 0.0002% of gain), the blowout
+family (15.7) and the pace family. `FEATURE_VERSION` stays `v3`; the candidate is
+`v5` only in `CANDIDATE_FEATURE_VERSION_V5`.
+
+**(b) Contextual residual rate (`rate_model.py`).** For PTS, AST, REB and FGA, a
+LightGBM regressor on appearances fitted to `stat / max(MIN, 4) − served rate`, so
+the challenger rate is `max(0, served rate + f(context))`: it can move the champion's
+per-minute rate, never replace it, and it composes through the same
+`minutes_propagated_estimate`. Context is the 15 `RATE_CONTEXT_COLS` (usage, four
+expected-context and star columns, home, rest, back-to-back, `OPP_DEF_FORM`, both
+paces, opponent defensive rating and 3PA/FTA allowed, `minutes_share`), plus the row's
+served rate, a minutes column and one-hot `POS_GROUP`. `RATE_MODEL_PARAMS` are 200
+trees, 15 leaves, `min_child_samples = 200`: a residual target is mostly noise, four
+stats are four chances to fit it, and `LGBM_PARAMS` overfit the P2 blowout frame
+(15.7). On training rows the minutes input is the strictly prior `ewma_MIN`, because
+an in-fold `MIN_PRED` would be fitted on the same games; scoring requires the
+out-of-fold `MIN_PRED`, and the rate and minutes cutoffs must match. It is fitted on
+the incumbent's availability and minutes models, so the comparison differs in the
+rate and nothing else. **The permutation control matters for reading the result:**
+on a fixture whose residual is pure noise, the booster *costs* 1-2% of residual MAE
+across seeds and never buys anything (`test_rate_model.py`). A real gain has to
+clear that noise-fitting tax as well as the 1% floor.
+
+**(c) Serving coherence (`coherence.py`).** Two model-free corrections.
+`team_minutes` scales each team-game's conditional minutes so
+`sum(P_PLAY × E_MIN_COND) = 240` (overtime unmodelled), with the factor clipped to
+`[0.8, 1.25]` so a thin or stale roster cannot be inflated without bound; a clipped
+team-game is logged and still does not sum to 240. Every production stat takes the
+same factor (they are rate × minutes), quantiles shift by the conditional delta, and
+`P_PLAY` is never touched. `points_identity` sets `E_PTS_COND = 2·FGM + FG3M + FTM` and
+carries the delta to `E_PTS` and the PTS quantiles. `all` runs minutes first, so the
+identity sees rescaled makes. In `predict.py` it is applied **last**, after the
+injury overrides and after the scenario mix. `none` returns the input frame itself,
+and the `coherence=<value>` note token is written only for a non-default choice, so
+the frozen run's note text stays byte-identical to what 13 and 17 pinned (`5a036bc`).
+
+**(d) Scenario serving (`scenarios.py`).** `f(E[p])` is not `E[f(p)]`: a
+questionable star's blended `p_j` fed once through nonlinear models gives his backup
+a projection that is neither night nor their average. A player is **pivotal** if his
+latest status at the boundary is questionable or doubtful **and** his shrunk
+`tm_MIN ≥ 20` (`SCENARIO_MIN_MAGNITUDE`) or he is top-3 by usage among established
+players (the `p_star_out` rule). At most `SCENARIO_MAX_PIVOTAL = 2` per team-game,
+largest magnitude kept; the rest are served at their blended `p` and logged. Each
+pivotal team-game is enumerated over its `2^k` play/sit worlds (`p_j` forced to 1.0
+or the OUT 0.02), and each world is context-rebuilt, rescored and overridden. The
+**outputs** are then averaged, with world weights the product of `p` or `1 − p`:
+every teammate column is the weighted average; the star keeps his blended
+`P(play)`, takes his conditional numbers from the worlds he plays in, and his
+unconditional ones are `P(play) × conditional`. The coherence clip and a quantile
+sort run after mixing; a team-game with no pivotal player is the single run
+unchanged. **Assumption, stated in the code:** two pivotal teammates play or sit
+independently, which a team resting both on one back-to-back violates. The audit
+(`<out>_scenarios.parquet`) records per pivotal player his status, `p`, magnitude,
+the world count and weights, and the backup with the largest `E_MIN_COND` swing with
+both values; notes gain `scenarios=on; scenario_team_games=N`. It cannot be
+backtested: the report history starts 2026-08-16 (7.1), so past rows carry no
+designations to build worlds from.
+
+**(e) Count models (`count_model.py`).** The 12.7 gap: a per-minute constant for a
+stat averaging under one event a game. A LightGBM Poisson booster for STL, BLK, FG3M
+and TOV. It is not a rerun of tournament M6/M7, which were fitted only for PTS and
+AST, ran untuned on `LGBM_PARAMS`, and lost by under 0.5%. Here: (1) the rare stats;
+(2) a grid of 8 small configurations (`n_estimators {100, 200}`, `num_leaves {7, 15}`,
+`min_child_samples {100, 300}`) chosen by Poisson deviance on inner folds inside each
+origin's training window, each fold's offset from a minutes model fitted before it;
+(3) `init_score = log(max(E[MIN|plays], 1)) + log(league rate)`, the offset being
+`MIN_PRED` on validation rows and `ewma_MIN` on training rows. The league log-rate
+term (`sum(stat) / sum(offset minutes)` over training rows) is there because LightGBM
+skips `boost_from_average` when an `init_score` is supplied, so without it a 100-tree
+booster spends itself climbing to the intercept. Champion and count model share one
+availability and one minutes model per origin.
+
+**(f) Tiered intervals (`intervals.py`).** The pooled offsets give a star and a
+fringe player the same band. The challenger fits one offset set per minutes tier
+(`roll10_MIN`, the 13.3 tiers), same construction; a tier with fewer than
+`MIN_TIER_ROWS = 200` finite residuals takes the pooled set itself, and the fallback
+tiers are listed. `train.py --tiered-quantiles` stores them under
+`production.quantiles_by_tier` in `metadata.json`, and only with the flag. Nothing
+reads that key. It is a training option, so it writes a new artifact; `20260818` is
+never retrained for it.
+
+**(g) The v1 shadow.** See 17.7.
+
+**(h) Active-DNP rows.** See 17.8. They change the training universe, so a rebuild on
+a backfilled database is a 13.2 item (7) change on its own, independent of every
+challenger above, and every look in 18.4 must record which universe its dataset was
+built from.
+
+### 18.4 What promotion would mean, and the order of looks
+
+Every promotion below changes an emitted number, so under 13.2 it bumps the protocol
+to `prospective_2026_27_v3` and re-freezes **before opening night (2026-10-20)**.
+After it, a promotion ends the `v2` test, so a pass found then waits for the 2027-28
+freeze, as 13.5 says of F8.
+
+| Candidate | 13.2 item(s) |
+|---|---|
+| serving coherence | (4): a new coherence constraint on emitted rows |
+| `v5-stakes` | (6) `FEATURE_COLS`, and (7) the refit |
+| residual rate | (1) the production champion and (3) `RATE_ESTIMATORS` for four stats, and (7) |
+| count models | (1) and (3), naming STL explicitly (item 3 calls out its `expanding`), and (7) |
+| tiered intervals | (7): a refit whose metadata the served quantiles come from |
+| scenario serving | 13.2's last paragraph (a serving change that moves emitted numbers), plus two new hand-set constants (20 minutes, 2 players) of the kind item (5) exists to catch |
+
+**Order.** (1) **Coherence first**: model-free, no fitting beyond the promoted path,
+the cheapest look, and its answer (whether team minute sums sit far enough from 240
+to matter) conditions how every other number is read. (2) **`run_p3_bracket.py`
+once**, which takes the `v5-stakes` and residual-rate looks in one invocation. Read
+`v5-stakes` first. The rate was fitted on the `v3-honest` incumbent's pieces, so if
+`v5-stakes` is promoted the rate's verdict describes a composition that no longer
+ships; it is recorded as such, not re-run. (3) **`report_counts.py`** for counts and
+tiered intervals, as reports. Neither has a bar, so neither can be promoted from
+this look; promotion would first need a bar pre-registered here.
+
+### 18.5 Open items
+
+- **No real-data run yet**, of any challenger. The first database-backed look is the
+  next step and the only one that can produce a number.
+- **The v1 artifact is not trained or committed** (17.7), so rung (c) and F2 to F4
+  still have no data.
+- **Scenario independence.** Correlated rest of two pivotal teammates is not
+  modelled; the audit will show how often a team-game has two.
+- **E5 is still not in `score_runs.py`** (17.5, 17.6), nor the shifted-rate skill or
+  the frozen-baseline rows. The `dec1` look needs them for F1 and F6.
+
+## 19. Phase 3 decision layers (2026-10-01): numbers own the ranking, Claude explains
+
+**Verdict first: every ordering the app shows a manager is now computed, and Claude
+explains and sanity-checks it rather than producing it.** Candidates are ranked by a
+deterministic score, the roster week is a seeded joint simulation, Projections sorts
+by a computed edge, and `score_runs.py --look` produces the 13.5 table. **No served
+prediction number moved**: all four packages only read the production run, and
+`prospective_2026_27_v2` is untouched. Sections 13, 17 and 18 are not edited.
+
+### 19.1 The principle, and why
+
+Three places let a language model or a coin decide what a number should have decided.
+(1) `buildWaiverContext` **shuffled** the rank band (`shuffleInPlace`) before slicing
+it, so the best waiver candidate could fail to reach the prompt by chance. (2) The one
+model number Claude saw per roster player was `P(active next game)`. (3) The betting
+edge was Claude's own guess against the market (17.2 item 7 now prices it no-vig).
+
+**Now numeric:** the candidate order and drivers (19.2), weekly category ranges and
+win probabilities (19.3), projection deltas and the edge sort (19.4). **Claude is
+asked to** weigh injury news, role changes, schedule and preferences against a list it
+did not order, and say why when it passes over a higher-ranked player. Its roster
+context gains a seven-day line per player (games, `P(play)`, totals, minutes vs usual).
+
+### 19.2 Candidate ranking (`candidateRanking.ts`, `windowProjections.ts`)
+
+**The score is the expected number of 9-category matchup wins the candidate adds to
+the manager's roster over the next seven days.** Each player's window line is turned
+into category z-scores against the whole population (roster, trade pool, waiver band),
+percentages as volume-weighted impact through the slate's `poolRates`. Per category,
+the roster's margin is its z-sum minus a **typical opponent**: the mean z of the
+rostered tier (the top `teams x 13` by fantasy rank, excluding the manager's own
+players) times the roster size. The margin's noise is taken as `sqrt(2 x roster size)`,
+a sum of unit z-scores on each side. A candidate's gain in a category is
+`Phi((margin + z) / spread) - Phi(margin / spread)`, the normal-curve change in its
+win probability; the score sums nine, so a narrowly lost category is worth more than
+one already won, which a summed z-score cannot say. The top three gains are drivers.
+
+**Inputs.** The production run's **unconditional** seven-day totals
+(`fetchWindowProjections`), so sitting risk is priced in. A player the run does not
+project falls back to season per-game averages times his team's scheduled games
+(`basis = season_average`), or per game when no schedule is loaded. **The fallback has
+no attempts**, so FG% and FT% are neutral for it: it can never gain or lose a
+percentage category, which understates a volume shooter; the prompt says so.
+
+**Deterministic:** no randomness, ties break on player id. Up to 25 waiver candidates
+and 20 trade targets are listed with score, basis and drivers, under this instruction
+(verbatim apart from the window length):
+
+> RANKING METHOD: both candidate lists below are pre-ranked numerically, best first.
+> score = expected 9-category matchup wins the player adds to MY ROSTER over the next
+> 7 days, computed from z-scores of his projected category totals against a typical
+> opponent built from the rostered tier, so it already rewards filling my weak
+> categories and discounts categories I already win. basis projection = the production
+> model's unconditional projections (sitting risk priced in); basis season_average =
+> season per-game averages times scheduled games, with FG% and FT% treated as neutral.
+> drivers = the three categories contributing most to the score. Your job is to explain
+> and sanity-check this ranking (injury news, role changes, schedule, fit with my
+> preferences), not to re-rank from scratch: favor the top of each list, and if you
+> pass over a higher-ranked player, say why.
+
+Tested in `candidateRanking.test.ts`, `aiContext.test.ts` and `api/ai.test.ts`.
+
+### 19.3 Weekly outlook by joint simulation (`weeklySimulation.ts`, `weeklyOutlook.ts`)
+
+`GET /api/fantasy/weekly-outlook?start=&days=` (default 7, at most 14), bound to the
+authenticated roster, shown as `WeeklyOutlookCard` on My Team. A seeded Monte Carlo
+(2,000 draws, mulberry32, seed `20260930`) over the roster's games in the window.
+
+- **The draw.** Each stat in each game is drawn by inverse transform through the
+  stored **conditional** p10 / p50 / p90 (piecewise linear, linear tails, floored at
+  0). A stat with no stored quantiles takes a hand-set relative spread
+  (`FALLBACK_RELATIVE_SPREAD`), and the response names every player and stat that did.
+- **Makes are coherent with attempts.** FGA and FTA are drawn, makes are attempts
+  times a jittered rate, and FG3M is FGM times its own, so `fgm <= fga`, `ftm <= fta`
+  and `fg3m <= fgm` hold in every draw. FG% and FT% are ratios of simulated sums.
+- **Availability is dependent within a player-week.** With probability
+  `DEPENDENCE_RHO = 0.5` one shared uniform decides every game (comonotone: a
+  lingering injury), otherwise each game is an independent draw against its
+  `prob_active`. The miss-at-least-one risk is then
+  `rho x max(1 - p) + (1 - rho) x (1 - prod p)`, between the comonotone lower bound
+  and the independence upper bound that `weekly.availability_risk` documents (17.2
+  item 6), which closes that docstring's caveat without measuring it: **0.5 is
+  hand-set**, not fitted; `player_injury_reports` is the history a fit would need.
+- **The typical opponent**: the window's top `12 x roster size` players by summed
+  slate impact, mean unconditional weekly totals scaled to the roster size.
+- **Reported:** per category mean, p10, p50, p90, the opponent's value and the win
+  probability (ties half); per player expected games and analytic and simulated miss
+  risk.
+
+**Two limitations, stated rather than fixed.** (1) Outside the make/attempt chains,
+stats within a game are drawn **independently**: PTS is not tied to FGM and FTM, and
+a big night does not raise rebounds, so category ranges differ from a joint model's by
+an unmeasured amount. (2) The simulated mean is the piecewise-linear distribution's,
+**not** the stored expectation (asymmetric anchors, the floor at 0), so it can differ
+from the totals Projections and the ranking show. Tested in `weeklySimulation.test.ts`,
+`api/weeklyOutlook.test.ts` and `WeeklyOutlookCard.test.tsx`.
+
+### 19.4 Projections explanations (`projectionReasons.ts`, `slate.ts`)
+
+- **One definition.** The five reason rules, their evidence and the deviation
+  weights moved from `watchlist.ts` into `projectionReasons.ts`, which the slate and
+  the Watchlist both call; the Watchlist's output is unchanged.
+- **`vs_usual` on every slate row:** minutes, points and the two largest moves among
+  REB, AST, STL, BLK and 3PM (ranked by delta over the slate's spread), each with his
+  usual (last 15 games played, at least 5). Every delta is **conditional on playing**,
+  so a game-time decision never reads as lost production.
+- **The edge sort.** `GET /api/predictions/slate?sort=impact|edge` (unknown is a 400).
+  Edge is the absolute weighted upside (minutes 2, points 1.5, the rest 1, each delta
+  over the slate's spread), so a minutes cut ranks like a bump; games sort by top edge.
+- **The player card** shows `vs usual: MIN +x, PTS +y` for the next game (optional
+  `prediction.vs_usual` on `/analytics`). **ReasonBadge**: "Teammate out" said "a
+  teammate who usually starts"; the rule is minutes, so it now says "usually plays 28+
+  minutes", which is what `TEAMMATE_ABSENCE_MIN_MINUTES` tests.
+
+Tested in `projectionReasons.test.ts`, `slate.test.ts`, `api/predictions.test.ts`,
+`api/analytics.test.ts`, `SlatePage.test.tsx`, `vsUsual.test.ts` and `e2e/slate.spec.ts`.
+
+### 19.5 The scoring tool completed (`fnba_ml/scoring.py`, `score_runs.py`)
+
+17.6's and 18.5's open item is closed. `score_runs.py --look dec1|all_star|season_end`
+scores games before the look date from runs predicted since the freeze, every baseline
+rebuilt as of the game date from the truth layer, and appends the 13.5 table:
+
+- **E1 skill** (F1) on `prob_active_model` against `avail_rate_10`; **F5**, conditional
+  minutes against `ewma_MIN` on appearances; the **tiers** (`roll10_MIN`) and the
+  **event and control cohorts** (`vacated_minutes >= 30`, `< 5`, oracle by design).
+- **E5** (F6), the mean over the eleven rate stats of relative MAE improvement, both
+  sides composed on `prob_active_model`: `p x E[stat | plays]` against
+  `p x ewma_total`. Not the served unconditional column, which carries the override
+  layer: 13.3 scores composition comparisons on the model probability, and F10
+  measures the layer on its own.
+- **F7 and F8**: the artifact's expanding and h20 rates replayed forward from its
+  `ewma_state` snapshot (seed weight = appearances since training start, so the
+  replay is exact), both composed through the same `p x E[MIN | plays]`.
+- **F2 to F4** from served and v1 shadow runs paired on the same slate and an
+  information boundary within 10 minutes, scored on identical rows with the paired
+  7-day moving-block bootstrap; a shadow at another boundary stays unpaired (13.4).
+- **The table**, bars from `config.PROSPECTIVE_FALSIFICATION`, each row `pass`, `fail`,
+  `non-binding` (short of the 13.6 row minimum, reading still shown), `report-only`
+  or `not computable` with the reason.
+
+**Judgement calls.** (1) E5 on `prob_active_model x conditional`, above. (2) **F10's
+sign**: the stored `override_increment` is served minus model Brier (positive = the
+layer hurt); the table reports its negation, model minus served, so positive means
+the layer helped and the 13.5 bar `< 0.00` fails as written. (3) **`vacated_minutes`
+is not `teammates.py`'s**: absent teammates' 20-appearance rolling minutes, not
+season-to-date `std_MIN`. It only selects cohorts, so it can move a cohort's rows,
+never a forecast.
+(4) **400 days of history** (`--history-days`), so October baselines see last season.
+
+**Still not computable:** the `star_out = 1` cohort, which needs `usg_ewma` from team
+box totals that no baseline rebuilds; and F2 to F4 until the v1 artifact is trained
+and committed (17.7), since no shadow run exists to pair. Tested in `test_scoring.py`
+and `test_scoring_baselines.py`.
+
+### 19.6 What Phase 3 did not do
+
+- **No team-market betting model.** For sides and totals the market line is the
+  forecast. Player props are where a player-level model could add something, and no
+  props odds source exists to price them against.
+- **The betting picks remain Claude estimates**, labelled as such (17.2 item 7).
+- **Nothing here changes a served prediction number.** The ranking, outlook and
+  explanations read the production run; the scoring tool only reads the store.

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import daily_run
-from fnba_ml import config
+from fnba_ml import config, registry
 from fnba_ml.prospective import SOURCE_PROSPECTIVE
 
 
@@ -190,7 +192,7 @@ class TestRunNotes:
         note = daily_run.run_notes([])
         assert note == (
             f"{config.PROSPECTIVE_RUN_NOTE_LABEL}; "
-            f"feature_set={config.SERVED_FEATURE_SET}; shadow=false"
+            f"feature_set={config.SERVED_FEATURE_SET}; channel=production"
         )
 
     def test_a_disqualified_run_never_carries_the_label(self) -> None:
@@ -203,11 +205,12 @@ class TestRunNotes:
         with pytest.raises(AssertionError, match=config.PROSPECTIVE_RUN_NOTE_LABEL):
             daily_run.run_notes([f"not {config.PROSPECTIVE_RUN_NOTE_LABEL}"])
 
-    def test_the_feature_set_and_shadow_flags_are_always_present(self) -> None:
+    def test_the_feature_set_and_channel_flags_are_always_present(self) -> None:
         for reasons in ([], ["something"]):
             note = daily_run.run_notes(reasons)
             assert f"feature_set={config.SERVED_FEATURE_SET}" in note
-            assert "shadow=false" in note
+            assert "channel=production" in note
+            assert "shadow=" not in note
 
     def test_staleness_is_appended_to_either_form(self) -> None:
         stale = "STALE truth layer: game logs end 2026-11-20"
@@ -532,7 +535,7 @@ class TestExtendedNotes:
         )
         assert "horizon=" not in note
         assert "Pre Season" in note
-        assert f"feature_set={config.SERVED_FEATURE_SET}; shadow=false" in note
+        assert f"feature_set={config.SERVED_FEATURE_SET}; channel=production" in note
 
     def test_staleness_is_appended(self) -> None:
         note = daily_run.extended_notes(7, [], "STALE truth layer")
@@ -545,3 +548,378 @@ class TestExtendedNotes:
     def test_the_slate_widens_only_the_slate_query(self) -> None:
         assert "Pre Season" in daily_run.SLATE_SEASON_TYPES
         assert config.SEASON_TYPES == ["Regular Season"]
+
+
+class TestPredictArgv:
+    def _argv(self, **overrides) -> list[str]:
+        kwargs = dict(
+            dataset_path=Path("prospective.parquet"),
+            models_dir=Path("models"),
+            out_path=Path("predictions.parquet"),
+            notes="note",
+            horizon="gameday",
+            window_start=date(2026, 10, 20),
+            statuses_as_of=pd.Timestamp("2026-10-20T15:30:00Z"),
+            statuses_path=None,
+            history_through=date(2026, 10, 19),
+            write_db=True,
+        )
+        kwargs.update(overrides)
+        return daily_run.predict_argv(**kwargs)
+
+    @staticmethod
+    def _value(argv: list[str], flag: str) -> str:
+        return argv[argv.index(flag) + 1]
+
+    def test_every_daily_run_is_on_the_production_channel(self) -> None:
+        for horizon in ("gameday", "none"):
+            argv = self._argv(horizon=horizon)
+            assert self._value(argv, "--channel") == "production"
+
+    def test_the_two_boundaries_are_passed_separately(self) -> None:
+        argv = self._argv()
+        assert self._value(argv, "--run-at") == "2026-10-20"
+        assert self._value(argv, "--statuses-as-of") == "2026-10-20T15:30:00+00:00"
+        assert self._value(argv, "--history-through") == "2026-10-19"
+
+    def test_unknown_history_is_left_for_predict_to_derive(self) -> None:
+        assert "--history-through" not in self._argv(history_through=None)
+
+    def test_a_dry_run_never_writes(self) -> None:
+        assert "--write-db" not in self._argv(write_db=False)
+        assert "--write-db" in self._argv(write_db=True)
+
+    def test_the_argv_parses_in_predict(self) -> None:
+        import predict  # noqa: PLC0415
+
+        args = predict.parse_args(self._argv(statuses_path=Path("s.parquet")))
+        assert args.channel == "production"
+        assert args.history_through == "2026-10-19"
+        assert args.write_db is True
+
+
+class TestShadowNotes:
+    def test_a_qualifying_shadow_carries_the_label_on_the_shadow_channel(self) -> None:
+        # act
+        note = daily_run.shadow_notes([], "v1")
+
+        # assert
+        assert note == (
+            f"{config.PROSPECTIVE_RUN_NOTE_LABEL}; feature_set=v1; channel=shadow"
+        )
+
+    def test_a_disqualified_shadow_never_carries_the_label(self) -> None:
+        # act
+        note = daily_run.shadow_notes(["horizon lock is not gameday"], "v1")
+
+        # assert
+        assert config.PROSPECTIVE_RUN_NOTE_LABEL not in note
+        assert note.startswith("NOT PROSPECTIVE")
+        assert note.endswith("feature_set=v1; channel=shadow")
+
+    def test_the_served_note_is_unchanged_by_the_new_parameters(self) -> None:
+        # act + assert
+        assert daily_run.run_notes([]) == daily_run.run_notes(
+            [], None, config.SERVED_FEATURE_SET, "production"
+        )
+
+    def test_the_shadow_version_pairs_with_the_pinned_artifact(self) -> None:
+        # act + assert
+        assert daily_run.shadow_version("v1") == f"{config.PROSPECTIVE_MODEL_VERSION}-v1"
+
+
+def _write_metadata(directory: Path, **fields: object) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "metadata.json").write_text(json.dumps(fields), encoding="utf-8")
+
+
+def _shadow_models_dir(
+    root: Path, shadow_cutoff: str = "2026-04-13", register: bool = True
+) -> Path:
+    """a models dir holding the served metadata and a v1 shadow next to it."""
+    models_dir = root / "models"
+    _write_metadata(
+        models_dir / config.PROSPECTIVE_MODEL_VERSION,
+        training_window={"cutoff": "2026-04-13"},
+    )
+    version = daily_run.shadow_version("v1")
+    _write_metadata(
+        models_dir / version, feature_set="v1", training_window={"cutoff": shadow_cutoff}
+    )
+    if register:
+        registry.upsert(
+            registry.build_entry(
+                model_version=version, version_dir=models_dir / version,
+                training_window={"cutoff": shadow_cutoff}, hyperparams={}, metrics={},
+                champions={}, universe_source="status",
+                feature_cols=list(config.BASE_FEATURE_COLS), feature_set="v1",
+            ),
+            models_dir / "registry.json",
+        )
+    return models_dir
+
+
+class TestShadowArtifactConditions:
+    def test_an_absent_artifact_is_none_not_a_reason(self, tmp_path: Path) -> None:
+        # act + assert
+        assert daily_run.shadow_artifact_conditions("v1", tmp_path) is None
+
+    def test_a_matching_registered_artifact_qualifies(self, tmp_path: Path) -> None:
+        # arrange
+        models_dir = _shadow_models_dir(tmp_path)
+
+        # act
+        reasons = daily_run.shadow_artifact_conditions("v1", models_dir)
+
+        # assert
+        assert reasons == []
+
+    def test_a_different_cutoff_disqualifies(self, tmp_path: Path) -> None:
+        # arrange
+        models_dir = _shadow_models_dir(tmp_path, shadow_cutoff="2026-05-01")
+
+        # act
+        reasons = daily_run.shadow_artifact_conditions("v1", models_dir) or []
+
+        # assert
+        assert any("cutoff 2026-05-01" in r for r in reasons)
+
+    def test_an_unregistered_artifact_disqualifies(self, tmp_path: Path) -> None:
+        # arrange
+        models_dir = _shadow_models_dir(tmp_path, register=False)
+
+        # act
+        reasons = daily_run.shadow_artifact_conditions("v1", models_dir) or []
+
+        # assert
+        assert any("no registry entry" in r for r in reasons)
+
+    def test_an_edited_artifact_disqualifies(self, tmp_path: Path) -> None:
+        # arrange
+        models_dir = _shadow_models_dir(tmp_path)
+        meta = models_dir / daily_run.shadow_version("v1") / "metadata.json"
+        meta.write_text(meta.read_text(encoding="utf-8") + " ", encoding="utf-8")
+
+        # act
+        reasons = daily_run.shadow_artifact_conditions("v1", models_dir) or []
+
+        # assert
+        assert any("checksums not verified" in r for r in reasons)
+
+
+class TestShadowArgs:
+    def test_no_shadow_is_requested_by_default(self) -> None:
+        # act + assert
+        assert daily_run.parse_args([]).shadow_feature_sets == []
+
+    def test_the_flag_is_restricted_to_the_frozen_shadow_sets(self) -> None:
+        # act
+        args = daily_run.parse_args(["--shadow-feature-set", "v1"])
+
+        # assert
+        assert args.shadow_feature_sets == ["v1"]
+        with pytest.raises(SystemExit):
+            daily_run.parse_args(["--shadow-feature-set", "v3-honest"])
+
+    def test_the_workflow_requests_the_v1_shadow(self) -> None:
+        # arrange
+        workflow = Path(__file__).resolve().parents[2] / ".github/workflows/predictions.yml"
+
+        # act
+        text = workflow.read_text(encoding="utf-8")
+
+        # assert
+        assert "daily_run.py --shadow-feature-set v1" in text
+
+
+def _without(argv: list[str], *flags: str) -> list[str]:
+    """argv minus the named flags and their values."""
+    out: list[str] = []
+    skip = False
+    for token in argv:
+        if skip:
+            skip = False
+            continue
+        if token in flags:
+            skip = True
+            continue
+        out.append(token)
+    return out
+
+
+def _flag(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+class TestShadowPredictArgv:
+    def test_the_shadow_argv_is_run_a_with_version_and_channel_swapped(self) -> None:
+        # arrange
+        common: dict[str, object] = dict(
+            dataset_path=Path("prospective.parquet"), models_dir=Path("models"),
+            out_path=Path("p.parquet"), notes="n", horizon="gameday",
+            window_start=date(2026, 10, 20),
+            statuses_as_of=pd.Timestamp("2026-10-20T15:30:00Z"),
+            statuses_path=Path("s.parquet"), history_through=date(2026, 10, 19),
+            write_db=True,
+        )
+
+        # act
+        served = daily_run.predict_argv(**common)
+        shadow = daily_run.predict_argv(**common, version="20260818-v1", channel="shadow")
+
+        # assert
+        assert _flag(served, "--channel") == "production"
+        assert _flag(served, "--version") == config.PROSPECTIVE_MODEL_VERSION
+        assert _flag(shadow, "--channel") == "shadow"
+        assert _flag(shadow, "--version") == "20260818-v1"
+        assert _without(served, "--channel", "--version") == _without(
+            shadow, "--channel", "--version"
+        )
+
+
+def _drive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    models_dir: Path,
+    extra: list[str],
+    failing_version: str | None = None,
+) -> tuple[int, list[list[str]]]:
+    """daily_run.main end to end, with every database read and predict.py faked."""
+    games = ["0022600501", "0022600502"]
+    tips = pd.to_datetime(["2027-01-11T00:30Z", "2027-01-12T00:30Z"])
+    schedule = pd.DataFrame({
+        "GAME_ID": games,
+        "SEASON": ["2026-27", "2026-27"],
+        "SEASON_TYPE": ["Regular Season", "Regular Season"],
+        "GAME_DATE": [date(2027, 1, 10), date(2027, 1, 11)],
+        "SCHEDULED_AT": tips,
+        "HOME_TEAM_ID": ["1", "2"],
+        "AWAY_TEAM_ID": ["3", "4"],
+        "GAME_STATUS": ["Scheduled", "Scheduled"],
+    })
+    features = pd.DataFrame({
+        "GAME_ID": games,
+        "PLAYER_ID": ["10", "20"],
+        "GAME_DATE": pd.to_datetime(["2027-01-10", "2027-01-11"]),
+        "SCHEDULED_AT": tips,
+        "UNIVERSE_SOURCE": [SOURCE_PROSPECTIVE, SOURCE_PROSPECTIVE],
+    })
+    history = pd.DataFrame({"GAME_DATE": pd.to_datetime(["2027-01-09"]), "PLAYER_ID": ["10"]})
+    fakes = {
+        "verify_pinned_artifact": lambda *_: [],
+        "load_window_schedule": lambda *_: (schedule, 2),
+        "load_freshness": lambda *_: (date(2027, 1, 9), date(2027, 1, 9)),
+        "load_rosters": lambda *_: (pd.DataFrame(), "fake rosters"),
+        "load_positions": lambda: None,
+        "load_dataset": lambda *_: history,
+        "history_from_dataset": lambda frame: frame,
+        "prospective_universe": lambda *_, **__: None,
+        "build_prospective_features": lambda *_: features,
+        "load_statuses": lambda *_: pd.DataFrame(),
+        "_rows_per_player_game": lambda *_: 1,
+    }
+    for name, fake in fakes.items():
+        monkeypatch.setattr(daily_run, name, fake)
+
+    calls: list[list[str]] = []
+
+    def fake_predict(argv: list[str]) -> int:
+        calls.append(list(argv))
+        if failing_version and _flag(argv, "--version") == failing_version:
+            return 1
+        scored = pd.read_parquet(_flag(argv, "--dataset"))
+        scored[["GAME_ID", "PLAYER_ID"]].assign(P_PLAY=0.5).to_parquet(
+            _flag(argv, "--out"), index=False
+        )
+        return 0
+
+    monkeypatch.setattr(daily_run.predict_script, "main", fake_predict)
+    code = daily_run.main([
+        "--dry-run", "--window-start", "2027-01-10",
+        "--dataset", str(tmp_path / "unused.parquet"),
+        "--out-dir", str(tmp_path / "out"),
+        "--models-dir", str(models_dir),
+        *extra,
+    ])
+    return code, calls
+
+
+class TestShadowRun:
+    def test_the_shadow_follows_run_a_at_the_same_boundary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        models_dir = _shadow_models_dir(tmp_path)
+
+        # act
+        code, calls = _drive(tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v1"])
+
+        # assert
+        assert code == 0
+        run_a, shadow, run_b = calls
+        assert _flag(shadow, "--channel") == "shadow"
+        assert _flag(shadow, "--version") == daily_run.shadow_version("v1")
+        notes = _flag(shadow, "--notes")
+        assert notes.startswith(config.PROSPECTIVE_RUN_NOTE_LABEL)
+        assert "feature_set=v1; channel=shadow" in notes
+        for flag in ("--dataset", "--statuses-as-of", "--run-at", "--horizon",
+                     "--history-through"):
+            assert _flag(shadow, flag) == _flag(run_a, flag)
+        assert _flag(run_a, "--channel") == _flag(run_b, "--channel") == "production"
+
+    def test_run_b_never_gets_a_shadow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        models_dir = _shadow_models_dir(tmp_path)
+
+        # act
+        _, calls = _drive(tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v1"])
+
+        # assert
+        shadows = [c for c in calls if _flag(c, "--channel") == "shadow"]
+        assert len(shadows) == 1
+        assert Path(_flag(shadows[0], "--dataset")).name == "prospective.parquet"
+        assert Path(_flag(calls[-1], "--dataset")).name == "prospective_extended.parquet"
+        assert _flag(calls[-1], "--channel") == "production"
+
+    def test_a_missing_shadow_is_skipped_and_run_a_is_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # arrange
+        empty_models = tmp_path / "empty_models"
+        empty_models.mkdir()
+        _, baseline = _drive(tmp_path, monkeypatch, empty_models, [])
+        caplog.set_level("WARNING", logger="daily_run")
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, empty_models, ["--shadow-feature-set", "v1"]
+        )
+
+        # assert
+        assert code == 0
+        assert len(calls) == 2
+        assert "shadow shadow-v1 skipped: no artifact" in caplog.text
+        for got, expected in zip(calls, baseline):
+            assert _without(got, "--statuses-as-of") == _without(
+                expected, "--statuses-as-of"
+            )
+
+    def test_a_failed_shadow_still_publishes_run_b_and_goes_red(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        models_dir = _shadow_models_dir(tmp_path)
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v1"],
+            failing_version=daily_run.shadow_version("v1"),
+        )
+
+        # assert
+        assert len(calls) == 3
+        assert _flag(calls[-1], "--channel") == "production"
+        assert code == 1

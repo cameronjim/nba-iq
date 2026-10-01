@@ -1,0 +1,2 @@
+# pinned model artifacts are checksum-verified byte for byte; never convert line endings
+ml/models/** -text

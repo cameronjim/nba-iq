@@ -1,0 +1,194 @@
+# Manual ML evaluation against a live database: rebuild the dataset, run the
+# rolling-origin evaluation, and score published runs. Reads the database
+# only; nothing here writes to it. Reports are uploaded as artifacts; the
+# parquet datasets are not (size).
+#
+# Python 3.14 for the same reason as predictions.yml: ml/requirements.txt pins
+# a scikit-learn that 3.12 cannot install.
+name: ML Evaluate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Database to read"
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
+      build_dataset:
+        description: "Rebuild ml/data/*.parquet from postgres"
+        type: boolean
+        default: true
+      evaluate:
+        description: "Run evaluate.py (fails the job on a composition regression)"
+        type: boolean
+        default: false
+      score_runs:
+        description: "Score published prediction runs"
+        type: boolean
+        default: true
+      score_since:
+        description: "score_runs --since date, YYYY-MM-DD (empty = the tool's default)"
+        type: string
+        required: false
+        default: ""
+      version:
+        description: "evaluate.py --version (and the served version a shadow is paired with)"
+        type: string
+        default: "20260818"
+      train_shadow:
+        description: "Train the v1 shadow artifact models/<version>-v1/ and upload it"
+        type: boolean
+        default: false
+      challengers:
+        description: "One look at the Phase 2 challengers: run_p3_bracket, report_coherence, report_counts (MODEL.md 18)"
+        type: boolean
+        default: false
+      challenger_version:
+        description: "Report stem for the challenger look, e.g. p3-2026-12-01; a repeat stem is refused"
+        type: string
+        default: ""
+
+concurrency:
+  group: ml-evaluate
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: ML evaluate (${{ inputs.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: ${{ inputs.target == 'prod' && secrets.DATABASE_URL || secrets.DEV_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: ml/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r ml/requirements.txt
+
+      - name: Dev target warning
+        if: inputs.target == 'dev'
+        run: |
+          echo "::warning title=Dev database::The dev Neon branch holds only two seasons. Evaluation numbers from this run are NOT comparable to MODEL.md (see MODEL.md 16.6)."
+
+      - name: Build dataset
+        if: inputs.build_dataset
+        run: python ml/build_dataset.py --source postgres
+
+      # the v1 artifact inherits the cutoff of models/<version>/metadata.json, so it
+      # is fitted on the same dataset build at the same cutoff as the served one.
+      - name: Train v1 shadow artifact
+        if: inputs.train_shadow
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python ml/train.py --feature-set v1 --version "$VERSION"
+
+      # models/ is versioned and CI cannot commit, so the artifact leaves as an upload.
+      - name: Upload v1 shadow artifact
+        if: inputs.train_shadow
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-shadow-${{ inputs.version }}-v1-${{ github.run_id }}
+          path: |
+            ml/models/${{ inputs.version }}-v1/
+            ml/models/registry.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Shadow artifact summary
+        if: inputs.train_shadow
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          {
+            echo "## v1 shadow artifact: models/${VERSION}-v1"
+            echo
+            echo "Trained from the ${TARGET} database. It is NOT live until it is committed:"
+            echo "models/ is versioned and CI cannot commit."
+            echo
+            echo "1. Download the ml-shadow-${VERSION}-v1 artifact."
+            echo "2. Copy models/${VERSION}-v1/ into ml/models/ and merge its registry entry"
+            echo "   (model_version ${VERSION}-v1) into ml/models/registry.json. Leave every"
+            echo "   other entry, and models/${VERSION}/, byte for byte as committed."
+            echo "3. Verify: cd ml && python -c \"from fnba_ml.registry import verify_artifacts; print(verify_artifacts('${VERSION}-v1'))\""
+            echo "   must print []."
+            echo "4. Commit. daily_run.py --shadow-feature-set v1 publishes the shadow from the next run."
+            if [ "${TARGET}" = "dev" ]; then
+              echo
+              echo "**Dev target:** the dev branch holds two seasons, so this artifact was not"
+              echo "fitted on the served artifact's training history. Train against prod to commit."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # exit 1 is a real gate (ml/README.md): the promoted composition regressed
+      # more than 1% MAE against the one it replaced.
+      - name: Evaluate
+        if: inputs.evaluate
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set +e
+          python ml/evaluate.py --version "$VERSION"
+          status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::error title=Composition regression::evaluate.py exited 1: the promoted composition lost more than 1% MAE against the one it replaced. See ml/reports/$VERSION.md in the artifact."
+          fi
+          exit "$status"
+
+      # one look per candidate (MODEL.md 13.6, 18.1): run_p3_bracket refuses a
+      # stem it has already written, so a rerun needs a new challenger_version.
+      - name: Challenger look
+        if: inputs.challengers && !cancelled()
+        env:
+          VERSION: ${{ inputs.version }}
+          STEM: ${{ inputs.challenger_version }}
+        run: |
+          stem="${STEM:-p3-$(date -u +%Y-%m-%d)}"
+          python ml/run_p3_bracket.py --version "$stem" --reports-dir ml/reports/challengers
+          python ml/report_coherence.py --version "$VERSION" --reports-dir ml/reports/challengers
+          python ml/report_counts.py --version "$VERSION" --reports-dir ml/reports/challengers
+
+      - name: Upload challenger reports
+        if: always() && inputs.challengers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-challengers-${{ inputs.target }}-${{ github.run_id }}
+          path: ml/reports/challengers/**
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Score runs
+        if: inputs.score_runs && !cancelled()
+        env:
+          SINCE: ${{ inputs.score_since }}
+        run: |
+          python ml/score_runs.py ${SINCE:+--since "$SINCE"} --out-dir ml/reports/scoring
+
+      - name: Upload scoring reports
+        if: always() && inputs.score_runs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-scoring-${{ inputs.target }}-${{ github.run_id }}
+          path: ml/reports/scoring/**
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # gated on the input: ml/reports/ also holds committed reports, and an
+      # unrun evaluation must not upload the checked-in copy as if it were fresh.
+      - name: Upload evaluation report
+        if: always() && inputs.evaluate
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-evaluate-${{ inputs.target }}-${{ github.run_id }}
+          path: ml/reports/${{ inputs.version }}.md
+          if-no-files-found: warn
+          retention-days: 30

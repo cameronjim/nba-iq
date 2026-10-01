@@ -8,8 +8,13 @@ const { IMPACT_PERCENTILE_FLOOR, MAX_WINDOW_DAYS, POSITION_FILTERS } = await imp
   '../../src/services/watchlist.js'
 );
 const { baselineDescriptor, BASELINE_STATS } = await import('../../src/services/baselines.js');
-const { IMPACT_POOL_KEY, IMPACT_POOL_LABEL, IMPACT_POOL_DEFINITION, POINTS_UNCOND_STAT } =
-  await import('../../src/services/slate.js');
+const {
+  IMPACT_POOL_KEY,
+  IMPACT_POOL_LABEL,
+  IMPACT_POOL_DEFINITION,
+  POINTS_UNCOND_STAT,
+  PRODUCTION_CHANNEL,
+} = await import('../../src/services/slate.js');
 const queryMock = vi.mocked(query);
 
 function poolOf(size: number): Record<string, unknown> {
@@ -158,6 +163,14 @@ describe('GET /api/predictions/slate', () => {
       pts_vs_usual: -1.6,
       baseline_games: 15,
       impact: 1,
+      edge: expect.any(Number),
+      vs_usual: {
+        minutes: { usual: 30, projected: 33.1, delta: 3.1 },
+        points: { usual: 30, projected: null, delta: null },
+        categories: [],
+      },
+      reasons: [],
+      evidence: {},
       spotlight: true,
       slate_spotlight: true,
       injury_status: null,
@@ -166,6 +179,7 @@ describe('GET /api/predictions/slate', () => {
       injury_as_of: null,
       injury_changed_after_run: false,
     });
+    expect(res.body.sort).toBe('impact');
     expect(res.body.games[0].top_impact).toBe(1);
     expect(res.body.baseline).toEqual(baseline);
   });
@@ -238,8 +252,12 @@ describe('GET /api/predictions/slate', () => {
     await request(app).get('/api/predictions/slate').query({ date: '2026-02-04' });
 
     const [sql, params] = queryMock.mock.calls[3];
-    expect(params).toContain(POINTS_UNCOND_STAT);
-    expect(params).not.toContain('pts');
+    const uncondParam = (params as unknown[]).indexOf(POINTS_UNCOND_STAT) + 1;
+    expect(uncondParam).toBeGreaterThan(0);
+    // the impact pivot's pts column must come from the unconditional twin, not the bare name
+    expect(sql).toMatch(
+      new RegExp(`\\$${uncondParam} AND pgp\\.quantile IS NULL\\s+THEN pgp\\.value END\\)::float AS pts\\b`)
+    );
     expect(sql).not.toMatch(/conditional\s*=\s*false/);
   });
 
@@ -364,6 +382,7 @@ describe('GET /api/predictions/slate', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       date: '2026-07-04',
+      sort: 'impact',
       run: { model_version: 'v1-decomposed', predicted_at: '2026-02-04T11:00:00.000Z' },
       pool: poolOf(0),
       baseline,
@@ -379,6 +398,7 @@ describe('GET /api/predictions/slate', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       date: '2026-02-04',
+      sort: 'impact',
       run: null,
       pool: poolOf(0),
       baseline,
@@ -424,6 +444,124 @@ describe('GET /api/predictions/slate', () => {
 
     expect(res.status).toBe(500);
     expect(res.body.error).toBe('Failed to fetch slate');
+  });
+
+  it('explains each row against his usual with the same reasons the watchlist uses', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult(scheduleRows))
+      .mockResolvedValueOnce(pgResult([runRow]))
+      .mockResolvedValueOnce(pgResult(teamRows))
+      .mockResolvedValueOnce(
+        pgResult([
+          predictionRow({
+            nba_player_id: 'riser',
+            name: 'Bench Riser',
+            proj_min_p50: 32,
+            c_pts: 16,
+            c_reb: 7,
+            c_ast: 2,
+            c_stl: 0.5,
+            c_blk: 0.3,
+            c_fg3m: 1,
+            c_fga: 11,
+          }),
+          predictionRow({ nba_player_id: 'starter', name: 'Hurt Starter', prob_active: 0.1 }),
+        ])
+      )
+      .mockResolvedValueOnce(
+        pgResult([
+          baselineRow('riser', { minutes: 22, pts: 10, reb: 4, fga: 7 }),
+          baselineRow('starter', { minutes: 34 }),
+        ])
+      )
+      .mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const res = await request(app).get('/api/predictions/slate').query({ date: '2026-02-04' });
+
+    // assert
+    const riser = res.body.games[0].players.find(
+      (p: { nba_player_id: string }) => p.nba_player_id === 'riser'
+    );
+    expect(riser.reasons).toEqual(['ROLE_INCREASE', 'SHOT_VOLUME_SURGE', 'TEAMMATE_ABSENCE']);
+    expect(riser.evidence).toMatchObject({
+      fga_usual: 7,
+      fga_projected: 11,
+      fga_delta: 4,
+      teammate_out: 'Hurt Starter',
+      teammate_out_minutes: 34,
+    });
+    expect(riser.vs_usual.minutes).toEqual({ usual: 22, projected: 32, delta: 10 });
+    expect(riser.vs_usual.points).toEqual({ usual: 10, projected: 16, delta: 6 });
+    expect(riser.vs_usual.categories).toEqual([{ stat: 'reb', usual: 4, projected: 7, delta: 3 }]);
+  });
+
+  it('ranks by edge vs usual when asked, players and games alike', async () => {
+    // arrange
+    const conditional = (pts: number): Record<string, number> => ({
+      c_pts: pts,
+      c_reb: 3,
+      c_ast: 2,
+      c_stl: 0.5,
+      c_blk: 0.3,
+      c_fg3m: 1,
+      c_fga: 7,
+    });
+    const rows = [
+      predictionRow({ nba_game_id: '0022500111', nba_player_id: 'star', name: 'Star', pts: 35, proj_min_p50: 34, ...conditional(35) }),
+      predictionRow({ nba_game_id: '0022500111', nba_player_id: 'riser', name: 'Riser', pts: 8, proj_min_p50: 30, ...conditional(12) }),
+      predictionRow({ nba_game_id: '0022500999', nba_player_id: 'steady', name: 'Steady', pts: 20, proj_min_p50: 30, ...conditional(20) }),
+    ];
+    const baselines = [
+      baselineRow('star', { minutes: 34, pts: 35 }),
+      baselineRow('riser', { minutes: 20, pts: 8 }),
+      baselineRow('steady', { minutes: 30, pts: 20 }),
+    ];
+    const schedule = [
+      { ...scheduleRows[0], nba_game_id: '0022500999' },
+      { ...scheduleRows[0], nba_game_id: '0022500111' },
+    ];
+    const queue = (): void => {
+      queryMock
+        .mockResolvedValueOnce(pgResult(schedule))
+        .mockResolvedValueOnce(pgResult([runRow]))
+        .mockResolvedValueOnce(pgResult(teamRows))
+        .mockResolvedValueOnce(pgResult(rows))
+        .mockResolvedValueOnce(pgResult(baselines))
+        .mockResolvedValueOnce(pgResult([]));
+    };
+
+    // act
+    queue();
+    const byImpact = await request(app)
+      .get('/api/predictions/slate')
+      .query({ date: '2026-02-04', sort: 'impact' });
+    queue();
+    const byEdge = await request(app)
+      .get('/api/predictions/slate')
+      .query({ date: '2026-02-04', sort: 'edge' });
+
+    // assert
+    const names = (body: { games: Array<{ players: Array<{ name: string }> }> }): string[][] =>
+      body.games.map((g) => g.players.map((p) => p.name));
+    expect(byImpact.body.sort).toBe('impact');
+    expect(names(byImpact.body)).toEqual([['Star', 'Riser'], ['Steady']]);
+    expect(byEdge.body.sort).toBe('edge');
+    expect(names(byEdge.body)).toEqual([['Riser', 'Star'], ['Steady']]);
+    expect(byEdge.body.games[0].top_edge).toBeGreaterThan(byEdge.body.games[1].top_edge);
+  });
+
+  it('returns 400 for a sort it does not publish, without touching the database', async () => {
+    // act
+    const res = await request(app)
+      .get('/api/predictions/slate')
+      .query({ date: '2026-02-04', sort: 'points' });
+
+    // assert
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'sort must be one of impact, edge' });
+    expect(queryMock).not.toHaveBeenCalled();
   });
 
   it('binds the date as a query parameter rather than interpolating it', async () => {
@@ -933,5 +1071,38 @@ describe('GET /api/watchlist over a window', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/position must be one of/);
     expect(queryMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('prediction run channel', () => {
+  it('serves the slate from a production run, never a shadow one', async () => {
+    // arrange
+    queryMock
+      .mockResolvedValueOnce(pgResult(scheduleRows))
+      .mockResolvedValueOnce(pgResult([]))
+      .mockResolvedValueOnce(pgResult(teamRows));
+
+    // act
+    const res = await request(app).get('/api/predictions/slate').query({ date: '2026-02-04' });
+
+    // assert
+    expect(res.status).toBe(200);
+    const [sql, params] = queryMock.mock.calls[1];
+    expect(sql).toContain('FROM prediction_runs');
+    expect(params).toContain(PRODUCTION_CHANNEL);
+  });
+
+  it('builds the watchlist from a production run, never a shadow one', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult([]));
+
+    // act
+    const res = await request(app).get('/api/watchlist').query({ date: '2026-02-04' });
+
+    // assert
+    expect(res.status).toBe(200);
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(sql).toContain('FROM prediction_runs');
+    expect(params).toContain(PRODUCTION_CHANNEL);
   });
 });

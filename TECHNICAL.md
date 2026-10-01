@@ -77,6 +77,8 @@ Base path `/api`. All responses are JSON.
 | `/fantasy/roster` | GET | user | Current user's roster |
 | `/fantasy/roster` | POST | user | Add a player |
 | `/fantasy/roster/:playerId` | DELETE | user | Drop a player |
+| `/fantasy/weekly-outlook` | GET | user | Simulated category ranges and win probabilities for the roster's week (`start`, `days` up to 14) |
+| `/predictions/slate` | GET | none | Projections slate for a date; `sort=impact` (default) or `sort=edge` (largest move vs each player's usual) |
 | `/preferences` | GET / PATCH | user | Team Preferences questionnaire |
 | `/ai/chat` | POST | user | AI chat with roster, waiver, or betting context |
 | `/ai/team-analysis` | GET | user | 9-category team analysis |
@@ -134,11 +136,11 @@ component fetches directly.
   `player_injury_reports`. It uses `CREATE TABLE / INDEX IF NOT EXISTS`
   throughout, so re-running it is safe.
 - **`db/migrations/`** holds sequential, hand-written SQL migrations, `001`
-  through `014`, covering email and password reset, team conference backfill,
+  through `016`, covering email and password reset, team conference backfill,
   user preferences, Google Sign-In, profile fields, betting, bet money fields,
   rate limits, admin and pageviews, the team abbreviation backfill, the
   historical season-stats tables, the NBA 2K ratings tables, the data truth
-  layer, and the prediction store. Each is idempotent, so re-applying one is
+  layer, the prediction store and its run provenance, and the odds history. Each is idempotent, so re-applying one is
   harmless.
 - The four `nba_2k_*` tables are key-value rather than wide (one row per
   attribute, per badge, per game version) because 2K reshuffles its attribute and
@@ -180,12 +182,13 @@ ones a player missed and the reason he missed them.
 | Table | Holds |
 |---|---|
 | `nba_schedule` | Every scheduled game, played or not, keyed on NBA's game id. Separate from `games`, which keys on ESPN event ids — the two id spaces do not join. |
-| `player_game_logs` | One row per player per game they recorded a line for. `minutes` is decimal (34.20 for `34:12`); `dnp_reason` is the verbatim box-score `COMMENT`. |
-| `team_game_logs` | Two rows per game. Doubles as the completed-game schedule. |
-| `player_game_status` | **The training universe.** One row per scheduled player-game, appeared or not, with `rostered` / `listed_inactive` / `played` kept distinct. |
+| `player_game_logs` | One row per player per game they recorded a line for. `minutes` is decimal (34.20 for `34:12`); `dnp_reason` is the verbatim box-score `COMMENT`. Migration `018` adds `oreb` / `dreb` / `pf`, the starter's box-score `position`, and `details_source` / `details_fetched_at`; those, plus `started` and `dnp_reason`, come from one `boxscoretraditionalv3` call per game. |
+| `team_game_logs` | Two rows per game. Doubles as the completed-game schedule. Migration `018` adds team `oreb` / `dreb` / `pf`. |
+| `player_game_status` | **The training universe.** One row per scheduled player-game, appeared or not, with `rostered` / `listed_inactive` / `played` kept distinct. Rows come from game logs plus the official inactive list (`source` `boxscoresummary<v>+playergamelogs`), and from the box-details pass, which inserts a row for each active player who never entered and has no other row (`source` `boxscoretraditionalv3`, `played` false, `dnp_reason` the box-score comment, `listed_inactive` NULL for `DND` / `NWT` comments). That insert never overwrites; see `ml/MODEL.md` 17.8. |
 | `player_team_stints` | Which team a player belonged to over which span, so a feature cannot leak a trade backwards into pre-trade rows. |
 | `player_injury_reports` | Append-only history of scraped injury designations — "what was known at the time", which the overwrite-in-place `players.injury_status` cannot answer. |
 | `ingestion_runs` | One row per truth-layer scraper phase invocation, for tracing which rows came from which run. |
+| `odds_snapshots` / `espn_event_map` | Migration `016`. Append-only odds history and the ESPN event to NBA game id map; see "Odds snapshots" below. |
 | `prediction_runs` / `player_game_predictions` | Migration `014`. The append-only prediction store — see `ml/README.md` and `ml/MODEL.md` for the modeling side. |
 
 Ids are `TEXT` throughout, because NBA game ids carry leading zeros
@@ -231,6 +234,19 @@ since it costs one request per game.
    game is only fetched if it has no `player_game_status` rows at all — so a
    killed run picks back up where it left off.
 
+   Box-score details (migration `018`) backfill separately, one season and one
+   `boxscoretraditionalv3` request per game, oldest first. A game is selected
+   while any of its player rows has `details_fetched_at` NULL, so it resumes
+   the same way; `--limit` bounds a slice (about 300 games per 30 minutes at
+   the 5s delay). The manual `Box Details Backfill` workflow runs that slice,
+   but exits immediately if `stats.nba.com` is unreachable from the runner.
+   The normal cron fills the same columns for newly completed games beside the
+   inactive-list fetch.
+
+   ```bash
+   python run_scraper.py --backfill-box-details --season 2024-25 --limit 300
+   ```
+
 3. **Validate.** Read-only, takes no locks, safe against prod mid-scrape:
 
    ```bash
@@ -259,12 +275,36 @@ python -m pytest scraper/test_truth_layer.py
 Fixtures are copied from `nba_api`'s own `expected_data` column declarations, so
 a fixture that drifts from the real response shape cannot pass silently.
 
+### Odds snapshots
+
+Migration `016` adds `odds_snapshots`, an append-only history of the ESPN
+scoreboard odds the Betting page otherwise only fetches live. `scraper/odds.py`
+reads today through today+2 (Eastern), one request per day, and writes one row
+per market and selection (spread home/away, total over/under, moneyline
+home/away) for every game not yet tipped. The away spread line is the home line
+sign-flipped; `price` is NULL with `price_observed = false` when the provider
+published no price, never a default. Each event is matched to an `nba_schedule`
+game on Eastern date plus home and away tricodes, through an explicit ESPN to
+NBA alias table (`GS` to `GSW`, `NY` to `NYK`, ...), and the match is kept in
+`espn_event_map`; an unmatched event is still recorded, with a NULL
+`nba_game_id`, and counted in its `ingestion_runs` notes. It runs at the end of
+the full scrape and on its own every 30 minutes from 15:00 to 03:30 UTC
+(`python run_scraper.py --odds-only`).
+
 ## Prediction system
 
 `ml/` trains and serves the availability/minutes/production models behind the
 Projections and Watchlist tabs. It is a separate package with its own README
 and living spec: see [`ml/README.md`](ml/README.md) and
 [`ml/MODEL.md`](ml/MODEL.md).
+
+The backend reads the production run in three more places (MODEL.md 19): the
+Improve Team waiver and trade candidates are ranked by expected category wins
+added before Claude sees them (`services/candidateRanking.ts`), My Team's weekly
+outlook is a seeded joint simulation of the roster week
+(`services/weeklySimulation.ts`), and every Projections row carries its deltas
+against the player's usual and can be sorted by them (`services/projectionReasons.ts`,
+shared with the Watchlist).
 
 ## MCP server
 
@@ -334,8 +374,10 @@ successfully. It then:
 3. Runs a smoke test against `/api/health` and the frontend root
 
 **On a 6-hour cron** (`.github/workflows/scraper.yml`): `python
-scraper/run_scraper.py` refreshes stats in Postgres. It can also be triggered
-manually with `workflow_dispatch`.
+scraper/run_scraper.py` refreshes stats in Postgres. The same workflow runs two
+lighter lanes, `--injuries-only` and `--odds-only`, on their own schedules. It
+can also be triggered manually with `workflow_dispatch`, which runs the full
+scrape.
 
 **On a daily cron** (`.github/workflows/predictions.yml`): publishes a fresh
 prediction run to the store once the season is underway; a no-op in the

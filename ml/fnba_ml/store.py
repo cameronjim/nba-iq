@@ -22,7 +22,7 @@ scored frame contained the same (player, game, stat, quantile) twice, which is a
 bug in the caller - it should fail loudly, not resolve itself silently.
 
 TRANSACTIONAL, because a half-written slate is worse than none: the serving path
-reads the newest run with status 'complete', and a partial one would look
+reads the newest 'production' run with status 'complete', and a partial one would look
 complete to it. the run row and its player rows commit together.
 
 ``psycopg2`` is imported lazily, inside the function that connects, so this
@@ -105,6 +105,12 @@ UNCOND_SUFFIX = "_uncond"
 
 TABLE = "player_game_predictions"
 RUNS_TABLE = "prediction_runs"
+
+# migration 015. the serving path reads only 'production'; a shadow run is on the
+# record for comparison and must never reach the app.
+RUN_CHANNELS: tuple[str, ...] = ("production", "shadow")
+PRODUCTION_CHANNEL = "production"
+SHADOW_CHANNEL = "shadow"
 
 ROW_COLUMNS: tuple[str, ...] = (
     "nba_player_id",
@@ -243,6 +249,13 @@ def build_prediction_rows(
     return rows
 
 
+def _utc(value: datetime) -> datetime:
+    """an aware UTC datetime; a naive one is taken to already be UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def build_run_record(
     metadata: dict[str, object],
     predicted_at: datetime,
@@ -251,14 +264,31 @@ def build_run_record(
     status: str = "complete",
     notes: str | None = None,
     horizon: str | None = None,
+    channel: str = PRODUCTION_CHANNEL,
+    information_as_of: datetime | None = None,
+    history_through: date | None = None,
 ) -> dict[str, object]:
     """the prediction_runs row: which model, trained how far, knowing what.
 
-    ``trained_through`` is the last game date inside the training window;
-    ``forecast_cutoff_at`` is the information boundary the run itself respected.
-    they are usually close and are never the same fact - a backtest re-run today
-    has today's ``predicted_at``, last season's ``forecast_cutoff_at``, and a
-    ``trained_through`` earlier than both.
+    four instants, never the same fact:
+
+      ``predicted_at``        when the run was generated (wall clock).
+      ``information_as_of``   the latest instant of non-game information, i.e.
+                              injury reports, the run was allowed to see.
+      ``history_through``     the last game date whose outcomes were in the
+                              feature frame.
+      ``forecast_cutoff_at``  the LATEST instant any input was allowed to see:
+                              max(information_as_of, the start of the first
+                              scored day). the caller passes the start of that
+                              day; the later of the two is stored, so the column
+                              is a true boundary and never claims less
+                              visibility than the run actually had.
+
+    ``trained_through`` is the last game date inside the training window. a
+    backtest re-run today has today's ``predicted_at``, last season's
+    ``forecast_cutoff_at``, and a ``trained_through`` earlier than both.
+
+    ``channel`` is one of :data:`RUN_CHANNELS`. only 'production' is served.
 
     ``horizon`` is one of config.HORIZONS and is prepended to ``notes`` as
     ``horizon=<name> (<offset>)``. it goes in notes rather than a column because
@@ -268,6 +298,14 @@ def build_run_record(
     horizons. a run without a horizon is a run whose timing was not recorded,
     which is worth being able to see.
     """
+    if channel not in RUN_CHANNELS:
+        raise ValueError(
+            f"unknown prediction run channel {channel!r}; expected one of {RUN_CHANNELS}"
+        )
+    cutoff = _utc(forecast_cutoff_at)
+    information = _utc(information_as_of) if information_as_of is not None else None
+    if information is not None and information > cutoff:
+        cutoff = information
     window = metadata.get("training_window") or {}
     trained_through = window.get("end") if isinstance(window, dict) else None
     if horizon:
@@ -278,20 +316,25 @@ def build_run_record(
         "code_sha": code_sha or metadata.get("git_commit"),
         "trained_through": trained_through,
         "predicted_at": predicted_at,
-        "forecast_cutoff_at": forecast_cutoff_at,
+        "forecast_cutoff_at": cutoff,
         "artifact_checksum": metadata.get("artifact_checksum"),
         "status": status,
         "notes": notes,
+        "channel": channel,
+        "information_as_of": information,
+        "history_through": history_through,
     }
 
 
 INSERT_RUN_SQL = f"""
 INSERT INTO {RUNS_TABLE} (
     model_version, feature_version, code_sha, trained_through,
-    predicted_at, forecast_cutoff_at, artifact_checksum, status, notes
+    predicted_at, forecast_cutoff_at, artifact_checksum, status, notes,
+    channel, information_as_of, history_through
 ) VALUES (
     %(model_version)s, %(feature_version)s, %(code_sha)s, %(trained_through)s,
-    %(predicted_at)s, %(forecast_cutoff_at)s, %(artifact_checksum)s, %(status)s, %(notes)s
+    %(predicted_at)s, %(forecast_cutoff_at)s, %(artifact_checksum)s, %(status)s, %(notes)s,
+    %(channel)s, %(information_as_of)s, %(history_through)s
 )
 RETURNING id
 """

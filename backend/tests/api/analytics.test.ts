@@ -8,6 +8,7 @@ const { clearAnalyticsCache, ANALYTICS_STATS, POOL_DEFINITION } = await import(
   '../../src/services/analytics.js'
 );
 const { clearPredictionsCache } = await import('../../src/services/predictions.js');
+const { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } = await import('../../src/services/slate.js');
 const queryMock = vi.mocked(query);
 
 
@@ -335,6 +336,52 @@ describe('GET /api/players/:id/analytics', () => {
     expect(res.body.prediction.projected.reb).toBeNull();
   });
 
+  it('adds the next game minutes and points against his usual when he has one', async () => {
+    // arrange
+    mockPlayerAnalyticsQueries(logRows, [predictionRow()]);
+    queryMock
+      .mockResolvedValueOnce(
+        pgResult([{ id: 42, model_version: 'v1', predicted_at: '2026-03-01T13:30:00.000Z' }])
+      )
+      .mockResolvedValueOnce(
+        pgResult([
+          { nba_game_id: '1', nba_player_id: '2544', prob_active: 0.9, proj_min_p50: 36.04, c_pts: 28.26 },
+        ])
+      )
+      .mockResolvedValueOnce(
+        pgResult([{ nba_player_id: '2544', games: 15, minutes: 33, pts: 25 }])
+      );
+
+    // act
+    const res = await request(app).get('/api/players/5/analytics');
+
+    // assert
+    expect(res.status).toBe(200);
+    expect(res.body.prediction.vs_usual).toEqual({
+      minutes: { usual: 33, projected: 36, delta: 3 },
+      points: { usual: 25, projected: 28.3, delta: 3.3 },
+    });
+    const [, slateParams] = queryMock.mock.calls[7];
+    expect(slateParams).toContain('2544');
+  });
+
+  it('leaves vs_usual off when he has too little history to have a usual', async () => {
+    // arrange
+    mockPlayerAnalyticsQueries(logRows, [predictionRow()]);
+    queryMock
+      .mockResolvedValueOnce(pgResult([{ id: 42, model_version: 'v1', predicted_at: null }]))
+      .mockResolvedValueOnce(pgResult([{ nba_game_id: '1', nba_player_id: '2544', proj_min_p50: 30 }]))
+      .mockResolvedValueOnce(pgResult([{ nba_player_id: '2544', games: 2, minutes: 20 }]));
+
+    // act
+    const res = await request(app).get('/api/players/5/analytics');
+
+    // assert
+    expect(res.status).toBe(200);
+    expect(res.body.prediction).not.toBeNull();
+    expect(res.body.prediction).not.toHaveProperty('vs_usual');
+  });
+
   it('binds the nba player id to the prediction query rather than the row id', async () => {
     mockPlayerAnalyticsQueries(logRows, [predictionRow()]);
 
@@ -342,7 +389,7 @@ describe('GET /api/players/:id/analytics', () => {
 
     const [sql, params] = queryMock.mock.calls[5];
     expect(sql).toContain('player_game_predictions');
-    expect(params).toEqual(['2544']);
+    expect(params).toEqual(['2544', COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
   });
 
   it('keeps the rest of the page when the prediction tables are missing', async () => {

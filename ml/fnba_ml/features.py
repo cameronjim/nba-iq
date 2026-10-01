@@ -198,14 +198,29 @@ def player_appearance_features(
     return career, season
 
 
-def schedule_features(universe: pd.DataFrame) -> pd.DataFrame:
-    """one row per (season, team, game): rest days, b2b, shifted defensive form."""
+SCHEDULE_COLS: tuple[str, ...] = (
+    "SEASON", "TEAM_ID", "GAME_ID", "GAME_DATE", "TEAM_PTS_ALLOWED",
+)
+
+
+def schedule_features(
+    universe: pd.DataFrame, schedule: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """one row per (season, team, game): rest days, b2b, shifted defensive form.
+
+    ``schedule`` is a team-game frame (``SCHEDULE_COLS``) that may hold games the
+    universe does not, such as other future dates; ``None`` derives it from the
+    universe. unplayed games carry a null ``TEAM_PTS_ALLOWED``.
+    """
+    source = universe if schedule is None else schedule
     sched = (
-        universe[["SEASON", "TEAM_ID", "GAME_ID", "GAME_DATE", "TEAM_PTS_ALLOWED"]]
+        source[list(SCHEDULE_COLS)]
         .drop_duplicates(["SEASON", "TEAM_ID", "GAME_ID"])
         .sort_values(["TEAM_ID", "GAME_DATE"])
         .reset_index(drop=True)
     )
+    if schedule is not None:
+        sched["GAME_DATE"] = pd.to_datetime(sched["GAME_DATE"])
 
     grp = sched.groupby(["TEAM_ID", "SEASON"])
 
@@ -214,10 +229,20 @@ def schedule_features(universe: pd.DataFrame) -> pd.DataFrame:
     sched["IS_B2B"] = (sched["TEAM_REST_DAYS"] == 1).astype(float)
     sched.loc[sched["TEAM_REST_DAYS"].isna(), "IS_B2B"] = np.nan
 
-    # shift(1) FIRST so the target game's own points allowed is excluded
-    sched["DEF_FORM"] = grp["TEAM_PTS_ALLOWED"].transform(
-        lambda s: s.shift(1).rolling(OPP_FORM_WINDOW, min_periods=OPP_FORM_MIN_PERIODS).mean()
-    )
+    if schedule is None:
+        # shift(1) FIRST so the target game's own points allowed is excluded
+        sched["DEF_FORM"] = grp["TEAM_PTS_ALLOWED"].transform(
+            lambda s: s.shift(1).rolling(OPP_FORM_WINDOW, min_periods=OPP_FORM_MIN_PERIODS).mean()
+        )
+    else:
+        # a null still fills a rolling window slot, so roll over played games and carry forward
+        played = sched[sched["TEAM_PTS_ALLOWED"].notna()]
+        sched["_form_through"] = played.groupby(["TEAM_ID", "SEASON"])[
+            "TEAM_PTS_ALLOWED"
+        ].transform(lambda s: s.rolling(OPP_FORM_WINDOW, min_periods=OPP_FORM_MIN_PERIODS).mean())
+        sched["DEF_FORM"] = sched.groupby(["TEAM_ID", "SEASON"])["_form_through"].transform(
+            lambda s: s.shift(1).ffill()
+        )
 
     return sched[["SEASON", "TEAM_ID", "GAME_ID", "TEAM_REST_DAYS", "IS_B2B", "DEF_FORM"]]
 
@@ -310,6 +335,8 @@ def attach_expected_context(
 def build_features(
     universe: pd.DataFrame,
     availability_probability: pd.Series | np.ndarray | None = None,
+    *,
+    schedule: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """the full feature frame for a universe. pure: no io, no globals.
 
@@ -318,6 +345,10 @@ def build_features(
     (:func:`stage0_context_probability`), which is what every test and every
     fixture-mode build wants; ``build_dataset.py`` supplies the cross-fit
     probabilities and rebuilds the block via :func:`attach_expected_context`.
+
+    ``schedule`` is the known team-game schedule the rest, b2b and defensive form
+    columns are read from (see :func:`schedule_features`); ``None`` uses the
+    universe's own games, which is what training wants.
     """
     universe = universe.copy()
     universe["GAME_DATE"] = pd.to_datetime(universe["GAME_DATE"])
@@ -385,7 +416,7 @@ def build_features(
         universe["GAME_DATE"] - universe["LAST_APP_DATE"]
     ).dt.days
 
-    sf = schedule_features(universe)
+    sf = schedule_features(universe, schedule)
     universe = universe.merge(
         sf[["SEASON", "TEAM_ID", "GAME_ID", "TEAM_REST_DAYS", "IS_B2B"]],
         on=["SEASON", "TEAM_ID", "GAME_ID"],

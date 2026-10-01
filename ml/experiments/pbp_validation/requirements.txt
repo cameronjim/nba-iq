@@ -1,0 +1,5 @@
+# extra packages for this experiment only, on top of ml/requirements.txt.
+# all are pure-python wheels and install cleanly on python 3.14.7.
+pbpstats==1.3.11
+nba_api==1.11.4
+requests==2.34.2

@@ -1,4 +1,5 @@
 import { query } from '../db.js';
+import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } from './slate.js';
 
 
 const UNCOND_SUFFIX = '_uncond';
@@ -194,7 +195,8 @@ const LATEST_PREDICTION_SQL = `
   WITH latest_run AS (
     SELECT id, model_version, predicted_at
     FROM prediction_runs
-    WHERE status = 'complete'
+    WHERE status = $2
+      AND channel = $3
     ORDER BY predicted_at DESC
     LIMIT 1
   ),
@@ -230,7 +232,11 @@ export async function getLatestPredictionForPlayer(
 
   let data: PlayerPrediction | null = null;
   try {
-    const result = await query(LATEST_PREDICTION_SQL, [nbaPlayerId]);
+    const result = await query(LATEST_PREDICTION_SQL, [
+      nbaPlayerId,
+      COMPLETE_RUN_STATUS,
+      PRODUCTION_CHANNEL,
+    ]);
     data = pivotPredictionRows(result.rows as PredictionRow[]);
   } catch {
     data = null;

@@ -13,8 +13,10 @@ const VISIBLE_GAMES = 3;
 
 interface OddsRowProps {
   label: string;
-  cells: Array<{ text: string; implied: number } | null>;
+  cells: Array<{ text: string; implied: number | null } | null>;
 }
+
+const formatPrice = (price: number | null): string => (price == null ? '-' : formatAmerican(price));
 
 const OddsRow = ({ label, cells }: OddsRowProps) => (
   <div className="grid grid-cols-[4.5rem_1fr_1fr] gap-2 items-center text-xs">
@@ -23,9 +25,11 @@ const OddsRow = ({ label, cells }: OddsRowProps) => (
       cell ? (
         <span key={i} className="flex items-center gap-1.5">
           <span className="font-medium">{cell.text}</span>
-          <span className="badge badge-ghost badge-xs whitespace-nowrap" title="Implied probability: the chance the sportsbook's price says this outcome has">
-            {formatPercent(cell.implied)}
-          </span>
+          {cell.implied != null && (
+            <span className="badge badge-ghost badge-xs whitespace-nowrap" title="Implied probability: the chance the sportsbook's price says this outcome has">
+              {formatPercent(cell.implied)}
+            </span>
+          )}
         </span>
       ) : (
         <span key={i} className="opacity-30">-</span>
@@ -62,8 +66,8 @@ const GameCard = ({ game }: { game: BettingGame }) => {
               cells={
                 spread
                   ? [
-                      { text: `${formatLine(spread.away_line)} (${formatAmerican(spread.away_price)})`, implied: spread.away_implied },
-                      { text: `${formatLine(spread.home_line)} (${formatAmerican(spread.home_price)})`, implied: spread.home_implied },
+                      { text: `${formatLine(spread.away_line)} (${formatPrice(spread.away_price)})`, implied: spread.away_implied },
+                      { text: `${formatLine(spread.home_line)} (${formatPrice(spread.home_price)})`, implied: spread.home_implied },
                     ]
                   : [null, null]
               }
@@ -73,8 +77,8 @@ const GameCard = ({ game }: { game: BettingGame }) => {
               cells={
                 total
                   ? [
-                      { text: `O ${total.line} (${formatAmerican(total.over_price)})`, implied: total.over_implied },
-                      { text: `U ${total.line} (${formatAmerican(total.under_price)})`, implied: total.under_implied },
+                      { text: `O ${total.line} (${formatPrice(total.over_price)})`, implied: total.over_implied },
+                      { text: `U ${total.line} (${formatPrice(total.under_price)})`, implied: total.under_implied },
                     ]
                   : [null, null]
               }
@@ -145,7 +149,7 @@ export const BettingOddsBoard = ({ games, loading, error, onRetry }: BettingOdds
     <div className="space-y-3">
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {visible.map((game) => (
-          <GameCard key={game.nba_game_id} game={game} />
+          <GameCard key={game.espn_event_id} game={game} />
         ))}
       </div>
       {hiddenCount > 0 && (

@@ -28,7 +28,7 @@ export const REASON_META: Record<
   TEAMMATE_ABSENCE: {
     label: 'Teammate out',
     badgeClass: 'badge-accent',
-    description: 'A teammate who usually starts is unlikely to play.',
+    description: 'A teammate who usually plays 28+ minutes is unlikely to play.',
   },
 };
 

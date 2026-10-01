@@ -12,6 +12,8 @@ import {
   invalidateAIClientCaches,
 } from '../api/clientCaches';
 import { getCached, setCached, CACHE_KEYS } from '../api/resourceCache';
+import { WeeklyOutlookCard } from '../components/fantasy/WeeklyOutlookCard';
+import { useWeeklyOutlook } from '../hooks/useWeeklyOutlook';
 
 const CAT_COLORS: Record<string, string> = {
   strong: 'badge-success',
@@ -186,6 +188,16 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
   };
 
   const rosterAverages = useMemo(() => computeRosterAverages(roster), [roster]);
+
+  // keyed on player ids so an optimistic row and its reloaded twin do not trigger two simulations.
+  const rosterKey = useMemo(
+    () => roster.map((p) => p.player_id || p.id).sort((a, b) => a - b).join(','),
+    [roster]
+  );
+  const { state: outlookState, reload: reloadOutlook } = useWeeklyOutlook(
+    isLoggedIn && !rosterLoading && roster.length > 0,
+    rosterKey
+  );
 
   const sortedRoster = useMemo(() => {
     return [...roster].sort((a, b) => {
@@ -383,6 +395,10 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
           )}
         </div>
       </div>
+
+      {isLoggedIn && roster.length > 0 && (
+        <WeeklyOutlookCard state={outlookState} onReload={reloadOutlook} />
+      )}
 
       {isLoggedIn && roster.length > 0 && (
         <div className="card bg-base-200 overflow-hidden">

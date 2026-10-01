@@ -1,6 +1,7 @@
 import { query } from '../db.js';
-import { percentRank, stddev } from './analytics.js';
+import { percentRank } from './analytics.js';
 import {
+  CONDITIONAL_STATS,
   MINUTES_QUANTILE,
   MINUTES_STAT,
   PROB_ACTIVE_STAT,
@@ -14,6 +15,7 @@ import {
   rowsOrEmpty,
   toIsoDay,
   uncondStat,
+  type ConditionalStat,
   type ImpactInput,
   type ProjectedStat,
   type SlatePool,
@@ -21,48 +23,58 @@ import {
 } from './slate.js';
 import {
   MIN_BASELINE_GAMES,
-  NOTABLE_MINUTES_DELTA,
   baselineDescriptor,
-  daysSince,
   deltaOf,
   fetchBaselines,
   hasUsableBaseline,
   type BaselineDescriptor,
   type PlayerBaseline,
 } from './baselines.js';
+import {
+  deviationScales,
+  evidenceFor,
+  groupTeammates,
+  reasonInputFor,
+  reasonsFor,
+  teammatesOf,
+  upsideOf,
+  type ConditionalLine,
+  type DeviationStat,
+  type ProjectionEvidence,
+  type ReasonCode,
+  type ReasonInput,
+  type UpsideDriver,
+  type VsUsual,
+} from './projectionReasons.js';
 
+export {
+  DEVIATION_STATS,
+  DEVIATION_WEIGHTS,
+  HOT_STREAK_STDDEV_MULTIPLE,
+  REASON_CODES,
+  RETURN_GAP_DAYS,
+  RETURN_GAP_MAX_DAYS,
+  RETURN_MIN_PROB_ACTIVE,
+  ROLE_INCREASE_MIN_DELTA,
+  SHOT_VOLUME_SURGE_FGA_DELTA,
+  TEAMMATE_ABSENCE_MAX_PROB_ACTIVE,
+  TEAMMATE_ABSENCE_MIN_MINUTES,
+  deviationScales,
+  evidenceFor,
+  findAbsentTeammate,
+  hasRoleIncrease,
+  hasShotVolumeSurge,
+  isHotStreak,
+  isReturningFromAbsence,
+  reasonsFor,
+  upsideOf,
+  type AbsentTeammate,
+  type DeviationStat,
+  type ReasonCode,
+  type UpsideDriver,
+  type VsUsual,
+} from './projectionReasons.js';
 
-export const REASON_CODES = [
-  'ROLE_INCREASE',
-  'SHOT_VOLUME_SURGE',
-  'RETURNING_FROM_ABSENCE',
-  'HOT_STREAK',
-  'TEAMMATE_ABSENCE',
-] as const;
-
-export type ReasonCode = (typeof REASON_CODES)[number];
-
-export const DEVIATION_STATS = [
-  'minutes',
-  'pts',
-  'reb',
-  'ast',
-  'stl',
-  'blk',
-  'fg3m',
-] as const;
-
-export type DeviationStat = (typeof DEVIATION_STATS)[number];
-
-export const DEVIATION_WEIGHTS: Record<DeviationStat, number> = {
-  minutes: 2,
-  pts: 1.5,
-  reb: 1,
-  ast: 1,
-  stl: 1,
-  blk: 1,
-  fg3m: 1,
-};
 
 export const IMPACT_PERCENTILE_FLOOR = 70;
 
@@ -184,39 +196,7 @@ export function watchlistPool(sampleSize: number, days: number): SlatePool {
 }
 
 
-export const ROLE_INCREASE_MIN_DELTA = NOTABLE_MINUTES_DELTA;
-
-export const SHOT_VOLUME_SURGE_FGA_DELTA = 2.5;
-
-export const RETURN_GAP_DAYS = 7;
-
-export const RETURN_GAP_MAX_DAYS = 45;
-
-export const RETURN_MIN_PROB_ACTIVE = 0.6;
-
-export const HOT_STREAK_STDDEV_MULTIPLE = 1.5;
-
-export const TEAMMATE_ABSENCE_MIN_MINUTES = 28;
-
-export const TEAMMATE_ABSENCE_MAX_PROB_ACTIVE = 0.35;
-
-const CONDITIONAL_STATS = ['pts', 'reb', 'ast', 'stl', 'blk', 'fg3m', 'fga'] as const;
-
-type ConditionalStat = (typeof CONDITIONAL_STATS)[number];
-
-export interface VsUsual {
-  usual: number | null;
-  projected: number | null;
-  delta: number | null;
-}
-
-export interface AbsentTeammate {
-  name: string;
-  usual_minutes: number;
-  prob_active: number;
-}
-
-export interface WatchlistCandidate {
+export interface WatchlistCandidate extends ReasonInput {
   nba_player_id: string;
   name: string;
   name_is_placeholder: boolean;
@@ -225,35 +205,12 @@ export interface WatchlistCandidate {
   opponent_team_abbr: string | null;
   nba_game_id: string;
   game_date: string;
-  prob_active: number | null;
   impact: number | null;
   proj_pts_uncond: number | null;
   uncond: ImpactInput;
-  baseline_games: number;
-  deltas: Partial<Record<DeviationStat, number>>;
-  minutes: VsUsual;
-  points: VsUsual;
-  shots: VsUsual;
-  days_since_played: number | null;
-  last_played_date: string | null;
-  pts_recent: number | null;
-  pts_sd: number | null;
-  teammate_out: AbsentTeammate | null;
 }
 
-export interface WatchlistEvidence {
-  fga_usual?: number;
-  fga_projected?: number;
-  fga_delta?: number;
-  days_since_played?: number;
-  last_played_date?: string;
-  pts_recent?: number;
-  pts_sd?: number;
-  pts_recent_delta?: number;
-  teammate_out?: string;
-  teammate_out_minutes?: number;
-  teammate_out_prob_active?: number;
-}
+export type WatchlistEvidence = ProjectionEvidence;
 
 export interface WatchlistGame {
   game_date: string;
@@ -315,52 +272,6 @@ export interface WatchlistResponse {
   players: WatchlistPlayer[];
 }
 
-export function deviationScales(
-  pool: Array<Partial<Record<DeviationStat, number>>>
-): Map<DeviationStat, number> {
-  const scales = new Map<DeviationStat, number>();
-  for (const stat of DEVIATION_STATS) {
-    const present = pool
-      .map((deltas) => deltas[stat])
-      .filter((v): v is number => v !== undefined && Number.isFinite(v));
-    if (present.length === 0) continue;
-    scales.set(stat, stddev(present));
-  }
-  return scales;
-}
-
-export interface UpsideDriver {
-  stat: DeviationStat;
-  delta: number;
-  scaled: number;
-}
-
-export function upsideOf(
-  deltas: Partial<Record<DeviationStat, number>>,
-  scales: Map<DeviationStat, number>
-): { upside: number | null; drivers: UpsideDriver[] } {
-  let weighted = 0;
-  let weight = 0;
-  const drivers: UpsideDriver[] = [];
-
-  for (const [stat, sd] of scales) {
-    const value = deltas[stat];
-    if (value === undefined || !Number.isFinite(value)) continue;
-    const scaled = sd === 0 ? 0 : value / sd;
-    weighted += DEVIATION_WEIGHTS[stat] * scaled;
-    weight += DEVIATION_WEIGHTS[stat];
-    if (scaled > 0) {
-      drivers.push({ stat, delta: round(value, 1) as number, scaled: round(scaled, 3) as number });
-    }
-  }
-
-  if (weight === 0) return { upside: null, drivers: [] };
-  drivers.sort(
-    (a, b) => DEVIATION_WEIGHTS[b.stat] * b.scaled - DEVIATION_WEIGHTS[a.stat] * a.scaled
-  );
-  return { upside: round(weighted / weight, 3), drivers };
-}
-
 export function upsideScores(
   pool: Array<Partial<Record<DeviationStat, number>>>
 ): Array<number | null> {
@@ -379,97 +290,6 @@ export function relevanceFor(impact: number | null, poolImpacts: number[]): numb
 export function watchlistScore(upside: number | null, relevance: number | null): number | null {
   if (upside === null || relevance === null) return null;
   return round(Math.max(0, upside) * relevance, 3) as number;
-}
-
-export function hasRoleIncrease(delta: number | null): boolean {
-  return delta !== null && delta >= ROLE_INCREASE_MIN_DELTA;
-}
-
-export function hasShotVolumeSurge(delta: number | null): boolean {
-  return delta !== null && delta >= SHOT_VOLUME_SURGE_FGA_DELTA;
-}
-
-export function isReturningFromAbsence(
-  daysSincePlayed: number | null,
-  probActive: number | null
-): boolean {
-  if (daysSincePlayed === null) return false;
-  if (daysSincePlayed < RETURN_GAP_DAYS || daysSincePlayed > RETURN_GAP_MAX_DAYS) return false;
-  return probActive !== null && probActive >= RETURN_MIN_PROB_ACTIVE;
-}
-
-export function isHotStreak(
-  ptsRecent: number | null,
-  ptsUsual: number | null,
-  ptsSd: number | null
-): boolean {
-  if (ptsRecent === null || ptsUsual === null || ptsSd === null || ptsSd <= 0) return false;
-  return ptsRecent - ptsUsual >= HOT_STREAK_STDDEV_MULTIPLE * ptsSd;
-}
-
-export function findAbsentTeammate(
-  teammates: Array<{ name: string; usual_minutes: number | null; prob_active: number | null }>
-): AbsentTeammate | null {
-  let best: AbsentTeammate | null = null;
-  for (const mate of teammates) {
-    const minutes = mate.usual_minutes;
-    const prob = mate.prob_active;
-    if (prob === null || prob > TEAMMATE_ABSENCE_MAX_PROB_ACTIVE) continue;
-    if (minutes === null || minutes < TEAMMATE_ABSENCE_MIN_MINUTES) continue;
-    if (!best || minutes > best.usual_minutes) {
-      best = { name: mate.name, usual_minutes: minutes, prob_active: prob };
-    }
-  }
-  return best;
-}
-
-export function reasonsFor(candidate: WatchlistCandidate): ReasonCode[] {
-  const reasons: ReasonCode[] = [];
-  if (hasRoleIncrease(candidate.minutes.delta)) reasons.push('ROLE_INCREASE');
-  if (hasShotVolumeSurge(candidate.shots.delta)) reasons.push('SHOT_VOLUME_SURGE');
-  if (isReturningFromAbsence(candidate.days_since_played, candidate.prob_active)) {
-    reasons.push('RETURNING_FROM_ABSENCE');
-  }
-  if (isHotStreak(candidate.pts_recent, candidate.points.usual, candidate.pts_sd)) {
-    reasons.push('HOT_STREAK');
-  }
-  if (candidate.teammate_out !== null) reasons.push('TEAMMATE_ABSENCE');
-  return reasons;
-}
-
-export function evidenceFor(
-  candidate: WatchlistCandidate,
-  reasons: ReasonCode[]
-): WatchlistEvidence {
-  const evidence: WatchlistEvidence = {};
-  const set = new Set<ReasonCode>(reasons);
-
-  if (set.has('SHOT_VOLUME_SURGE') && candidate.shots.delta !== null) {
-    evidence.fga_usual = round(candidate.shots.usual, 1) as number;
-    evidence.fga_projected = round(candidate.shots.projected, 1) as number;
-    evidence.fga_delta = round(candidate.shots.delta, 1) as number;
-  }
-  if (set.has('RETURNING_FROM_ABSENCE') && candidate.days_since_played !== null) {
-    evidence.days_since_played = candidate.days_since_played;
-    if (candidate.last_played_date) evidence.last_played_date = candidate.last_played_date;
-  }
-  if (
-    set.has('HOT_STREAK') &&
-    candidate.pts_recent !== null &&
-    candidate.points.usual !== null &&
-    candidate.pts_sd !== null
-  ) {
-    evidence.pts_recent = round(candidate.pts_recent, 1) as number;
-    evidence.pts_sd = round(candidate.pts_sd, 1) as number;
-    evidence.pts_recent_delta = round(candidate.pts_recent - candidate.points.usual, 1) as number;
-  }
-  if (set.has('TEAMMATE_ABSENCE') && candidate.teammate_out) {
-    evidence.teammate_out = candidate.teammate_out.name;
-    evidence.teammate_out_minutes = round(candidate.teammate_out.usual_minutes, 1) as number;
-    evidence.teammate_out_prob_active = round(candidate.teammate_out.prob_active, 3) as number;
-  }
-
-  return evidence;
 }
 
 export interface ScoredCandidate {
@@ -675,7 +495,7 @@ export function rankCandidates(
     .slice(0, limit);
 }
 
-type PredictionRow = {
+export type WindowPredictionRow = {
   game_date: unknown;
   nba_game_id: unknown;
   nba_player_id: unknown;
@@ -704,12 +524,12 @@ const COND_PIVOT_SQL = CONDITIONAL_STATS.map(
                        THEN pgp.value END)::float AS c_${stat}`
 ).join(',\n              ');
 
-async function fetchPredictions(
+export async function fetchWindowPredictionRows(
   runId: number,
   from: string,
   to: string
-): Promise<PredictionRow[]> {
-  return rowsOrEmpty<PredictionRow>(() =>
+): Promise<WindowPredictionRow[]> {
+  return rowsOrEmpty<WindowPredictionRow>(() =>
     query(
       `SELECT pgp.game_date,
               pgp.nba_game_id,
@@ -749,7 +569,7 @@ interface GameRow {
   away_team_abbr: unknown;
 }
 
-async function fetchGameTeams(
+export async function fetchGameTeams(
   from: string,
   to: string
 ): Promise<Map<string, [string | null, string | null]>> {
@@ -789,7 +609,7 @@ export function opponentOf(
 }
 
 export function buildCandidates(
-  rows: PredictionRow[],
+  rows: WindowPredictionRow[],
   baselines: Map<string, PlayerBaseline>,
   gameTeams: Map<string, [string | null, string | null]>,
   date: string
@@ -818,22 +638,22 @@ export function buildCandidates(
     });
   }
 
-  const usualMinutes = new Map<string, number | null>();
-  for (const row of rows) {
-    const id = String(row.nba_player_id);
-    usualMinutes.set(id, baselines.get(id)?.avg.minutes ?? null);
-  }
+  const teamOf = (row: WindowPredictionRow): string | null =>
+    row.team_abbr === null || row.team_abbr === undefined ? null : String(row.team_abbr);
 
-  const byGameTeam = new Map<string, Array<{ id: string; name: string; prob: number | null }>>();
-  rows.forEach((row) => {
-    const team = row.team_abbr === null || row.team_abbr === undefined ? null : String(row.team_abbr);
-    if (!team) return;
-    const key = `${String(row.nba_game_id)}|${team}`;
-    const list = byGameTeam.get(key) ?? [];
-    const id = String(row.nba_player_id);
-    list.push({ id, name: resolvePlayerName(row.name, id).name, prob: num(row.prob_active) });
-    byGameTeam.set(key, list);
-  });
+  const groups = groupTeammates(
+    rows.map((row) => {
+      const id = String(row.nba_player_id);
+      return {
+        id,
+        game_id: String(row.nba_game_id),
+        team_abbr: teamOf(row),
+        name: resolvePlayerName(row.name, id).name,
+        usual_minutes: baselines.get(id)?.avg.minutes ?? null,
+        prob_active: num(row.prob_active),
+      };
+    })
+  );
 
   const candidates: WatchlistCandidate[] = [];
 
@@ -841,29 +661,13 @@ export function buildCandidates(
     const id = String(row.nba_player_id);
     const baseline = baselines.get(id);
     if (!hasUsableBaseline(baseline)) return;
-    const usual = (baseline as PlayerBaseline).avg;
-    const gameDate = dates[i];
+    const gameId = String(row.nba_game_id);
+    const team = teamOf(row);
 
-    const projMinutes = num(row.proj_min_p50);
-    const deltas: Partial<Record<DeviationStat, number>> = {};
-    for (const stat of DEVIATION_STATS) {
-      const projected =
-        stat === 'minutes' ? projMinutes : num((row as Record<string, unknown>)[`c_${stat}`]);
-      const delta = deltaOf(projected, usual[stat]);
-      if (delta !== null) deltas[stat] = delta;
+    const conditional = {} as ConditionalLine;
+    for (const stat of CONDITIONAL_STATS) {
+      conditional[stat] = num((row as Record<string, unknown>)[`c_${stat}`]);
     }
-
-    const team = row.team_abbr === null || row.team_abbr === undefined ? null : String(row.team_abbr);
-    const projPts = num((row as Record<string, unknown>).c_pts);
-    const projFga = num((row as Record<string, unknown>).c_fga);
-
-    const teammates = (team ? byGameTeam.get(`${String(row.nba_game_id)}|${team}`) ?? [] : [])
-      .filter((mate) => mate.id !== id)
-      .map((mate) => ({
-        name: mate.name,
-        usual_minutes: usualMinutes.get(mate.id) ?? null,
-        prob_active: mate.prob,
-      }));
 
     const { name, placeholder } = resolvePlayerName(row.name, id);
 
@@ -873,27 +677,20 @@ export function buildCandidates(
       name_is_placeholder: placeholder,
       team_abbr: team,
       position: parsePositions(row.position),
-      opponent_team_abbr: opponentOf(team, gameTeams.get(String(row.nba_game_id))),
-      nba_game_id: String(row.nba_game_id),
-      game_date: gameDate,
-      prob_active: num(row.prob_active),
+      opponent_team_abbr: opponentOf(team, gameTeams.get(gameId)),
+      nba_game_id: gameId,
+      game_date: dates[i],
       impact: impacts[i],
       proj_pts_uncond: inputs[i].pts,
       uncond: inputs[i],
-      baseline_games: (baseline as PlayerBaseline).games,
-      deltas,
-      minutes: {
-        usual: usual.minutes,
-        projected: projMinutes,
-        delta: deltaOf(projMinutes, usual.minutes),
-      },
-      points: { usual: usual.pts, projected: projPts, delta: deltaOf(projPts, usual.pts) },
-      shots: { usual: usual.fga, projected: projFga, delta: deltaOf(projFga, usual.fga) },
-      days_since_played: daysSince(gameDate, (baseline as PlayerBaseline).last_played_date),
-      last_played_date: (baseline as PlayerBaseline).last_played_date,
-      pts_recent: (baseline as PlayerBaseline).pts_recent,
-      pts_sd: (baseline as PlayerBaseline).pts_sd,
-      teammate_out: findAbsentTeammate(teammates),
+      ...reasonInputFor({
+        gameDate: dates[i],
+        probActive: num(row.prob_active),
+        minutes: num(row.proj_min_p50),
+        conditional,
+        baseline: baseline as PlayerBaseline,
+        teammates: teammatesOf({ id, game_id: gameId, team_abbr: team }, groups),
+      }),
     });
   });
 
@@ -923,7 +720,7 @@ export async function fetchWatchlistWindow(
     candidates: [],
   };
 
-  const rows = await fetchPredictions(runId, window.from, window.to);
+  const rows = await fetchWindowPredictionRows(runId, window.from, window.to);
   if (rows.length === 0) return empty;
 
   const baselines = await fetchBaselines(window.from);

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import predict
 from fnba_ml.intervals import (
     QUANTILE_LEVELS,
     QuantileOffsets,
@@ -12,7 +13,7 @@ from fnba_ml.intervals import (
     fit_residual_quantiles,
     quantile_columns,
 )
-from fnba_ml.config import HORIZONS
+from fnba_ml.config import HORIZONS, MODELS_DIR, PROSPECTIVE_MODEL_VERSION
 from fnba_ml.models import P_PLAY, P_PLAY_CUTOFF
 from fnba_ml.overrides import (
     OVERRIDE_REASON,
@@ -21,7 +22,9 @@ from fnba_ml.overrides import (
     STATUS_CAPTURED_AT,
 )
 from fnba_ml.store import (
+    INSERT_RUN_SQL,
     PROB_ACTIVE,
+    RUN_CHANNELS,
     PROB_ACTIVE_MODEL,
     STATUS_CAPTURED_AT_STAT,
     STATUS_OVERRIDE,
@@ -448,3 +451,185 @@ def test_the_three_horizons_are_named_and_ordered_toward_tipoff():
 def test_writing_an_empty_run_is_refused_before_it_can_connect():
     with pytest.raises(ValueError, match="no prediction rows"):
         write_predictions([], {"model_version": "v"})
+
+
+def test_the_run_record_defaults_to_the_production_channel():
+    record = build_run_record(
+        {"model_version": "v"},
+        pd.Timestamp("2026-03-01T18:00:00Z").to_pydatetime(),
+        pd.Timestamp("2026-03-01T00:00:00Z").to_pydatetime(),
+    )
+
+    assert record["channel"] == "production"
+    assert record["information_as_of"] is None
+    assert record["history_through"] is None
+
+
+def test_the_run_record_carries_channel_information_and_history():
+    information = pd.Timestamp("2026-03-01T17:45:00Z").to_pydatetime()
+    through = pd.Timestamp("2026-02-28").date()
+
+    record = build_run_record(
+        {"model_version": "v"},
+        pd.Timestamp("2026-03-01T18:00:00Z").to_pydatetime(),
+        pd.Timestamp("2026-03-01T00:00:00Z").to_pydatetime(),
+        channel="shadow",
+        information_as_of=information,
+        history_through=through,
+    )
+
+    assert record["channel"] == "shadow"
+    assert record["information_as_of"] == information
+    assert record["history_through"] == through
+
+
+def test_an_unknown_channel_is_refused():
+    with pytest.raises(ValueError, match="unknown prediction run channel"):
+        build_run_record(
+            {"model_version": "v"},
+            pd.Timestamp("2026-03-01T18:00:00Z").to_pydatetime(),
+            pd.Timestamp("2026-03-01T00:00:00Z").to_pydatetime(),
+            channel="challenger",
+        )
+
+
+def test_the_channels_are_production_and_shadow():
+    assert RUN_CHANNELS == ("production", "shadow")
+
+
+def test_the_cutoff_is_the_later_report_boundary_when_reports_were_read_after_midnight():
+    day_start = pd.Timestamp("2026-03-01T00:00:00Z").to_pydatetime()
+    information = pd.Timestamp("2026-03-01T15:30:00Z").to_pydatetime()
+
+    record = build_run_record(
+        {"model_version": "v"},
+        pd.Timestamp("2026-03-01T16:00:00Z").to_pydatetime(),
+        day_start,
+        information_as_of=information,
+    )
+
+    assert record["forecast_cutoff_at"] == information
+
+
+def test_the_cutoff_stays_at_the_day_start_when_the_reports_are_older():
+    day_start = pd.Timestamp("2026-03-01T00:00:00Z").to_pydatetime()
+    information = pd.Timestamp("2026-02-28T20:00:00Z").to_pydatetime()
+
+    record = build_run_record(
+        {"model_version": "v"},
+        pd.Timestamp("2026-03-01T16:00:00Z").to_pydatetime(),
+        day_start,
+        information_as_of=information,
+    )
+
+    assert record["forecast_cutoff_at"] == day_start
+    assert record["information_as_of"] == information
+
+
+def test_a_naive_cutoff_compares_as_utc_against_an_aware_report_boundary():
+    information = pd.Timestamp("2026-03-01T15:30:00Z").to_pydatetime()
+
+    record = build_run_record(
+        {"model_version": "v"},
+        pd.Timestamp("2026-03-01T16:00:00Z").to_pydatetime(),
+        pd.Timestamp("2026-03-01").to_pydatetime(),
+        information_as_of=information,
+    )
+
+    assert record["forecast_cutoff_at"] == information
+
+
+def test_the_insert_names_every_run_record_column():
+    record = build_run_record(
+        {"model_version": "v"},
+        pd.Timestamp("2026-03-01T18:00:00Z").to_pydatetime(),
+        pd.Timestamp("2026-03-01T00:00:00Z").to_pydatetime(),
+    )
+
+    for column in ("channel", "information_as_of", "history_through"):
+        assert column in INSERT_RUN_SQL
+    for key in record:
+        assert f"%({key})s" in INSERT_RUN_SQL
+
+
+def test_history_through_is_the_last_played_game_date():
+    frame = pd.DataFrame({
+        "GAME_DATE": pd.to_datetime(["2026-02-26", "2026-02-27", "2026-03-01"]),
+        "PLAYED": [1, 1, np.nan],
+    })
+
+    assert predict.history_through(frame) == pd.Timestamp("2026-02-27").date()
+
+
+def test_history_through_falls_back_to_the_universe_source():
+    frame = pd.DataFrame({
+        "GAME_DATE": pd.to_datetime(["2026-02-27", "2026-03-01"]),
+        "UNIVERSE_SOURCE": ["player_game_status", "prospective"],
+    })
+
+    assert predict.history_through(frame) == pd.Timestamp("2026-02-27").date()
+
+
+def test_history_through_is_unknown_for_a_frame_with_no_played_rows():
+    frame = pd.DataFrame({
+        "GAME_DATE": pd.to_datetime(["2026-03-01"]),
+        "UNIVERSE_SOURCE": ["prospective"],
+    })
+
+    assert predict.history_through(frame) is None
+
+
+def test_the_forecast_cutoff_is_the_report_boundary_not_midnight():
+    cutoff = predict.forecast_cutoff(
+        pd.Timestamp("2026-03-01"), pd.Timestamp("2026-03-01T15:30:00Z")
+    )
+
+    assert cutoff == pd.Timestamp("2026-03-01T15:30:00Z")
+
+
+def test_the_forecast_cutoff_never_precedes_the_first_scored_day():
+    cutoff = predict.forecast_cutoff(
+        pd.Timestamp("2026-03-01"), pd.Timestamp("2026-02-28T20:00:00Z")
+    )
+
+    assert cutoff == pd.Timestamp("2026-03-01T00:00:00Z")
+
+
+def test_predict_defaults_to_the_production_channel_and_refuses_others():
+    args = predict.parse_args(["--version", "v"])
+    assert args.channel == "production"
+    with pytest.raises(SystemExit):
+        predict.parse_args(["--version", "v", "--channel", "challenger"])
+
+
+class TestFeatureSetContext:
+    def test_prepare_context_returns_no_audit_for_v1(self, caplog) -> None:
+        # arrange
+        frame = pd.DataFrame({"PLAYER_ID": ["1"], "GAME_ID": ["g"]})
+        caplog.set_level("INFO", logger="predict")
+
+        # act
+        rebuilt, audit = predict.prepare_context(
+            frame, None, {"feature_set": "v1"}, None, pd.Timestamp("2026-10-20")
+        )
+
+        # assert
+        assert audit is None
+        assert rebuilt is frame
+        assert "feature_set v1 carries no teammate context" in caplog.text
+
+    def test_an_artifact_without_the_key_is_read_as_the_served_set(self) -> None:
+        # act + assert
+        assert predict.uses_teammate_context({}) is True
+        assert predict.uses_teammate_context({"feature_set": "v3-honest"}) is True
+        assert predict.uses_teammate_context({"feature_set": "v1"}) is False
+
+    def test_the_pinned_artifact_still_loads_its_base_model(self) -> None:
+        # act
+        _, _, base, metadata = predict.load_version(
+            PROSPECTIVE_MODEL_VERSION, MODELS_DIR
+        )
+
+        # assert
+        assert base is not None
+        assert predict.uses_teammate_context(metadata) is True

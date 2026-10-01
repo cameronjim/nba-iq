@@ -1,8 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { query } from '../../src/db.js';
 import {
+  clearPredictionsCache,
+  getLatestPredictionForPlayer,
   pivotPredictionRows,
   type PredictionRow,
 } from '../../src/services/predictions.js';
+import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } from '../../src/services/slate.js';
+import { pgResult } from '../helpers/mockDb.js';
+
+const queryMock = vi.mocked(query);
 
 
 const PREDICTED_AT = new Date('2026-03-01T13:30:00.000Z');
@@ -202,5 +209,25 @@ describe('pivotPredictionRows', () => {
     const result = pivotPredictionRows(rows);
 
     expect(result?.summary).toBe('55% to play, 18.0 min (12.0-25.0) if he plays.');
+  });
+});
+
+describe('getLatestPredictionForPlayer', () => {
+  beforeEach(() => {
+    queryMock.mockReset();
+    clearPredictionsCache();
+  });
+
+  it('reads the latest complete production run, never a shadow one', async () => {
+    // arrange
+    queryMock.mockResolvedValueOnce(pgResult(fullRowSet()));
+
+    // act
+    await getLatestPredictionForPlayer('2544');
+
+    // assert
+    const [sql, params] = queryMock.mock.calls[0];
+    expect(params).toEqual(['2544', COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL]);
+    expect(sql).toMatch(/channel = \$3/);
   });
 });
