@@ -36,6 +36,11 @@ log = logging.getLogger(__name__)
 SOURCE_STATUS = "status"
 SOURCE_APPROXIMATION = "approximation"
 
+# the player_game_status.source of a row, and the value the scraper stamps on
+# the active-DNP rows the box-score pass inserts (MODEL.md 17.8).
+STATUS_SOURCE_COL = "STATUS_SOURCE"
+BOX_SCORE_STATUS_SOURCE = "boxscoretraditionalv3"
+
 # the team's own game totals, carried under TEAM_-prefixed names so nothing can
 # confuse a team total with the player's own line. these are the denominator of
 # the usage-rate feature and are outcomes of the target game, which is why
@@ -186,7 +191,12 @@ def _attach_outcomes(
     universe["LISTED_INACTIVE"] = universe["LISTED_INACTIVE"].astype("boolean")
 
     universe["UNIVERSE_SOURCE"] = source
-    universe = universe[[c for c in UNIVERSE_COLS if c in universe.columns]]
+    # STATUS_SOURCE rides along outside UNIVERSE_COLS so datasets built before
+    # it existed still satisfy the prospective-path column contract.
+    keep = [c for c in UNIVERSE_COLS if c in universe.columns]
+    if STATUS_SOURCE_COL in universe.columns:
+        keep.append(STATUS_SOURCE_COL)
+    universe = universe[keep]
     return universe.sort_values(
         ["GAME_DATE", "GAME_ID", "TEAM_ID", "PLAYER_ID"]
     ).reset_index(drop=True)
@@ -214,6 +224,8 @@ def universe_from_status(
     keep = ["PLAYER_ID", "GAME_ID", "TEAM_ID", "PLAYED"]
     if "LISTED_INACTIVE" in st.columns:
         keep.append("LISTED_INACTIVE")
+    if STATUS_SOURCE_COL in st.columns:
+        keep.append(STATUS_SOURCE_COL)
     elig = st.loc[rostered, keep].copy()
     elig["PLAYED"] = elig["PLAYED"].astype("boolean").astype("Float64")
     if "LISTED_INACTIVE" in elig.columns:
@@ -341,4 +353,38 @@ def coverage_report(universe: pd.DataFrame, player_logs: pd.DataFrame) -> dict[s
         "mean_roster": len(universe) / max(team_games, 1),
         "played_rate": float(universe["PLAYED"].mean()),
         "appearance_coverage": len(log_keys & universe_keys) / max(len(log_keys), 1),
+    }
+
+
+def universe_composition(universe: pd.DataFrame) -> dict[str, object]:
+    """row counts by (PLAYED, LISTED_INACTIVE), plus the box-score-sourced count.
+
+    the measurement behind MODEL.md 17.8: how much the active-DNP rows move the
+    universe before anyone decides to retrain on it. LISTED_INACTIVE None means
+    unknown. ``box_score_rows`` is None when the frame carries no STATUS_SOURCE,
+    which is not the same claim as zero.
+    """
+    played = pd.to_numeric(universe["PLAYED"], errors="coerce").fillna(0).astype(int)
+    if "LISTED_INACTIVE" in universe.columns:
+        inactive = universe["LISTED_INACTIVE"].astype("boolean")
+    else:
+        inactive = pd.Series(pd.NA, index=universe.index, dtype="boolean")
+
+    counts: dict[tuple[int, bool | None], int] = {}
+    for p, i in zip(played, inactive):
+        key = (int(p), None if pd.isna(i) else bool(i))
+        counts[key] = counts.get(key, 0) + 1
+
+    box_rows: int | None = None
+    if STATUS_SOURCE_COL in universe.columns:
+        box_rows = int(
+            (universe[STATUS_SOURCE_COL].astype("string") == BOX_SCORE_STATUS_SOURCE)
+            .fillna(False).sum()
+        )
+    return {
+        "rows": int(len(universe)),
+        "by_played_listed_inactive": dict(
+            sorted(counts.items(), key=lambda kv: (kv[0][0], str(kv[0][1])))
+        ),
+        "box_score_rows": box_rows,
     }

@@ -3724,3 +3724,34 @@ rows it could not compute rather than leaving them blank.
   which is the history a learned policy would need; F10 is the measurement.
 - **E5 in the scoring tool**, with the shifted-rate skill and the frozen-baseline rows
   above. These are needed by the `dec1` look, where F1 and F6 bind.
+
+### 17.8 Active-DNP rows enter `player_game_status` (the P5 gap, partly closed)
+
+The box-details pass (`boxscoretraditionalv3`, one request per game, both the
+`--backfill-box-details` backfill and the live hook in the game-status phase) now
+INSERTs a status row for every v3 player row with no minutes that has no
+`player_game_status` row for that game: `rostered` true, `played` false, `started`
+false, `dnp_reason` the verbatim box-score comment, `source = 'boxscoretraditionalv3'`.
+`listed_inactive` is false, except NULL when the comment starts `DND` or `NWT`, since
+those are injury and not-with-team designations the inactive list owns. The insert is
+`ON CONFLICT DO NOTHING`, so an inactive-list or game-log row always wins. Each run's
+notes record `active_dnp_rows=N`.
+
+**This changes the training universe.** These are exactly the "available and unused"
+rows 4.1 says the reconstruction cannot see, so once the backfill has run, the
+complement identity in 4.1 stops holding by construction (there is now a played-false,
+listed-inactive-false category), the availability base rate falls, and the
+vacated-resource sums change. Any retrain or dataset rebuild on a backfilled database
+is therefore a 13.2 item (7) change (the universe source) and requires a re-freeze to
+`prospective_2026_27_v3` before it may be served. The `v2` artifact is not retrained by
+this change, and nothing it serves moves until someone rebuilds against the new rows.
+
+**The magnitude is measured before deciding.** `build_dataset.py` now prints the
+universe composition (`universe.universe_composition`): row counts by
+(`PLAYED`, `LISTED_INACTIVE`) and the count of rows whose `STATUS_SOURCE` is
+`boxscoretraditionalv3`. That printout, run against the backfilled database, is the
+number that decides whether the re-freeze is worth taking. It does not close [P5]: the
+rows come from the same box score the appearances do, so they extend the
+reconstruction rather than audit it against an independent roster source. Games whose
+player rows were already stamped `details_fetched_at` before this change are not
+revisited by the backfill and gain no active-DNP rows until those stamps are cleared.

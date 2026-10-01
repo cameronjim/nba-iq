@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime, timedelta
 
 from config import (
@@ -533,6 +533,48 @@ def box_detail_rows_from_traditional(
             }
         )
     return player_rows, team_rows
+
+
+# DND and NWT are injury and not-with-team designations, which the inactive
+# list owns; the box score alone cannot say whether he was listed inactive.
+INACTIVE_LIST_OWNED_PREFIXES = ("DND", "NWT")
+
+
+def active_dnp_status_rows(
+    box_player_rows: Sequence[Mapping],
+    existing_status_keys: Collection[tuple[str, str]],
+    game_id: str,
+) -> list[dict]:
+    # a player who dressed and never entered has no game-log row and is not on
+    # the inactive list, so without this he has no status row at all.
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for row in box_player_rows:
+        player_id = row["nba_player_id"]
+        if row.get("minutes") is not None or player_id in seen:
+            continue
+        if (player_id, game_id) in existing_status_keys:
+            continue
+        seen.add(player_id)
+        reason = (row.get("dnp_reason") or "").strip() or None
+        owned = reason is not None and reason.upper().startswith(
+            INACTIVE_LIST_OWNED_PREFIXES
+        )
+        rows.append(
+            {
+                "nba_player_id": player_id,
+                "nba_game_id": game_id,
+                "team_id": row.get("team_id"),
+                "rostered": True,
+                "listed_inactive": None if owned else False,
+                "started": False,
+                "played": False,
+                "dnp_reason": reason,
+                "minutes": None,
+                "source": BOX_DETAILS_SOURCE,
+            }
+        )
+    return rows
 
 
 def merge_dnp_reason(existing: str | None, incoming: str | None) -> str | None:

@@ -36,6 +36,7 @@ from rows import (
     BOX_DETAILS_SOURCE,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
+    active_dnp_status_rows,
     box_detail_rows_from_traditional,
     build_player_game_log_row,
     build_team_game_log_row,
@@ -192,6 +193,21 @@ UPDATE player_game_status AS s
   FROM (VALUES %s) AS v (nba_player_id, nba_game_id, started)
  WHERE s.nba_player_id = v.nba_player_id
    AND s.nba_game_id = v.nba_game_id
+"""
+
+# DO NOTHING: an inactive-list or game-log row for the same key always wins.
+ACTIVE_DNP_STATUS_INSERT_SQL = """
+INSERT INTO player_game_status (nba_player_id, nba_game_id, team_id, rostered,
+                                listed_inactive, started, played, dnp_reason,
+                                minutes, source, ingestion_run_id)
+VALUES %s
+ON CONFLICT (nba_player_id, nba_game_id) DO NOTHING
+"""
+
+EXISTING_STATUS_IDS_SQL = """
+SELECT nba_player_id
+  FROM player_game_status
+ WHERE nba_game_id = %s
 """
 
 # stamps logged players v3 did not list without touching their stats
@@ -363,8 +379,22 @@ def _games_needing_box_details(
         cur.close()
 
 
+def _existing_status_keys(
+    cur: object, game_id: str, pending_ids: Sequence[str]
+) -> set[tuple[str, str]]:
+    # pending_ids covers rows written earlier on this cursor that a dry run
+    # skipped, so a dry run does not count them as active-DNP inserts.
+    cur.execute(EXISTING_STATUS_IDS_SQL, (game_id,))
+    ids = {str(row[0]) for row in cur.fetchall()} | {str(pid) for pid in pending_ids}
+    return {(pid, game_id) for pid in ids}
+
+
 def _apply_box_details(
-    cur: object, game_id: str, logged_player_ids: Sequence[str]
+    cur: object,
+    game_id: str,
+    logged_player_ids: Sequence[str],
+    run_id: int | None = None,
+    pending_status_ids: Sequence[str] = (),
 ) -> dict[str, int]:
     # raises on a fetch failure or an empty box score, so the caller can count
     # the game as failed and leave it unstamped for the next run.
@@ -388,12 +418,25 @@ def _apply_box_details(
         (r["nba_player_id"], r["nba_game_id"], r["started"]) for r in player_rows
     ]
     absent = player_ids_absent_from_box(logged_player_ids, player_rows)
+    active_dnp = active_dnp_status_rows(
+        player_rows, _existing_status_keys(cur, game_id, pending_status_ids), game_id
+    )
+    active_dnp_tuples = [
+        (
+            r["nba_player_id"], r["nba_game_id"], r["team_id"], r["rostered"],
+            r["listed_inactive"], r["started"], r["played"], r["dnp_reason"],
+            r["minutes"], r["source"], run_id,
+        )
+        for r in active_dnp
+    ]
 
     counts = {
         "players": _batch_update(cur, BOX_DETAIL_PLAYER_UPDATE_SQL, player_tuples),
         "teams": _batch_update(cur, BOX_DETAIL_TEAM_UPDATE_SQL, team_tuples),
         "status": _batch_update(cur, BOX_DETAIL_STATUS_UPDATE_SQL, status_tuples),
         "absent": len(absent),
+        # rowcount, so a key that appeared since the read is not counted
+        "active_dnp": _batch_update(cur, ACTIVE_DNP_STATUS_INSERT_SQL, active_dnp_tuples),
     }
     if absent:
         logger.warning(
@@ -431,13 +474,13 @@ def backfill_box_details(
         dry_run=dry_run,
     )
 
-    totals = {"players": 0, "teams": 0, "status": 0, "absent": 0}
+    totals = {"players": 0, "teams": 0, "status": 0, "absent": 0, "active_dnp": 0}
     failed = 0
     cur = maybe_write_cursor(conn.cursor(), dry_run)
     try:
         for index, (game_id, logged_ids) in enumerate(games):
             try:
-                counts = _apply_box_details(cur, game_id, logged_ids)
+                counts = _apply_box_details(cur, game_id, logged_ids, run_id)
             except Exception as e:  # noqa: BLE001 - one game must not end the run
                 failed += 1
                 logger.warning("box details: %s failed (%s)", game_id, e)
@@ -458,11 +501,14 @@ def backfill_box_details(
     finally:
         cur.close()
 
-    written = totals["players"] + totals["teams"] + totals["status"]
+    written = (
+        totals["players"] + totals["teams"] + totals["status"] + totals["active_dnp"]
+    )
     notes = (
         f"{len(games) - failed} game(s), {failed} failed; {totals['players']} player, "
         f"{totals['teams']} team, {totals['status']} status row(s); "
-        f"{totals['absent']} logged player(s) absent from v3"
+        f"{totals['absent']} logged player(s) absent from v3; "
+        f"active_dnp_rows={totals['active_dnp']}"
     )
     _finish_ingestion_run(
         conn, run_id, "succeeded" if failed == 0 else "partial", written, notes=notes
@@ -706,6 +752,7 @@ def scrape_game_status(
     failed = 0
     suspect = 0
     box_failed = 0
+    active_dnp = 0
 
     cur = maybe_write_cursor(conn.cursor(), dry_run)
     try:
@@ -739,11 +786,15 @@ def scrape_game_status(
             # a failure leaves the game unstamped for --backfill-box-details.
             time.sleep(delay_seconds)
             try:
-                _apply_box_details(
+                box_counts = _apply_box_details(
                     cur,
                     game_id,
                     [r["nba_player_id"] for r in played_by_game.get(game_id, [])],
+                    run_id,
+                    [r["nba_player_id"] for r in rows],
                 )
+                active_dnp += box_counts["active_dnp"]
+                written += box_counts["active_dnp"]
             except Exception as e:  # noqa: BLE001 - the status rows still stand
                 box_failed += 1
                 logger.warning("game status: %s box details failed (%s)", game_id, e)
@@ -770,12 +821,13 @@ def scrape_game_status(
         run_notes.append(f"{suspect} game(s) tagged v2-suspect")
     if box_failed:
         run_notes.append(f"{box_failed} game(s) missing box details")
+    run_notes.append(f"active_dnp_rows={active_dnp}")
     _finish_ingestion_run(
         conn,
         run_id,
         "succeeded" if failed == 0 else "partial",
         written,
-        notes="; ".join(run_notes) if run_notes else None,
+        notes="; ".join(run_notes),
     )
     logger.info(
         "game status: %d row(s) across %d game(s), %d failed, %d suspect%s",

@@ -165,7 +165,8 @@ SELECT
     st.started             AS "STARTED",
     st.played              AS "PLAYED",
     st.dnp_reason          AS "DNP_REASON",
-    st.minutes             AS "MIN"
+    st.minutes             AS "MIN",
+    st.source              AS "STATUS_SOURCE"
 FROM player_game_status st
 JOIN nba_schedule s
   ON s.nba_game_id = st.nba_game_id

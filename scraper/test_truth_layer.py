@@ -41,6 +41,7 @@ from rows import (
     BOX_DETAILS_SOURCE,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
+    active_dnp_status_rows,
     box_detail_rows_from_traditional,
     build_player_game_log_row,
     build_team_game_log_row,
@@ -1153,6 +1154,9 @@ class FakeCursor:
     def execute(self, sql, params=None):
         self.statements.append(sql)
 
+    def fetchall(self):
+        return []
+
     def close(self):
         pass
 
@@ -1499,6 +1503,68 @@ class TestBoxDetailRows:
         assert teams == []
 
 
+class TestActiveDnpStatusRows:
+    GAME = "0022500001"
+
+    def _box_rows(self, *players):
+        payload = {"player_stats": list(players)}
+        rows, _ = box_detail_rows_from_traditional(payload, self.GAME)
+        return rows
+
+    def test_a_dnp_without_a_status_row_is_inserted_as_available_and_unused(self):
+        rows = self._box_rows(_box_player(1631120, comment="DNP - Coach's Decision"))
+
+        inserted = active_dnp_status_rows(rows, set(), self.GAME)
+
+        assert inserted == [{
+            "nba_player_id": "1631120", "nba_game_id": self.GAME,
+            "team_id": "1610612745", "rostered": True, "listed_inactive": False,
+            "started": False, "played": False,
+            "dnp_reason": "DNP - Coach's Decision", "minutes": None,
+            "source": "boxscoretraditionalv3",
+        }]
+
+    def test_a_dnp_with_an_existing_status_row_is_not_inserted(self):
+        rows = self._box_rows(_box_player(1631120, comment="DNP - Coach's Decision"))
+
+        inserted = active_dnp_status_rows(rows, {("1631120", self.GAME)}, self.GAME)
+
+        assert inserted == []
+
+    def test_a_player_with_minutes_is_never_inserted(self):
+        rows = self._box_rows(_box_player(1631106, minutes="21:36"))
+
+        inserted = active_dnp_status_rows(rows, set(), self.GAME)
+
+        assert inserted == []
+
+    @pytest.mark.parametrize("comment", ["DND - Injury/Illness", "NWT - Personal"])
+    def test_dnd_and_nwt_leave_listed_inactive_unknown(self, comment):
+        rows = self._box_rows(_box_player(1, comment=comment))
+
+        inserted = active_dnp_status_rows(rows, set(), self.GAME)
+
+        assert inserted[0]["listed_inactive"] is None
+        assert inserted[0]["dnp_reason"] == comment
+        assert inserted[0]["played"] is False
+
+    def test_an_empty_comment_still_inserts_with_no_reason(self):
+        rows = self._box_rows(_box_player(1, comment="   "))
+
+        inserted = active_dnp_status_rows(rows, set(), self.GAME)
+
+        assert len(inserted) == 1
+        assert inserted[0]["dnp_reason"] is None
+        assert inserted[0]["listed_inactive"] is False
+
+    def test_a_key_for_another_game_does_not_suppress_the_insert(self):
+        rows = self._box_rows(_box_player(1, comment="DNP - Coach's Decision"))
+
+        inserted = active_dnp_status_rows(rows, {("1", "0022500002")}, self.GAME)
+
+        assert len(inserted) == 1
+
+
 class TestMergeDnpReason:
     def test_an_existing_reason_wins(self):
         assert merge_dnp_reason("Inactive - Injury", "DNP - Coach's Decision") == (
@@ -1531,9 +1597,28 @@ class TestApplyBoxDetails:
 
         counts = truth_layer._apply_box_details(cur, "0022500001", ["1631095", "999"])
 
-        assert counts == {"players": 4, "teams": 2, "status": 4, "absent": 1}
-        assert inner.statements == []
-        assert cur.skipped_statements == 4
+        assert counts == {
+            "players": 4, "teams": 2, "status": 4, "absent": 1, "active_dnp": 1,
+        }
+        assert all(not is_write_statement(sql) for sql in inner.statements)
+        assert cur.skipped_statements == 5
+
+    def test_a_dnp_written_earlier_on_the_cursor_is_not_inserted_again(self, monkeypatch):
+        monkeypatch.setattr(
+            truth_layer, "fetch_box_score_traditional", lambda game_id: BOX_SCORE_V3
+        )
+        cur = DryRunCursor(FakeCursor())
+
+        counts = truth_layer._apply_box_details(
+            cur, "0022500001", ["1631095"], pending_status_ids=["1631120"]
+        )
+
+        assert counts["active_dnp"] == 0
+
+    def test_the_active_dnp_insert_never_overwrites_a_row(self):
+        sql = " ".join(truth_layer.ACTIVE_DNP_STATUS_INSERT_SQL.split())
+
+        assert sql.endswith("ON CONFLICT (nba_player_id, nba_game_id) DO NOTHING")
 
     def test_an_empty_box_score_raises_so_the_game_stays_unstamped(self, monkeypatch):
         monkeypatch.setattr(
