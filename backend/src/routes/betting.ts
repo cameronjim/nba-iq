@@ -2,6 +2,17 @@ import crypto from 'crypto';
 import { Router, Request, Response } from 'express';
 import { query } from '../db.js';
 import { requireAuth, AuthRequest } from '../middleware/auth.js';
+import { requireAdmin } from '../middleware/admin.js';
+import { etIsoDate } from '../services/dates.js';
+import {
+  getPropPickSummary,
+  getSurfacedPropPicks,
+  refreshPropPicks,
+  settlePropPicks,
+  MIN_PICK_EV,
+  MIN_PICK_PROB_ACTIVE,
+} from '../services/propPicks.js';
+import { DEFAULT_VOID_RULE } from '../services/propProbability.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import { callClaude, buildBettingContext, extractJSON } from '../services/ai.js';
 import { getUserPreferences, buildBettingPromptBlock } from '../services/preferences.js';
@@ -248,6 +259,48 @@ router.get('/odds', async (_req: Request, res: Response): Promise<void> => {
     res.json({ games, fetched_at: new Date().toISOString() });
   } catch (err) {
     sendEspnError(res, err);
+  }
+});
+
+const PROP_RULES = {
+  min_ev: MIN_PICK_EV,
+  min_prob_active: MIN_PICK_PROB_ACTIVE,
+  void_rule: DEFAULT_VOID_RULE,
+  estimate_source: 'model',
+  paper_trading: true,
+};
+
+router.get('/props', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const surfaced = await getSurfacedPropPicks([etIsoDate(0), etIsoDate(1)]);
+    res.json({ ...surfaced, rules: PROP_RULES });
+  } catch {
+    res.status(500).json({ error: 'Failed to load prop picks' });
+  }
+});
+
+router.get('/props/summary', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const markets = await getPropPickSummary();
+    res.json({ markets });
+  } catch {
+    res.status(500).json({ error: 'Failed to load prop pick summary' });
+  }
+});
+
+router.post('/props/refresh', requireAuth, requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  try {
+    res.json(await refreshPropPicks());
+  } catch {
+    res.status(500).json({ error: 'Failed to refresh prop picks' });
+  }
+});
+
+router.post('/props/settle', requireAuth, requireAdmin, async (_req: Request, res: Response): Promise<void> => {
+  try {
+    res.json(await settlePropPicks());
+  } catch {
+    res.status(500).json({ error: 'Failed to settle prop picks' });
   }
 });
 

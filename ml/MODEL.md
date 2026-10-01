@@ -4150,3 +4150,60 @@ and `test_scoring_baselines.py`.
 - **The betting picks remain Claude estimates**, labelled as such (17.2 item 7).
 - **Nothing here changes a served prediction number.** The ranking, outlook and
   explanations read the production run; the scoring tool only reads the store.
+
+## 20. v3 candidates (2026-10-02)
+
+### 20.4 The player-prop layer: priced, paper-traded, not staked (`propProbability.ts`, `propPicks.ts`)
+
+**Verdict first: the model now prices player props against the book and records every
+pick it would make, with the market at the time, so closing-line value and calibration
+can be measured. Nothing is staked.** This closes the 19.6 gap ("no props odds source
+exists to price them against") on the numeric side; the odds come from
+`prop_odds_snapshots` (a separate package). No served prediction number moved.
+
+- **One distribution.** The piecewise-linear quantile function through the stored
+  **conditional** p10 / p50 / p90 (linear tails, floored at 0) moved into
+  `quantileDistribution.ts`; the weekly simulation draws from it and the prop layer
+  inverts it (`cdfAt`), so both read the same three anchors the same way.
+- **Discrete lines.** The stat is a count, so `P(X = k)` is the continuous mass on
+  `[k - 0.5, k + 0.5]`. A .5 line is `P(over) = 1 - F(L)`; an integer line has
+  `P(over) = 1 - F(L + 0.5)`, `P(under) = F(L - 0.5)` and the remainder as push.
+- **PRA is approximated.** The sum's anchors are centred on the summed expectations
+  with each half-width the quadrature sum of the components', i.e. **independent**
+  PTS, REB and AST. They are positively correlated in a real game, so the PRA spread
+  is understated and its tail probabilities are too confident by an unmeasured amount.
+- **DNP.** Most books void a prop when the player does not play, so under `dnp_void`
+  the stored `model_prob` is `P(win | plays)` and `prob_active` is reported beside it.
+  A `dnp_loss` variant multiplies by `prob_active` for books that grade a DNP as a
+  loss. Every pick records its `void_rule`; the default is `dnp_void`.
+- **Price.** EV is per $1 at the offered American price (a push returns the stake),
+  conditional on action under `dnp_void`. The edge shown is `model_prob` minus the
+  no-vig implied probability of the two posted sides. Kelly is a quarter of full
+  Kelly with pushes removed, capped at 2% of bankroll.
+- **Selection.** For the latest production run, the newest snapshot per player, game,
+  market, book and line inside the run's covered dates, before tipoff, with lines the
+  book stopped re-posting dropped. A pick needs EV above 0.02, a stored `prob_active`
+  above 0.6 and stored quantiles for every stat it needs; there is no fallback spread.
+- **The ledger.** `model_prop_picks` records each pick once per run (on conflict do
+  nothing). Settlement grades a pick once its game has box-score rows (no row or zero
+  minutes is a DNP) and fills the last snapshot before tipoff as the close. CLV is the
+  closing implied minus the surfaced implied in percentage points, counted only when
+  the closing line equals the surfaced line. The summary reports hit rate over picks
+  with action, mean `model_prob` beside it, realized ROI, mean EV and mean CLV, by
+  market. Refresh and settle are admin endpoints for now; a workflow step can call
+  them later.
+
+**The paper-trading rule.** No real staking until at least **300 settled picks** show
+**positive mean CLV** and calibration within **3 points** (hit rate minus mean
+`model_prob`, overall and in each market with enough picks). EV above the threshold
+on the model's own numbers is not evidence; CLV is the market's verdict and arrives
+long before win rates are informative.
+
+**What a proper distribution model would change.** Three quantiles pin the middle of
+the distribution and extrapolate the tails linearly, which is where alt lines and
+low-count markets (STL, BLK, FG3M at 0.5 or 1.5) live. A count model per stat
+(negative binomial or a minutes-times-rate mixture with a zero-minute mass) would give
+exact integer probabilities and push mass, a real tail instead of a linear one, and a
+joint draw (shared minutes and pace) that prices PRA and same-game combinations
+without the independence assumption. Until then the low-count and PRA markets should
+be read with the most suspicion in the summary.

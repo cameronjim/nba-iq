@@ -553,6 +553,39 @@ CREATE TABLE IF NOT EXISTS player_game_predictions (
     UNIQUE (prediction_run_id, nba_player_id, nba_game_id, stat, quantile)
 );
 
+-- migration 020: paper-trading ledger for model player-prop picks, recorded
+-- once per run with the market at surfacing; settlement fills the rest.
+CREATE TABLE IF NOT EXISTS model_prop_picks (
+    id BIGSERIAL PRIMARY KEY,
+    prediction_run_id INT NOT NULL REFERENCES prediction_runs (id),
+    nba_player_id TEXT NOT NULL,
+    player_name TEXT,
+    nba_game_id TEXT NOT NULL,
+    game_date DATE NOT NULL,
+    market TEXT NOT NULL
+      CHECK (market IN ('pts', 'reb', 'ast', 'fg3m', 'pra', 'stl', 'blk', 'tov')),
+    line NUMERIC NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('over', 'under')),
+    bookmaker TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    implied_prob NUMERIC NOT NULL,
+    implied_prob_novig NUMERIC,
+    -- model_prob is P(win) under void_rule, model_prob_plays is P(win | he plays)
+    model_prob NUMERIC NOT NULL,
+    model_prob_plays NUMERIC NOT NULL,
+    prob_active NUMERIC NOT NULL,
+    void_rule TEXT NOT NULL CHECK (void_rule IN ('dnp_void', 'dnp_loss')),
+    ev NUMERIC NOT NULL,
+    kelly_fraction NUMERIC NOT NULL,
+    surfaced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    closing_price INTEGER,
+    closing_line NUMERIC,
+    result TEXT CHECK (result IN ('win', 'loss', 'push', 'void')),
+    actual NUMERIC,
+    settled_at TIMESTAMPTZ,
+    UNIQUE (prediction_run_id, nba_player_id, nba_game_id, market, line, side, bookmaker)
+);
+
 CREATE INDEX IF NOT EXISTS idx_players_team ON players(team);
 CREATE INDEX IF NOT EXISTS idx_players_position ON players(position);
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
@@ -597,3 +630,7 @@ CREATE INDEX IF NOT EXISTS idx_player_game_predictions_player_date
   ON player_game_predictions(nba_player_id, game_date DESC);
 CREATE INDEX IF NOT EXISTS idx_player_game_predictions_run
   ON player_game_predictions(prediction_run_id);
+CREATE INDEX IF NOT EXISTS idx_model_prop_picks_game_date
+  ON model_prop_picks(game_date, prediction_run_id);
+CREATE INDEX IF NOT EXISTS idx_model_prop_picks_unsettled
+  ON model_prop_picks(nba_game_id) WHERE result IS NULL;

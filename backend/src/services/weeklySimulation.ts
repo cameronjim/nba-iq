@@ -1,4 +1,7 @@
 import { impactScores, poolRates, type ImpactInput, type ProjectedStat } from './slate.js';
+import { P10, P50, P90, quantileAt, type QuantileAnchors } from './quantileDistribution.js';
+
+export { quantileAt, type QuantileAnchors };
 
 export const SIM_STATS = [
   'pts',
@@ -72,10 +75,6 @@ export const OPPONENT_DEFINITION =
   `the top ${TYPICAL_LEAGUE_TEAMS} x roster-size players in the window by summed slate impact, ` +
   'their mean expected weekly totals scaled to your roster size, percentages as ratio of sums (slate poolRates)';
 
-const P10 = 0.1;
-const P50 = 0.5;
-const P90 = 0.9;
-
 export interface StatInput {
   expected: number;
   p10: number | null;
@@ -93,12 +92,6 @@ export interface SimGame {
 export interface SimPlayer {
   nba_player_id: string;
   games: SimGame[];
-}
-
-export interface QuantileAnchors {
-  p10: number;
-  p50: number;
-  p90: number;
 }
 
 export type Rng = () => number;
@@ -157,20 +150,6 @@ export function clampProbability(value: number | null): number {
   // a missing prob_active means availability was not modelled, not that he is ruled out.
   if (value === null || !Number.isFinite(value)) return 1;
   return Math.min(1, Math.max(0, value));
-}
-
-// piecewise linear through the three anchors, linear tails on the outer slopes, floored at 0.
-export function quantileAt(u: number, anchors: QuantileAnchors): number {
-  const { p10, p50, p90 } = anchors;
-  let value: number;
-  if (u <= P50) {
-    const slope = (p50 - p10) / (P50 - P10);
-    value = p10 + (u - P10) * slope;
-  } else {
-    const slope = (p90 - p50) / (P90 - P50);
-    value = p50 + (u - P50) * slope;
-  }
-  return Math.max(0, value);
 }
 
 export function resolveAnchors(
