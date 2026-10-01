@@ -51,6 +51,27 @@ FEATURE_VERSION = "v3"
 SEASONS: list[str] = ["2022-23", "2023-24", "2024-25", "2025-26"]
 SEASON_TYPES: list[str] = ["Regular Season"]
 
+# the sources load every competition a player logs minutes in; the universe and
+# every training frame keep TRAINING rows only (MODEL.md 20.1).
+HISTORY_SEASON_TYPES: tuple[str, ...] = ("Regular Season", "PlayIn", "Playoffs")
+TRAINING_SEASON_TYPES: tuple[str, ...] = ("Regular Season",)
+
+# the COMPETITION column carried through the frames, one label per season type.
+COMPETITION_COL = "COMPETITION"
+COMPETITION_BY_SEASON_TYPE: dict[str, str] = {
+    "Regular Season": "regular",
+    "PlayIn": "playin",
+    "Playoffs": "playoffs",
+}
+TRAINING_COMPETITIONS: tuple[str, ...] = tuple(
+    COMPETITION_BY_SEASON_TYPE[t] for t in TRAINING_SEASON_TYPES
+)
+POSTSEASON_COMPETITIONS: tuple[str, ...] = ("playin", "playoffs")
+
+# off until the v3 re-freeze: on, postseason appearances enter the career-scoped
+# rate history while season-to-date and availability columns stay regular only.
+RATE_HISTORY_INCLUDES_POSTSEASON: bool = False
+
 # ---- feature windows ----
 ROLL_WINDOWS: tuple[int, ...] = (3, 5, 10)
 ROLL_STATS: tuple[str, ...] = ("MIN", "PTS", "AST", "FGA")

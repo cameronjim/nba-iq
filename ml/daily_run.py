@@ -103,6 +103,7 @@ from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
     build_prospective_features,
     history_from_dataset,
+    load_postseason_sidecar,
     prospective_universe,
 )
 
@@ -890,6 +891,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
                 raise PhaseFailure("dataset", f"build_dataset exited {code}")
 
         history = history_from_dataset(load_dataset(dataset_path))
+        postseason = load_postseason_sidecar(dataset_path)
         # the prospective frames carry no played rows, so predict.py is told this.
         history_through = history["GAME_DATE"].max().date()
         log.info(
@@ -906,7 +908,7 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
         future = prospective_universe(
             schedule, rosters, window_start, extended_end, positions=positions
         )
-        features = build_prospective_features(history, future)
+        features = build_prospective_features(history, future, postseason)
         extended_path = args.out_dir / "prospective_extended.parquet"
         features.to_parquet(extended_path, index=False)
         log.info(

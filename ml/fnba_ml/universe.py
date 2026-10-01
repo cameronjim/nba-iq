@@ -28,13 +28,20 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .config import FALLBACK_ROSTER_WINDOW_DAYS, POSITION_GROUPS
-from .data.schema import STAT_COLS, normalise_dates, normalise_ids
+from .config import COMPETITION_COL, FALLBACK_ROSTER_WINDOW_DAYS, POSITION_GROUPS
+from .data.schema import (
+    STAT_COLS,
+    normalise_dates,
+    normalise_ids,
+    postseason_rows,
+    training_rows,
+)
 
 log = logging.getLogger(__name__)
 
 SOURCE_STATUS = "status"
 SOURCE_APPROXIMATION = "approximation"
+SOURCE_POSTSEASON = "postseason"
 
 # the player_game_status.source of a row, and the value the scraper stamps on
 # the active-DNP rows the box-score pass inserts (MODEL.md 17.8).
@@ -96,6 +103,8 @@ def team_game_frame(schedule: pd.DataFrame, team_logs: pd.DataFrame) -> pd.DataF
     away["IS_HOME"] = 0
 
     cols = ["SEASON", "GAME_ID", "GAME_DATE", "TEAM_ID", "OPP_TEAM_ID", "IS_HOME"]
+    if COMPETITION_COL in sched.columns:
+        cols.append(COMPETITION_COL)
     tg = pd.concat([home[cols], away[cols]], ignore_index=True)
 
     tl = normalise_dates(normalise_ids(team_logs))
@@ -191,11 +200,12 @@ def _attach_outcomes(
     universe["LISTED_INACTIVE"] = universe["LISTED_INACTIVE"].astype("boolean")
 
     universe["UNIVERSE_SOURCE"] = source
-    # STATUS_SOURCE rides along outside UNIVERSE_COLS so datasets built before
-    # it existed still satisfy the prospective-path column contract.
+    # STATUS_SOURCE and COMPETITION ride along outside UNIVERSE_COLS so datasets
+    # built before them still satisfy the prospective-path column contract.
     keep = [c for c in UNIVERSE_COLS if c in universe.columns]
-    if STATUS_SOURCE_COL in universe.columns:
-        keep.append(STATUS_SOURCE_COL)
+    for extra in (STATUS_SOURCE_COL, COMPETITION_COL):
+        if extra in universe.columns:
+            keep.append(extra)
     universe = universe[keep]
     return universe.sort_values(
         ["GAME_DATE", "GAME_ID", "TEAM_ID", "PLAYER_ID"]
@@ -217,8 +227,15 @@ def universe_from_status(
     ``config.TARGET_COLS`` because for the row's own player it is the availability
     answer, not a feature (see :mod:`fnba_ml.teammates`).
     """
+    # training rows only: a playoff game must never become a modelled row.
+    postseason_games = set(postseason_rows(normalise_ids(schedule))["GAME_ID"])
+    schedule, team_logs, player_logs = (
+        training_rows(schedule), training_rows(team_logs), training_rows(player_logs)
+    )
     tg = team_game_frame(schedule, team_logs)
     st = normalise_ids(status)
+    if postseason_games:
+        st = st[~st["GAME_ID"].isin(postseason_games)]
 
     rostered = st["ROSTERED"].astype("boolean").fillna(True)
     keep = ["PLAYER_ID", "GAME_ID", "TEAM_ID", "PLAYED"]
@@ -281,6 +298,9 @@ def approximate_universe(
         window_days,
     )
 
+    schedule, team_logs, player_logs = (
+        training_rows(schedule), training_rows(team_logs), training_rows(player_logs)
+    )
     tg = team_game_frame(schedule, team_logs)
     pl = normalise_dates(normalise_ids(player_logs))
     window = np.timedelta64(window_days, "D")
@@ -322,6 +342,49 @@ def approximate_universe(
     return _attach_outcomes(elig, tg, player_logs, SOURCE_APPROXIMATION, positions)
 
 
+def postseason_appearances(
+    schedule: pd.DataFrame,
+    team_logs: pd.DataFrame,
+    player_logs: pd.DataFrame,
+    positions: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """play-in and playoff APPEARANCES in the universe shape, never modelled rows.
+
+    the career-scoped history features may read them (config
+    RATE_HISTORY_INCLUDES_POSTSEASON); nothing is trained or scored on them. a log
+    row with a dnp reason is a dressed DNP, exactly as the status universe treats it.
+    """
+    logs = normalise_dates(normalise_ids(postseason_rows(player_logs)))
+    games = postseason_rows(schedule)
+    if logs.empty or games.empty:
+        empty = pd.DataFrame(columns=[*UNIVERSE_COLS, COMPETITION_COL])
+        empty["GAME_DATE"] = pd.to_datetime(empty["GAME_DATE"])
+        return empty
+    tg = team_game_frame(games, postseason_rows(team_logs))
+    elig = logs[["PLAYER_ID", "GAME_ID", "TEAM_ID"]].copy()
+    dnp = logs["DNP_REASON"] if "DNP_REASON" in logs.columns else pd.Series(pd.NA, index=logs.index)
+    elig["PLAYED"] = dnp.isna().astype(float).to_numpy()
+    elig = elig.drop_duplicates(["PLAYER_ID", "GAME_ID", "TEAM_ID"])
+    out = _attach_outcomes(elig, tg, logs, SOURCE_POSTSEASON, positions)
+    out = out[out["PLAYED"] == 1].reset_index(drop=True)
+    log.info("postseason appearances: %d rows", len(out))
+    return out
+
+
+def build_postseason_appearances(source) -> pd.DataFrame:
+    """:func:`postseason_appearances` straight from a source's history frames."""
+    positions = (
+        source.load_player_positions()
+        if hasattr(source, "load_player_positions") else None
+    )
+    return postseason_appearances(
+        source.load_schedule(),
+        source.load_team_game_logs(),
+        source.load_player_game_logs(),
+        positions,
+    )
+
+
 def build_universe(source) -> pd.DataFrame:
     """status-based when the source has a roster table, approximation otherwise."""
     schedule = source.load_schedule()
@@ -342,6 +405,7 @@ def build_universe(source) -> pd.DataFrame:
 
 def coverage_report(universe: pd.DataFrame, player_logs: pd.DataFrame) -> dict[str, float]:
     """sanity numbers a caller can print or assert on."""
+    player_logs = training_rows(player_logs)
     played = universe[universe["PLAYED"] == 1]
     universe_keys = set(zip(played["PLAYER_ID"], played["GAME_ID"]))
     log_keys = set(zip(player_logs["PLAYER_ID"], player_logs["GAME_ID"]))

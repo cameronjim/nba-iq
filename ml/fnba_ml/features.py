@@ -30,6 +30,7 @@ import pandas as pd
 
 from .config import (
     AVAIL_WINDOWS,
+    COMPETITION_COL,
     CONTEXT_P_PRIOR,
     EWMA_HALFLIFE,
     FEATURE_COLS,
@@ -39,6 +40,7 @@ from .config import (
     OPP_FORM_WINDOW,
     P_CONTEXT,
     P_CONTEXT_CUTOFF,
+    RATE_HISTORY_INCLUDES_POSTSEASON,
     RATE_MINUTES_FLOOR,
     RATE_TARGETS,
     ROLL_STATS,
@@ -46,6 +48,7 @@ from .config import (
     TIER_BASIS,
     TIER_EDGES,
     TIER_LABELS,
+    TRAINING_COMPETITIONS,
     UNCOND_STATS,
     UNKNOWN_TIER,
     rate_halflife,
@@ -152,24 +155,32 @@ def attach_per_minute_rates(frame: pd.DataFrame) -> pd.DataFrame:
 
 def player_appearance_features(
     universe: pd.DataFrame,
+    career_history: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """rolling/expanding stats on the appearance frame, ready to be as-of joined.
 
     returns (career, season) because the two have different scopes and therefore
     need different as-of join keys: PLAYER_ID alone, and PLAYER_ID + SEASON.
+    ``career_history`` replaces the universe for the career half only, which is
+    how postseason appearances reach it without entering a season-to-date mean.
     """
     app = universe[universe["PLAYED"] == 1].copy()
     app = app.sort_values(["PLAYER_ID", "GAME_DATE"]).reset_index(drop=True)
+    if career_history is None:
+        career_app = app
+    else:
+        career_app = career_history[career_history["PLAYED"] == 1].copy()
+        career_app = career_app.sort_values(["PLAYER_ID", "GAME_DATE"]).reset_index(drop=True)
 
     career_cols = ["PLAYER_ID", "GAME_DATE"]
     season_cols = ["PLAYER_ID", "SEASON", "GAME_DATE"]
 
     for stat in ROLL_STATS:
-        grp = app.groupby("PLAYER_ID")[stat]
+        grp = career_app.groupby("PLAYER_ID")[stat]
         for w in ROLL_WINDOWS:
             col = f"roll{w}_{stat}"
             # inclusive of this appearance; the as-of join supplies the shift
-            app[col] = grp.transform(lambda s, w=w: s.rolling(w, min_periods=1).mean())
+            career_app[col] = grp.transform(lambda s, w=w: s.rolling(w, min_periods=1).mean())
             career_cols.append(col)
 
         col = f"std_{stat}"
@@ -179,10 +190,12 @@ def player_appearance_features(
         season_cols.append(col)
 
         col = f"ewma_{stat}"
-        app[col] = grp.transform(lambda s: s.ewm(halflife=EWMA_HALFLIFE, adjust=True).mean())
+        career_app[col] = grp.transform(
+            lambda s: s.ewm(halflife=EWMA_HALFLIFE, adjust=True).mean()
+        )
         career_cols.append(col)
 
-    app["n_appearances"] = app.groupby("PLAYER_ID").cumcount() + 1
+    career_app["n_appearances"] = career_app.groupby("PLAYER_ID").cumcount() + 1
     career_cols.append("n_appearances")
 
     app["season_appearances"] = (
@@ -190,12 +203,45 @@ def player_appearance_features(
     )
     season_cols.append("season_appearances")
 
-    app["LAST_APP_DATE"] = app["GAME_DATE"]
+    career_app["LAST_APP_DATE"] = career_app["GAME_DATE"]
     career_cols.append("LAST_APP_DATE")
 
-    career = app[career_cols].sort_values("GAME_DATE").reset_index(drop=True)
+    career = career_app[career_cols].sort_values("GAME_DATE").reset_index(drop=True)
     season = app[season_cols].sort_values("GAME_DATE").reset_index(drop=True)
     return career, season
+
+
+def career_history(
+    universe: pd.DataFrame,
+    postseason: pd.DataFrame | None,
+    include_postseason: bool,
+) -> pd.DataFrame:
+    """the appearance history the career-scoped joins read.
+
+    the universe itself unless the switch is on and there are postseason rows; then
+    the two concatenated. the availability windows never read this frame, so a
+    playoff game is not a scheduled row the player could have missed.
+    """
+    if not include_postseason or postseason is None or postseason.empty:
+        return universe
+    extra = postseason[postseason["PLAYED"] == 1].copy()
+    extra["GAME_DATE"] = pd.to_datetime(extra["GAME_DATE"])
+    extra["PLAYED"] = extra["PLAYED"].astype(int)
+    combined = pd.concat([universe, extra], ignore_index=True)
+    return combined.sort_values(["PLAYER_ID", "GAME_DATE", "GAME_ID"]).reset_index(drop=True)
+
+
+def _require_training_rows(universe: pd.DataFrame) -> None:
+    if COMPETITION_COL not in universe.columns:
+        return
+    labels = universe[COMPETITION_COL]
+    stray = labels.notna() & ~labels.isin(TRAINING_COMPETITIONS)
+    if bool(stray.any()):
+        raise ValueError(
+            f"{int(stray.sum())} universe rows are not {'/'.join(TRAINING_COMPETITIONS)}; "
+            "postseason rows go in through build_features(postseason=...), never "
+            "as modelled rows"
+        )
 
 
 SCHEDULE_COLS: tuple[str, ...] = (
@@ -337,6 +383,8 @@ def build_features(
     availability_probability: pd.Series | np.ndarray | None = None,
     *,
     schedule: pd.DataFrame | None = None,
+    postseason: pd.DataFrame | None = None,
+    include_postseason: bool | None = None,
 ) -> pd.DataFrame:
     """the full feature frame for a universe. pure: no io, no globals.
 
@@ -349,7 +397,14 @@ def build_features(
     ``schedule`` is the known team-game schedule the rest, b2b and defensive form
     columns are read from (see :func:`schedule_features`); ``None`` uses the
     universe's own games, which is what training wants.
+
+    ``postseason`` is :func:`fnba_ml.universe.postseason_appearances`. it enters the
+    career-scoped joins only, and only when ``include_postseason`` (default
+    ``config.RATE_HISTORY_INCLUDES_POSTSEASON``) is on; it never adds an output row.
     """
+    _require_training_rows(universe)
+    if include_postseason is None:
+        include_postseason = RATE_HISTORY_INCLUDES_POSTSEASON
     universe = universe.copy()
     universe["GAME_DATE"] = pd.to_datetime(universe["GAME_DATE"])
     universe = universe.sort_values(["PLAYER_ID", "GAME_DATE", "GAME_ID"]).reset_index(drop=True)
@@ -359,10 +414,13 @@ def build_features(
     # want, so it runs before the joins re-sort the frame
     universe = roster_context_features(universe)
 
-    career_feats, season_feats = player_appearance_features(universe)
-    rate_feats = per_minute_rate_features(universe)
-    usage_feats = usage_rate_features(universe)
-    magnitude_feats = magnitude_features(universe)
+    history = career_history(universe, postseason, include_postseason)
+    career_feats, season_feats = player_appearance_features(
+        universe, None if history is universe else history
+    )
+    rate_feats = per_minute_rate_features(history)
+    usage_feats = usage_rate_features(history)
+    magnitude_feats = magnitude_features(history)
     universe = universe.sort_values("GAME_DATE").reset_index(drop=True)
 
     # career-scoped
@@ -490,16 +548,22 @@ def attach_cross_fit_context(features: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def build_dataset(source, with_v4_candidate: bool = True) -> pd.DataFrame:
+def build_dataset(
+    source, with_v4_candidate: bool = True, include_postseason: bool | None = None
+) -> pd.DataFrame:
     """source -> universe -> features -> cross-fit context, the offline pipeline.
 
     ``with_v4_candidate`` appends the P2 matchup / blowout / stakes / start-rate
     columns; it is purely additive, since FEATURE_COLS names none of them.
     """
-    from .universe import build_universe  # local import avoids a cycle
+    from .universe import build_postseason_appearances, build_universe  # local import avoids a cycle
 
     universe = build_universe(source)
-    feats = build_features(universe)
+    feats = build_features(
+        universe,
+        postseason=build_postseason_appearances(source),
+        include_postseason=include_postseason,
+    )
     feats = attach_cross_fit_context(feats)
     if with_v4_candidate:
         from .matchup import attach_v4_features  # local import avoids a cycle

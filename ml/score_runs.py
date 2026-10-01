@@ -43,6 +43,7 @@ from fnba_ml.scoring import (
     PROBABILITIES,
     RATE_FAMILY_STATS,
     STATS,
+    baseline_history_label,
     build_baselines,
     channel_of,
     compare_served_shadow,
@@ -161,6 +162,7 @@ SELECT
     pgs.nba_game_id,
     pgs.team_id,
     s.game_date,
+    s.season_type,
     pgs.played,
     pgs.listed_inactive,
     COALESCE(pgl.minutes, pgs.minutes) AS minutes,
@@ -181,6 +183,7 @@ RATE_HISTORY_SQL = f"""
 SELECT
     l.nba_player_id,
     l.game_date,
+    l.season_type,
     l.minutes,
     {_RATE_COLUMNS}
 FROM player_game_logs l
@@ -330,6 +333,7 @@ def report_header(args: argparse.Namespace, runs: pd.DataFrame) -> str:
         f"- selection: {selection}; channel: {args.channel or 'all'}; "
         f"look: {args.look or 'none'}\n"
         f"- runs scored: {len(runs)}\n"
+        f"- baseline appearance history: {baseline_history_label()}\n"
         f"- generated at: {datetime.now().isoformat(timespec='seconds')}\n"
         f"- results csv: {args.csv.name}\n\n"
     )
