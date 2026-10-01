@@ -23,6 +23,11 @@ from fnba_ml.cli import (  # noqa: E402
     version_dir,
 )
 from fnba_ml import registry  # noqa: E402
+from fnba_ml.coherence import (  # noqa: E402
+    COHERENCE_NONE,
+    COHERENCE_VARIANTS,
+    apply_coherence,
+)
 from fnba_ml.config import (  # noqa: E402
     DATA_DIR,
     DEFAULT_HORIZON,
@@ -122,6 +127,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         default=DEFAULT_HORIZON,
                         help="when this run is being made relative to tipoff; 'none' "
                              "writes no horizon label (multi-day runs)")
+    parser.add_argument("--coherence", choices=COHERENCE_VARIANTS, default=COHERENCE_NONE,
+                        help="serving-time coherence correction: team minutes to 240, "
+                             "the points identity, both, or none (frozen serving)")
     return parser.parse_args(argv)
 
 
@@ -397,6 +405,18 @@ def forecast_cutoff(run_at: pd.Timestamp, information_as_of: pd.Timestamp) -> pd
     return max(as_utc(pd.Timestamp(run_at).normalize()), as_utc(information_as_of))
 
 
+def run_notes(
+    cold_rows: int, n_rows: int, notes: str | None, coherence: str = COHERENCE_NONE
+) -> str:
+    """the run-level notes: cold-start count, user text, then the coherence choice."""
+    return "; ".join(filter(None, [
+        f"{PROSPECTIVE_COLD_START_FLAG}={cold_rows}/{n_rows} rows "
+        f"(GAME_DATE <= {PROSPECTIVE_COLD_START_THROUGH})",
+        notes,
+        f"coherence={coherence}",
+    ]))
+
+
 def universe_source(features: pd.DataFrame, metadata: dict) -> str:
     if "UNIVERSE_SOURCE" in features.columns and len(features) > 0:
         return str(features["UNIVERSE_SOURCE"].iloc[0])
@@ -413,6 +433,7 @@ def write_run(
     channel: str = PRODUCTION_CHANNEL,
     information_as_of: pd.Timestamp | None = None,
     history_through_date: date | None = None,
+    coherence: str = COHERENCE_NONE,
 ) -> tuple[int, int]:
     """build the rows, insert them in one transaction, link the run back."""
     rows = build_prediction_rows(predictions, TARGETS, QUANTILE_LEVELS)
@@ -464,6 +485,7 @@ def write_run(
             "rows": len(rows),
             "player_games": int(len(predictions)),
             "status_overrides": overridden,
+            "coherence": coherence,
             "override_policy": DEFAULT_POLICY.as_dict() if overridden else None,
         },
     )
@@ -529,6 +551,8 @@ def main(argv: list[str] | None = None) -> int:
     predictions = apply_status_overrides(
         predictions, statuses, DEFAULT_POLICY, as_of=statuses_as_of
     )
+    # after the overrides so the minute sums use the served P(play).
+    predictions = apply_coherence(predictions, args.coherence)
 
     source = universe_source(upcoming, metadata)
     notes = args.notes
@@ -542,11 +566,7 @@ def main(argv: list[str] | None = None) -> int:
     # entirely outside the cold-start window" is a fact a look report needs to be
     # able to read, and an absent note cannot say it.
     cold_rows = int(predictions[PROSPECTIVE_COLD_START_FLAG].sum())
-    notes = "; ".join(filter(None, [
-        f"{PROSPECTIVE_COLD_START_FLAG}={cold_rows}/{len(predictions)} rows "
-        f"(GAME_DATE <= {PROSPECTIVE_COLD_START_THROUGH})",
-        notes,
-    ]))
+    notes = run_notes(cold_rows, len(predictions), notes, args.coherence)
 
     if args.write_db and source == BIASED_UNIVERSE:
         if not args.allow_biased_universe:
@@ -581,6 +601,7 @@ def main(argv: list[str] | None = None) -> int:
             channel=args.channel,
             information_as_of=statuses_as_of,
             history_through_date=run_history_through,
+            coherence=args.coherence,
         )
 
     summary = override_summary(predictions)
@@ -597,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
         if key != "horizon_requested":
             print(f"  {key:22s} {value}")
     print(f"universe  : {source}")
+    print(f"coherence : {args.coherence}")
     print(f"context p : mean {upcoming[P_CONTEXT].mean():.4f} "
           f"(base {context_audit['P_CONTEXT_BASE'].mean():.4f}, "
           f"{int(context_audit['CONTEXT_OVERRIDDEN'].sum()):,} rows corrected by the "

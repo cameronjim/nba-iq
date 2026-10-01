@@ -52,6 +52,22 @@ an explicit `cleared` row when a player drops off the CBS page, so a recovered
 player's last OUT no longer stands forever. A failed or empty scrape writes
 nothing rather than clearing everyone. Full policy table in `MODEL.md` section 7.1.
 
+### Coherence corrections (off by default)
+
+`predict.py --coherence {none,team_minutes,points_identity,all}` applies two
+model-free corrections after the injury overrides. `team_minutes` scales each
+team-game's conditional minutes so `sum(P_PLAY * E_MIN_COND)` is 240 (factor
+clipped to [0.8, 1.25], overtime unmodelled), carries the same factor into every
+production stat and shifts quantiles by the conditional delta; the factor lands on
+each row as `TEAM_MIN_FACTOR`. `points_identity` sets `E_PTS_COND` to
+`2*FGM + FG3M + FTM` and records the change as `PTS_IDENTITY_DELTA`. `all` runs
+both, minutes first. The choice is written to the run notes (`coherence=<value>`)
+and the registry entry. Frozen serving (`daily_run.py`) keeps `none`, which returns
+the frame unchanged. `fnba_ml/eval_coherence.py::coherence_endpoints` measures
+each variant against `none` on a scored validation frame (unconditional PTS/MIN and
+conditional MIN MAE, by cohort), and `report_coherence.py --dataset ... --version
+...` runs that over the five `ORIGINS` with the promoted path.
+
 ---
 
 ## Runbook
@@ -211,6 +227,8 @@ fnba_ml/
                          picks, composition parity check (per stat), the 9-cat
                          rate ladder and the inner-fold halflife selection
   intervals.py           empirical residual quantiles -> non-crossing P10/P50/P90
+  coherence.py           opt-in team-minutes and points-identity corrections (pure)
+  eval_coherence.py      their retrospective endpoints and the minute-sum diagnostic
   store.py               the migration-014 row builder (pure) and its transaction
   registry.py            models/registry.json
 ```
