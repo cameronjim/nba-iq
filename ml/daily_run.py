@@ -98,6 +98,7 @@ from fnba_ml.config import (  # noqa: E402
     SEASONS,
     SERVED_FEATURE_SET,
 )
+from fnba_ml.overrides import OPTIONAL_STATUS_COLUMNS  # noqa: E402
 from fnba_ml.store import PRODUCTION_CHANNEL, SHADOW_CHANNEL  # noqa: E402
 from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
@@ -668,7 +669,7 @@ def load_positions() -> pd.DataFrame | None:
 
 
 def load_statuses(as_of: pd.Timestamp) -> pd.DataFrame:
-    """the newest injury designation per player, as known at ``as_of``.
+    """the newest injury designation per player, game and source, as known at ``as_of``.
 
     An EMPTY frame is a supported outcome and not an error. ``player_injury_reports``
     held zero rows when the override layer shipped (MODEL.md 13.9, F10) and may still;
@@ -677,7 +678,19 @@ def load_statuses(as_of: pd.Timestamp) -> pd.DataFrame:
     """
     from fnba_ml.data.postgres_source import PostgresSource  # noqa: PLC0415
 
-    return PostgresSource(seasons=list(SEASONS)).load_latest_injury_statuses(as_of)
+    return with_status_scope_columns(
+        PostgresSource(seasons=list(SEASONS)).load_latest_injury_statuses(as_of)
+    )
+
+
+def with_status_scope_columns(statuses: pd.DataFrame) -> pd.DataFrame:
+    """the statuses frame with nba_game_id and source present, so the parquet
+    predict.py reads always carries the columns game-scoped resolution needs."""
+    out = statuses.copy()
+    for column in OPTIONAL_STATUS_COLUMNS:
+        if column not in out.columns:
+            out[column] = pd.Series([None] * len(out), index=out.index, dtype=object)
+    return out
 
 
 # ---------------------------------------------------------------------------

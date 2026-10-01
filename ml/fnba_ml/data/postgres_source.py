@@ -200,23 +200,29 @@ CUTOFF_CLAUSE = " AND {col} < %(cutoff)s"
 #      (migration 013's own comment says so), and a filter on a nullable column
 #      silently drops the rows it cannot judge.
 #
-#   2. DISTINCT ON (nba_player_id) with ORDER BY captured_at DESC takes the newest
-#      admissible report per player and nothing else. a player can have dozens of
-#      rows for one game - "questionable", then "out", then "available" - and only
-#      the last one before the boundary is his status.
+#   2. DISTINCT ON (nba_player_id, nba_game_id, source) with ORDER BY captured_at
+#      DESC takes the newest admissible report per player, game scope and feed. a
+#      player can have dozens of rows for one game - "questionable", then "out",
+#      then "available" - and only the last one before the boundary is his status.
+#      the newest row per player is among these, so newest-per-player resolution
+#      (overrides.GAME_SCOPED_STATUS_RESOLUTION off) sees the same report it did
+#      when this was DISTINCT ON (nba_player_id); game-scoped resolution needs the
+#      per-game and per-feed rows to choose between.
 #
 #   3. nba_game_id is NOT filtered on. it is NULL for a general designation, which
-#      is what the CBS-style feed publishes and therefore most of the table; an
-#      equality filter on it would return nothing, and an IS NULL filter would
-#      throw away the game-specific reports that are strictly better information.
-#      the newest report wins regardless of which kind it is.
+#      is what the CBS-style feed publishes; an equality filter on it would return
+#      nothing, and an IS NULL filter would throw away the official game-specific
+#      reports. overrides.resolve_statuses decides which applies to which game.
 #
 #   4. a 7-day lower bound so the database does not ship the whole history. it is
 #      wider than overrides.REPORT_MAX_AGE_HOURS on purpose: the python-side
-#      expiry is the rule that decides, this only trims what cannot matter.
+#      expiry is the rule that decides, this only trims what cannot matter. with
+#      overrides.EXPIRE_UNAVAILABLE_STATUSES off this bound is the only age limit
+#      an out designation has.
 LATEST_INJURY_STATUS_SQL = """
-SELECT DISTINCT ON (r.nba_player_id)
+SELECT DISTINCT ON (r.nba_player_id, r.nba_game_id, r.source)
     r.nba_player_id    AS "nba_player_id",
+    r.nba_game_id      AS "nba_game_id",
     r.status_normalized AS "status_normalized",
     r.status_raw       AS "status_raw",
     r.captured_at      AS "captured_at",
@@ -225,7 +231,7 @@ SELECT DISTINCT ON (r.nba_player_id)
 FROM player_injury_reports r
 WHERE r.captured_at < %(as_of)s
   AND r.captured_at >= %(as_of)s - INTERVAL '7 days'
-ORDER BY r.nba_player_id, r.captured_at DESC
+ORDER BY r.nba_player_id, r.nba_game_id, r.source, r.captured_at DESC
 """
 
 
@@ -334,11 +340,11 @@ class PostgresSource:
         return df.reset_index(drop=True)
 
     def load_latest_injury_statuses(self, as_of: pd.Timestamp) -> pd.DataFrame:
-        """the newest injury designation per player as known at ``as_of``.
+        """the newest injury designation per player, game and source at ``as_of``.
 
         the frame :func:`fnba_ml.overrides.apply_status_overrides` expects:
-        nba_player_id / status_normalized / captured_at, plus status_raw,
-        report_as_of and source for auditing. ``as_of`` is required - there is no
+        nba_player_id / status_normalized / captured_at, plus nba_game_id and
+        source for game-scoped resolution and status_raw / report_as_of for auditing. ``as_of`` is required - there is no
         default of "now", because a backtest that forgets to pass its boundary
         would silently read the future and there would be nothing in the output to
         show it happened.
@@ -357,6 +363,9 @@ class PostgresSource:
                 params={"as_of": boundary.to_pydatetime()},
             )
         frame["nba_player_id"] = frame["nba_player_id"].astype(str)
+        frame["nba_game_id"] = frame["nba_game_id"].map(
+            lambda value: None if pd.isna(value) else str(value)
+        ).astype(object)
         log.info("loaded %d injury statuses known as of %s", len(frame), boundary)
         return frame
 

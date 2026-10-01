@@ -51,6 +51,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .config import EXPIRE_UNAVAILABLE_STATUSES, GAME_SCOPED_STATUS_RESOLUTION
 from .models import P_PLAY
 
 log = logging.getLogger(__name__)
@@ -69,6 +70,17 @@ STATUS_CAPTURED_AT = "STATUS_CAPTURED_AT"
 STATUS_NORMALIZED = "STATUS_NORMALIZED"
 
 STATUS_COLUMNS: tuple[str, ...] = ("nba_player_id", "status_normalized", "captured_at")
+# optional: an absent column reads as a general report from an unknown source.
+OPTIONAL_STATUS_COLUMNS: tuple[str, ...] = ("nba_game_id", "source")
+
+# which report decided an overridden row: its scope (a report for this game, or a
+# general designation) and the feed it came from.
+STATUS_SCOPE = "STATUS_SCOPE"
+STATUS_SOURCE = "STATUS_SOURCE"
+SCOPE_GAME = "game"
+SCOPE_GENERAL = "general"
+SOURCE_OFFICIAL = "nba_official"
+SOURCE_UNKNOWN = "unknown"
 
 # ---- the policy constants ----
 # OUT / SUSPENDED / G_LEAGUE. not 0.0, deliberately. an official "out" is
@@ -133,6 +145,11 @@ PROBABLE_SHIFT: float = 0.15
 # days is one the source has dropped.
 REPORT_MAX_AGE_HOURS: float = 72.0
 
+# under game-scoped resolution an official report beats a disagreeing cbs report
+# unless the cbs one is newer by more than this. the official report is filed per
+# game several times a day, so a gap this wide means it has stopped updating.
+OFFICIAL_PRECEDENCE_HOURS: float = 6.0
+
 # ---- the status vocabulary ----
 # migration 013 normalises to: out, doubtful, questionable, probable, day_to_day,
 # available, unknown. the extra names here are the ones a widened scraper will
@@ -193,6 +210,13 @@ UNAVAILABLE_STATUSES: frozenset[str] = frozenset(
 # five.
 PASSTHROUGH_STATUSES: frozenset[str] = frozenset(
     {"available", "day_to_day", STATUS_CLEARED, "unknown"}
+)
+
+# the game-specific designations that go stale within days. with
+# expire_unavailable=False only these expire; an out stands until a clearance row
+# or a newer designation replaces it.
+FAST_DECAY_STATUSES: frozenset[str] = frozenset(
+    {STATUS_DOUBTFUL, STATUS_QUESTIONABLE, STATUS_PROBABLE}
 )
 
 
@@ -293,6 +317,86 @@ def _to_naive_utc(values) -> pd.Series:
     return parsed.dt.tz_localize(None)
 
 
+def _boundary(as_of: pd.Timestamp | None) -> pd.Timestamp | None:
+    if as_of is None:
+        return None
+    boundary = pd.Timestamp(as_of)
+    if boundary.tzinfo is not None:
+        boundary = boundary.tz_convert("UTC").tz_localize(None)
+    return boundary
+
+
+def _text_or_none(value: object) -> str | None:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _prepare_statuses(statuses: pd.DataFrame) -> pd.DataFrame:
+    """the frame normalised: text ids, vocabulary statuses, naive utc, scope, source."""
+    missing = [c for c in STATUS_COLUMNS if c not in statuses.columns]
+    if missing:
+        raise ValueError(
+            f"statuses frame is missing {', '.join(missing)}; expected columns "
+            f"{', '.join(STATUS_COLUMNS)}"
+        )
+
+    frame = statuses.copy()
+    frame["nba_player_id"] = frame["nba_player_id"].astype(str)
+    frame[STATUS_NORMALIZED] = frame["status_normalized"].map(normalise_status)
+    frame["captured_at"] = _to_naive_utc(frame["captured_at"])
+    frame = frame[frame["captured_at"].notna()].copy()
+
+    if "nba_game_id" in frame.columns:
+        game = frame["nba_game_id"].map(_text_or_none)
+    else:
+        game = pd.Series([None] * len(frame), index=frame.index, dtype=object)
+    frame["nba_game_id"] = game.astype(object)
+    if "source" in frame.columns:
+        source = frame["source"].map(_text_or_none).fillna(SOURCE_UNKNOWN)
+    else:
+        source = pd.Series(SOURCE_UNKNOWN, index=frame.index, dtype=object)
+    frame["source"] = source.astype(object)
+    frame[STATUS_SCOPE] = np.where(
+        frame["nba_game_id"].notna(), SCOPE_GAME, SCOPE_GENERAL
+    ).astype(object)
+    frame[STATUS_SOURCE] = frame["source"]
+    return frame
+
+
+def _drop_future(frame: pd.DataFrame, boundary: pd.Timestamp | None) -> pd.DataFrame:
+    if boundary is None:
+        return frame
+    future = frame["captured_at"] >= boundary
+    if future.any():
+        log.info(
+            "ignoring %d injury reports captured at or after the run's "
+            "information boundary %s", int(future.sum()), boundary,
+        )
+    return frame[~future]
+
+
+def _expired(
+    frame: pd.DataFrame,
+    boundary: pd.Timestamp | None,
+    max_age_hours: float | None,
+    expire_unavailable: bool,
+) -> pd.Series:
+    """true where a report is past its age limit and its status is one that expires."""
+    if boundary is None or max_age_hours is None:
+        return pd.Series(False, index=frame.index)
+    stale = frame["captured_at"] < boundary - pd.Timedelta(hours=max_age_hours)
+    if not expire_unavailable:
+        stale = stale & frame[STATUS_NORMALIZED].isin(FAST_DECAY_STATUSES)
+    if stale.any():
+        log.info(
+            "ignoring %d injury reports captured more than %s hours before %s",
+            int(stale.sum()), max_age_hours, boundary,
+        )
+    return stale
+
+
 def latest_statuses(
     statuses: pd.DataFrame,
     as_of: pd.Timestamp | None = None,
@@ -309,44 +413,124 @@ def latest_statuses(
     stale. ``max_age_hours=None`` disables that, and without ``as_of`` there is
     no reference point so no report expires.
     """
-    missing = [c for c in STATUS_COLUMNS if c not in statuses.columns]
-    if missing:
-        raise ValueError(
-            f"statuses frame is missing {', '.join(missing)}; expected columns "
-            f"{', '.join(STATUS_COLUMNS)}"
-        )
+    return resolve_statuses(statuses, as_of, None, max_age_hours)
 
-    frame = statuses.copy()
-    frame["nba_player_id"] = frame["nba_player_id"].astype(str)
-    frame[STATUS_NORMALIZED] = frame["status_normalized"].map(normalise_status)
-    frame["captured_at"] = _to_naive_utc(frame["captured_at"])
-    frame = frame[frame["captured_at"].notna()]
 
-    if as_of is not None:
-        boundary = pd.Timestamp(as_of)
-        if boundary.tzinfo is not None:
-            boundary = boundary.tz_convert("UTC").tz_localize(None)
-        future = frame["captured_at"] >= boundary
-        if future.any():
-            log.info(
-                "ignoring %d injury reports captured at or after the run's "
-                "information boundary %s", int(future.sum()), boundary,
+def resolve_statuses(
+    statuses: pd.DataFrame,
+    as_of: pd.Timestamp | None = None,
+    game_ids: pd.Series | None = None,
+    max_age_hours: float | None = REPORT_MAX_AGE_HOURS,
+    *,
+    expire_unavailable: bool = EXPIRE_UNAVAILABLE_STATUSES,
+    game_scoped: bool = GAME_SCOPED_STATUS_RESOLUTION,
+    precedence_hours: float = OFFICIAL_PRECEDENCE_HOURS,
+) -> pd.DataFrame:
+    """the report that decides each player, or each (player, game), at ``as_of``.
+
+    with ``game_scoped`` off this is the newest admissible report per player and
+    ``game_ids`` is ignored. with it on and ``game_ids`` supplied, the result has
+    one row per (player, game) carrying ``GAME_ID``. MODEL.md 20.2 has the order.
+    """
+    frame = _prepare_statuses(statuses)
+    boundary = _boundary(as_of)
+    frame = _drop_future(frame, boundary)
+
+    if not game_scoped:
+        if expire_unavailable:
+            frame = frame[~_expired(frame, boundary, max_age_hours, True)]
+            return (
+                frame.sort_values("captured_at")
+                .drop_duplicates("nba_player_id", keep="last")
+                .reset_index(drop=True)
             )
-        frame = frame[~future]
-        if max_age_hours is not None:
-            stale = frame["captured_at"] < boundary - pd.Timedelta(hours=max_age_hours)
-            if stale.any():
-                log.info(
-                    "ignoring %d injury reports captured more than %s hours before %s",
-                    int(stale.sum()), max_age_hours, boundary,
-                )
-            frame = frame[~stale]
+        # newest first, then expire, so an expired questionable cannot let an older
+        # out resurface.
+        newest = (
+            frame.sort_values("captured_at", kind="mergesort")
+            .drop_duplicates("nba_player_id", keep="last")
+        )
+        newest = newest[~_expired(newest, boundary, max_age_hours, False)]
+        return newest.reset_index(drop=True)
 
-    return (
-        frame.sort_values("captured_at")
-        .drop_duplicates("nba_player_id", keep="last")
-        .reset_index(drop=True)
+    frame = frame.assign(
+        _official=frame["source"].eq(SOURCE_OFFICIAL),
+        _game_key=frame["nba_game_id"].fillna(""),
     )
+    newest = (
+        frame.sort_values("captured_at", kind="mergesort")
+        .drop_duplicates(["nba_player_id", "_game_key", "_official"], keep="last")
+    )
+    newest = newest[~_expired(newest, boundary, max_age_hours, expire_unavailable)]
+    gap = pd.Timedelta(hours=precedence_hours)
+
+    candidates: dict[tuple[str, str], dict[bool, dict]] = {}
+    for record in newest.to_dict("records"):
+        key = (record["nba_player_id"], record["_game_key"])
+        candidates.setdefault(key, {})[record["_official"]] = record
+    tier = {key: _tier_winner(pair, gap) for key, pair in candidates.items()}
+    players = sorted({player for player, _ in tier})
+
+    if game_ids is None:
+        # no game to scope to, so each player's newest game report stands in.
+        winners: list[dict] = []
+        for player in players:
+            scoped = [r for (p, g), r in tier.items() if p == player and g]
+            newest_game = max(scoped, key=lambda r: r["captured_at"]) if scoped else None
+            winner = _cross_tier_winner(newest_game, tier.get((player, "")), gap)
+            if winner is not None:
+                winners.append(winner)
+        return _resolved_frame(winners, newest.columns, with_game=False)
+
+    games = sorted({g for g in pd.Series(game_ids).map(_text_or_none) if g is not None})
+    rows: list[dict] = []
+    for player in players:
+        general = tier.get((player, ""))
+        for game in games:
+            winner = _cross_tier_winner(tier.get((player, game)), general, gap)
+            if winner is not None:
+                rows.append({**winner, "GAME_ID": game})
+    return _resolved_frame(rows, newest.columns, with_game=True)
+
+
+def _tier_winner(pair: dict[bool, dict], gap: pd.Timedelta) -> dict:
+    """the newer of an official and a non-official report in one scope, except that
+    a disagreeing non-official report needs to be newer by more than ``gap``."""
+    official, other = pair.get(True), pair.get(False)
+    if official is None or other is None:
+        return official if other is None else other
+    if other["captured_at"] <= official["captured_at"]:
+        return official
+    disagree = other[STATUS_NORMALIZED] != official[STATUS_NORMALIZED]
+    if disagree and other["captured_at"] - official["captured_at"] <= gap:
+        return official
+    return other
+
+
+def _cross_tier_winner(
+    game: dict | None, general: dict | None, gap: pd.Timedelta
+) -> dict | None:
+    """the game report, unless it is official and a disagreeing non-official
+    general report is newer by more than ``gap``."""
+    if game is None or general is None:
+        return general if game is None else game
+    if (
+        game["_official"]
+        and not general["_official"]
+        and general[STATUS_NORMALIZED] != game[STATUS_NORMALIZED]
+        and general["captured_at"] - game["captured_at"] > gap
+    ):
+        return general
+    return game
+
+
+def _resolved_frame(rows: list[dict], columns: pd.Index, with_game: bool) -> pd.DataFrame:
+    keep = [c for c in columns if not str(c).startswith("_")]
+    if with_game:
+        keep = [*keep, "GAME_ID"]
+    frame = pd.DataFrame(rows, columns=keep)
+    frame["captured_at"] = pd.to_datetime(frame["captured_at"])
+    return frame.reset_index(drop=True)
 
 
 @dataclass(frozen=True)
@@ -373,6 +557,8 @@ class OverrideResult:
     status: np.ndarray
     captured_at: np.ndarray
     applies: np.ndarray
+    scope: np.ndarray
+    source: np.ndarray
 
     @property
     def n_applied(self) -> int:
@@ -387,32 +573,56 @@ def resolve_overrides(
     as_of: pd.Timestamp | None = None,
     *,
     max_age_hours: float | None = REPORT_MAX_AGE_HOURS,
+    game_ids: pd.Series | None = None,
+    expire_unavailable: bool = EXPIRE_UNAVAILABLE_STATUSES,
+    game_scoped: bool = GAME_SCOPED_STATUS_RESOLUTION,
 ) -> OverrideResult:
     """the policy table, applied to one probability vector. no frame surgery.
 
     returns the original probabilities untouched where no admissible report applies,
     so the caller can always use the returned vector and never has to reconstruct the
-    "and otherwise keep the model's" branch itself.
+    "and otherwise keep the model's" branch itself. ``game_ids`` (aligned with
+    ``player_ids``) is read only when ``game_scoped`` is on.
     """
     model_probability = np.asarray(model_probability, dtype=float)
     n = len(model_probability)
+    nothing = np.array([None] * n, dtype=object)
     empty = OverrideResult(
         probability=model_probability.copy(),
-        status=np.array([None] * n, dtype=object),
+        status=nothing.copy(),
         captured_at=np.full(n, np.datetime64("NaT", "ns"), dtype="datetime64[ns]"),
         applies=np.zeros(n, dtype=bool),
+        scope=nothing.copy(),
+        source=nothing.copy(),
     )
     if statuses is None or len(statuses) == 0:
         return empty
 
-    latest = latest_statuses(statuses, as_of, max_age_hours)
+    scoped = game_scoped and game_ids is not None
+    latest = resolve_statuses(
+        statuses, as_of, game_ids if scoped else None, max_age_hours,
+        expire_unavailable=expire_unavailable, game_scoped=game_scoped,
+    )
     if latest.empty:
         return empty
 
-    by_player = latest.set_index("nba_player_id")
     ids = player_ids.astype(str)
-    status = ids.map(by_player[STATUS_NORMALIZED]).to_numpy()
-    captured = pd.to_datetime(ids.map(by_player["captured_at"])).to_numpy()
+    if scoped:
+        keys = pd.MultiIndex.from_arrays([
+            ids.to_numpy(dtype=object),
+            pd.Series(game_ids).map(_text_or_none).to_numpy(dtype=object),
+        ])
+        found = latest.set_index(["nba_player_id", "GAME_ID"]).reindex(keys)
+        status = found[STATUS_NORMALIZED].to_numpy()
+        captured = pd.to_datetime(found["captured_at"]).to_numpy()
+        scope = found[STATUS_SCOPE].to_numpy()
+        source = found[STATUS_SOURCE].to_numpy()
+    else:
+        by_player = latest.set_index("nba_player_id")
+        status = ids.map(by_player[STATUS_NORMALIZED]).to_numpy()
+        captured = pd.to_datetime(ids.map(by_player["captured_at"])).to_numpy()
+        scope = ids.map(by_player[STATUS_SCOPE]).to_numpy()
+        source = ids.map(by_player[STATUS_SOURCE]).to_numpy()
 
     overridden = np.array(
         [
@@ -432,6 +642,8 @@ def resolve_overrides(
         status=np.where(applies, status, None),
         captured_at=np.where(applies, captured, np.datetime64("NaT", "ns")),
         applies=applies,
+        scope=np.where(applies, scope, None),
+        source=np.where(applies, source, None),
     )
 
 
@@ -454,12 +666,16 @@ def apply_status_overrides(
     as_of: pd.Timestamp | None = None,
     *,
     max_age_hours: float | None = REPORT_MAX_AGE_HOURS,
+    expire_unavailable: bool = EXPIRE_UNAVAILABLE_STATUSES,
+    game_scoped: bool = GAME_SCOPED_STATUS_RESOLUTION,
 ) -> pd.DataFrame:
     """apply the injury-report policy to a scored prediction frame.
 
     ``predictions`` is the output of predict.build_predictions: one row per
     scheduled player-game with ``P_PLAY``, ``E_<stat>_COND`` and ``E_<stat>``.
-    ``statuses`` carries (nba_player_id, status_normalized, captured_at).
+    ``statuses`` carries (nba_player_id, status_normalized, captured_at), and
+    optionally nba_game_id and source, which game-scoped resolution reads against
+    the frame's GAME_ID. STATUS_SCOPE and STATUS_SOURCE record which report decided.
 
     what changes, and what does not:
 
@@ -488,6 +704,8 @@ def apply_status_overrides(
     out[OVERRIDE_REASON] = pd.Series([None] * len(out), index=out.index, dtype=object)
     out[STATUS_NORMALIZED] = pd.Series([None] * len(out), index=out.index, dtype=object)
     out[STATUS_CAPTURED_AT] = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns]")
+    out[STATUS_SCOPE] = pd.Series([None] * len(out), index=out.index, dtype=object)
+    out[STATUS_SOURCE] = pd.Series([None] * len(out), index=out.index, dtype=object)
 
     if statuses is None or len(statuses) == 0:
         log.info("no injury statuses supplied; P(play) is the model's throughout")
@@ -496,6 +714,8 @@ def apply_status_overrides(
     resolved = resolve_overrides(
         out["PLAYER_ID"], out[P_PLAY_MODEL].to_numpy(dtype=float),
         statuses, policy, as_of, max_age_hours=max_age_hours,
+        game_ids=out["GAME_ID"] if "GAME_ID" in out.columns else None,
+        expire_unavailable=expire_unavailable, game_scoped=game_scoped,
     )
     applies = resolved.applies
 
@@ -509,6 +729,8 @@ def apply_status_overrides(
     out.loc[applies, P_PLAY] = resolved.probability[applies]
     out.loc[applies, STATUS_NORMALIZED] = resolved.status[applies]
     out.loc[applies, STATUS_CAPTURED_AT] = resolved.captured_at[applies]
+    out.loc[applies, STATUS_SCOPE] = resolved.scope[applies]
+    out.loc[applies, STATUS_SOURCE] = resolved.source[applies]
     out.loc[applies, OVERRIDE_REASON] = [
         reason_for(s) for s in resolved.status[applies]
     ]
@@ -549,3 +771,16 @@ def override_summary(predictions: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename(columns={OVERRIDE_REASON: "reason"})
     )
+
+
+def override_provenance_counts(predictions: pd.DataFrame) -> dict[str, dict[str, int]]:
+    """overridden rows counted by the scope and the source of the deciding report."""
+    counts: dict[str, dict[str, int]] = {"scope": {}, "source": {}}
+    if OVERRIDE_REASON not in predictions.columns:
+        return counts
+    hit = predictions[predictions[OVERRIDE_REASON].notna()]
+    for key, column in (("scope", STATUS_SCOPE), ("source", STATUS_SOURCE)):
+        if column in hit.columns:
+            values = hit[column].fillna(SOURCE_UNKNOWN).astype(str)
+            counts[key] = {k: int(v) for k, v in sorted(values.value_counts().items())}
+    return counts

@@ -4150,3 +4150,68 @@ and `test_scoring_baselines.py`.
 - **The betting picks remain Claude estimates**, labelled as such (17.2 item 7).
 - **Nothing here changes a served prediction number.** The ranking, outlook and
   explanations read the production run; the scoring tool only reads the store.
+
+## 20. v3 candidates (2026-10-02)
+
+Changes built for the v3 re-freeze. Each one ships behind a switch whose default is
+today's frozen behaviour, so `prospective_2026_27_v2` keeps serving exactly what 17
+froze. Flipping the switches is the v3 re-freeze (13.2 item 5), not a bug fix.
+
+### 20.2 Injury-report resolution: scope, source and which statuses expire
+
+Section 7.1 resolves each player to his newest admissible report and drops any
+report older than `REPORT_MAX_AGE_HOURS = 72.0`. Since migration 017 the table holds
+two feeds with different shapes: the league's official report (`source =
+'nba_official'`), filed per team per game and carrying `nba_game_id`, and the CBS page
+(`source = 'cbssports'`), which is general (`nba_game_id` NULL) and now writes
+`cleared` rows when a player leaves it. Three semantics were wrong for that table.
+
+**(a) Expiry dropped OUT designations.** If the scraper stalled for three days, a
+long-term injured player fell back to the history-only model, about 0.90 to play.
+With clearance rows carrying the recovery signal, age is only a good proxy for
+staleness on the game-specific designations that decay within days. With
+`config.EXPIRE_UNAVAILABLE_STATUSES = False` only `questionable`, `doubtful` and
+`probable` (`overrides.FAST_DECAY_STATUSES`) expire; `out`, `suspended` and
+`g_league` stand until a newer row (a clearance or a new designation) replaces them.
+Expiry is applied to the newest report, not before choosing it, so an expired
+questionable cannot let an older out resurface. The SQL's 7-day lower bound is then
+the only age limit an out has.
+
+**(b) Resolution ignored the game.** An official OUT for tonight also zeroed the
+player's game two days later in a multi-day window. With
+`config.GAME_SCOPED_STATUS_RESOLUTION = True`, `overrides.resolve_statuses` resolves
+per (player, game) against the scored row's `GAME_ID`:
+
+1. Reports at or after `as_of` are dropped in every scope, as before.
+2. Per player, scope (that game, or general) and feed, keep the newest report, then
+   apply expiry.
+3. Within a scope, the newer of the official and the non-official report wins, except
+   that a disagreeing non-official report must be newer by more than
+   `overrides.OFFICIAL_PRECEDENCE_HOURS = 6.0` to beat the official one.
+4. Across scopes, the report for this game wins over the general one, except that a
+   disagreeing non-official general report newer than an official game report by more
+   than 6 hours wins. Without this clause the precedence rule would never fire in
+   production, because CBS rows are always general and official rows always carry a
+   game.
+5. A report for a different game is ignored for this row.
+
+**(c) Provenance reaches the resolver.** `LATEST_INJURY_STATUS_SQL` now selects
+`nba_game_id` and uses `DISTINCT ON (nba_player_id, nba_game_id, source)`. The newest
+row per player is still in that set, so the default resolver picks the same report it
+did before. `daily_run.with_status_scope_columns` guarantees both columns in the
+statuses parquet, `overrides.OPTIONAL_STATUS_COLUMNS` names them (an absent column
+reads as a general report from source `unknown`), and predict.py passes `GAME_ID` to
+both override applications (the base probabilities before the teammate sums, and the
+served `P(play)`).
+
+**Audit.** Every overridden row carries `STATUS_SCOPE` (`game` or `general`) and
+`STATUS_SOURCE`, which are descriptive under the defaults too. predict.py prints the
+override counts by scope and by source, and the registry's per-run entry stores them
+as `status_override_provenance`.
+
+**Unchanged.** `StatusPolicy`, `UNAVAILABLE_STATUSES`, `PASSTHROUGH_STATUSES`,
+`REPORT_MAX_AGE_HOURS`, and the per-player `latest_statuses` that the horizon facts
+and the scenario layer's pivotal-player selection read. Tested in `test_overrides.py`
+(a verbatim copy of the old algorithm pins the default resolver, the switch cases,
+precedence at 6 and 7 hours, the audit columns, absent columns, and the as-of
+boundary in both scopes), `test_serving_context.py` and `test_daily_run.py`.
