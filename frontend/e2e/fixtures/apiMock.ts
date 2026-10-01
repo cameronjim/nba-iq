@@ -8,12 +8,6 @@ import type {
   PlayerAnalytics, PlayerPredictionsResponse, SlateResponse, WatchlistResponse,
 } from '../../src/types';
 
-export interface DataStatus {
-  players_updated_at: string | null;
-  teams_updated_at: string | null;
-  games_updated_at: string | null;
-}
-
 export interface WaiverSuggestionsResponse {
   trade_targets: Array<{ name: string; reasoning: string }>;
   waiver_pickups: Array<{ name: string; reasoning: string }>;
@@ -27,7 +21,6 @@ export interface MockOptions {
   players?: PlayerFixture[];
   teams?: Team[];
   games?: Game[];
-  status?: DataStatus;
   playerAnalytics?: PlayerAnalytics;
   playerPredictions?: PlayerPredictionsResponse;
   rosterRequiresAuth?: boolean;
@@ -41,17 +34,10 @@ export interface MockOptions {
   custom?: Array<{ url: RegExp | string; handler: (route: Route) => Promise<void> | void }>;
 }
 
-const DEFAULT_STATUS: DataStatus = {
-  players_updated_at: '2026-05-24T12:00:00Z',
-  teams_updated_at: '2026-05-24T12:00:00Z',
-  games_updated_at: '2026-05-24T12:00:00Z',
-};
-
 export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void> {
   const players = opts.players ?? ALL_PLAYERS;
   const teams = opts.teams ?? [];
   const games = opts.games ?? [];
-  const status = opts.status ?? DEFAULT_STATUS;
 
   // aborting third-party origins keeps the google login script from racing login page assertions.
   await page.route(/https:\/\/(accounts\.google\.com|cdn\.nba\.com|.*\.nba\.com)/, (route) => {
@@ -61,11 +47,6 @@ export async function mockApi(page: Page, opts: MockOptions = {}): Promise<void>
   for (const { url, handler } of opts.custom ?? []) {
     await page.route(url, handler);
   }
-
-  await page.route('**/api/status', (route) => {
-    route.fulfill({ json: status });
-  });
-  await page.route('**/api/status/**', (route) => route.fulfill({ json: {} }));
 
   await page.route('**/api/players*', (route) => {
     const url = new URL(route.request().url());

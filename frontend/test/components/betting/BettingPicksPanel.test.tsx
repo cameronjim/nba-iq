@@ -93,9 +93,8 @@ describe('BettingPicksPanel', () => {
     expect(screen.getByText('51.2%')).toBeInTheDocument();
     expect(screen.getByText('58.0%')).toBeInTheDocument();
     expect(screen.getByText('+6.8%')).toBeInTheDocument();
-    const badge = screen.getByText('medium confidence');
-    expect(badge.className).toContain('badge');
-    expect(badge.className).toContain('whitespace-nowrap');
+    expect(screen.getByText('medium confidence')).toBeInTheDocument();
+    expect(screen.getByText(/Claude's reasoning:/)).toBeInTheDocument();
   });
 
   it('renders the parlay with combined odds and the value warning', () => {

@@ -1,4 +1,4 @@
-import { ChevronRight } from 'lucide-react';
+import { IconChevronRight } from '../icons';
 import { ReasonBadge } from '../watchlist/ReasonBadge';
 import { toStatNumber } from '../../utils/stats';
 import { compactVsUsual, showsVsUsual, slateEvidenceLines } from '../../utils/vsUsual';
@@ -28,17 +28,17 @@ export const SlateVsUsual = ({ player }: { player: SlatePlayer }): JSX.Element |
   return (
     <details className="group text-[11px]" data-testid={`vs-usual-${player.nba_player_id}`}>
       <summary
-        className="list-none cursor-pointer inline-flex items-center gap-0.5 tabular-nums opacity-80 hover:opacity-100"
+        className="list-none cursor-pointer inline-flex items-center gap-0.5 tabular-nums"
         title="Show why this differs from his usual"
       >
-        <ChevronRight size={11} className="shrink-0 transition-transform group-open:rotate-90" />
-        <span className="opacity-60">vs usual:</span>{' '}
+        <IconChevronRight size={11} className="shrink-0 group-open:rotate-90" />
+        <span className="text-muted">vs usual:</span>{' '}
         <span className={tone}>{compact ?? 'see why'}</span>
       </summary>
       {lines.length > 0 && (
         <ul className="flex flex-col gap-0.5 mt-1 pl-4">
           {lines.map((line) => (
-            <li key={line} className="opacity-70">
+            <li key={line} className="text-muted">
               {line}
             </li>
           ))}

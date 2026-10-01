@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { formatAmerican, formatPercent, formatLine } from '../../utils/formatOdds';
+import { SkeletonTable } from '../Skeleton';
 import type { BettingGame } from '../../types';
 
 interface BettingOddsBoardProps {
@@ -11,98 +12,67 @@ interface BettingOddsBoardProps {
 
 const VISIBLE_GAMES = 3;
 
-interface OddsRowProps {
-  label: string;
-  cells: Array<{ text: string; implied: number | null } | null>;
+interface OddsCellData {
+  text: string;
+  implied: number | null;
 }
 
 const formatPrice = (price: number | null): string => (price == null ? '-' : formatAmerican(price));
 
-const OddsRow = ({ label, cells }: OddsRowProps) => (
-  <div className="grid grid-cols-[4.5rem_1fr_1fr] gap-2 items-center text-xs">
-    <span className="opacity-50 font-medium">{label}</span>
-    {cells.map((cell, i) =>
-      cell ? (
-        <span key={i} className="flex items-center gap-1.5">
-          <span className="font-medium">{cell.text}</span>
-          {cell.implied != null && (
-            <span className="badge badge-ghost badge-xs whitespace-nowrap" title="Implied probability: the chance the sportsbook's price says this outcome has">
-              {formatPercent(cell.implied)}
-            </span>
-          )}
-        </span>
-      ) : (
-        <span key={i} className="opacity-30">-</span>
-      )
+const OddsCell = ({ cell }: { cell: OddsCellData | null }) => (
+  <td className="tabular whitespace-nowrap">
+    {cell ? (
+      <>
+        <span>{cell.text}</span>
+        {cell.implied != null && (
+          <span
+            className="text-faint ml-1.5"
+            title="Implied probability: the chance the sportsbook's price says this outcome has"
+          >
+            {formatPercent(cell.implied)}
+          </span>
+        )}
+      </>
+    ) : (
+      <span className="text-faint">-</span>
     )}
-  </div>
+  </td>
 );
 
-const GameCard = ({ game }: { game: BettingGame }) => {
+const GameRows = ({ game }: { game: BettingGame }) => {
   const { spread, total, moneyline } = game.markets;
   const hasMarkets = !!(spread || total || moneyline);
 
-  return (
-    <div className="card bg-base-200">
-      <div className="card-body p-4 gap-2">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <div className="font-semibold text-sm">{game.away_team}</div>
-            <div className="text-xs opacity-50">at</div>
-            <div className="font-semibold text-sm">{game.home_team}</div>
-          </div>
-          <span className="text-xs opacity-50 whitespace-nowrap">{game.tipoff}</span>
-        </div>
+  const awayCells: Array<OddsCellData | null> = [
+    spread ? { text: `${formatLine(spread.away_line)} (${formatPrice(spread.away_price)})`, implied: spread.away_implied } : null,
+    total ? { text: `O ${total.line} (${formatPrice(total.over_price)})`, implied: total.over_implied } : null,
+    moneyline ? { text: formatAmerican(moneyline.away), implied: moneyline.away_implied } : null,
+  ];
+  const homeCells: Array<OddsCellData | null> = [
+    spread ? { text: `${formatLine(spread.home_line)} (${formatPrice(spread.home_price)})`, implied: spread.home_implied } : null,
+    total ? { text: `U ${total.line} (${formatPrice(total.under_price)})`, implied: total.under_implied } : null,
+    moneyline ? { text: formatAmerican(moneyline.home), implied: moneyline.home_implied } : null,
+  ];
 
+  return (
+    <>
+      <tr className="border-t border-base-300">
+        <td rowSpan={2} className="align-top text-xs text-muted whitespace-nowrap">
+          <div>{game.tipoff}</div>
+          {game.provider && <div className="text-faint">Lines: {game.provider}</div>}
+        </td>
+        <td className="font-semibold">{game.away_team}</td>
         {hasMarkets ? (
-          <div className="space-y-1.5 mt-1">
-            <div className="grid grid-cols-[4.5rem_1fr_1fr] gap-2 text-[10px] uppercase tracking-wide opacity-40">
-              <span />
-              <span>{game.away_abbrev || 'Away'}</span>
-              <span>{game.home_abbrev || 'Home'}</span>
-            </div>
-            <OddsRow
-              label="Spread"
-              cells={
-                spread
-                  ? [
-                      { text: `${formatLine(spread.away_line)} (${formatPrice(spread.away_price)})`, implied: spread.away_implied },
-                      { text: `${formatLine(spread.home_line)} (${formatPrice(spread.home_price)})`, implied: spread.home_implied },
-                    ]
-                  : [null, null]
-              }
-            />
-            <OddsRow
-              label="Total"
-              cells={
-                total
-                  ? [
-                      { text: `O ${total.line} (${formatPrice(total.over_price)})`, implied: total.over_implied },
-                      { text: `U ${total.line} (${formatPrice(total.under_price)})`, implied: total.under_implied },
-                    ]
-                  : [null, null]
-              }
-            />
-            <OddsRow
-              label="Moneyline"
-              cells={
-                moneyline
-                  ? [
-                      { text: formatAmerican(moneyline.away), implied: moneyline.away_implied },
-                      { text: formatAmerican(moneyline.home), implied: moneyline.home_implied },
-                    ]
-                  : [null, null]
-              }
-            />
-            {game.provider && (
-              <p className="text-[10px] opacity-30 pt-1">Lines: {game.provider}</p>
-            )}
-          </div>
+          awayCells.map((cell, i) => <OddsCell key={i} cell={cell} />)
         ) : (
-          <p className="text-xs opacity-40 py-2">Odds not yet posted for this game.</p>
+          <td rowSpan={2} colSpan={3} className="text-xs text-muted">Odds not yet posted for this game.</td>
         )}
-      </div>
-    </div>
+      </tr>
+      <tr>
+        <td className="font-semibold">{game.home_team}</td>
+        {hasMarkets && homeCells.map((cell, i) => <OddsCell key={i} cell={cell} />)}
+      </tr>
+    </>
   );
 };
 
@@ -110,34 +80,23 @@ export const BettingOddsBoard = ({ games, loading, error, onRetry }: BettingOdds
   const [expanded, setExpanded] = useState(false);
 
   if (loading) {
-    return (
-      <div className="card bg-base-200">
-        <div className="card-body flex flex-col items-center py-12 gap-3">
-          <span className="loading loading-spinner loading-lg" />
-          <p className="text-sm opacity-50">Loading upcoming games and odds...</p>
-        </div>
-      </div>
-    );
+    return <SkeletonTable rows={6} cols={5} label="Loading upcoming games and odds" />;
   }
 
   if (error) {
     return (
-      <div className="card bg-base-200">
-        <div className="card-body flex flex-col items-center py-12 gap-4">
-          <p className="text-error text-sm">{error}</p>
-          <button onClick={onRetry} className="btn btn-primary btn-sm">Try Again</button>
-        </div>
+      <div className="border border-base-300 py-8 flex flex-col items-center gap-3">
+        <p className="text-error text-sm">{error}</p>
+        <button onClick={onRetry} className="btn btn-primary btn-sm">Try Again</button>
       </div>
     );
   }
 
   if (games.length === 0) {
     return (
-      <div className="card bg-base-200">
-        <div className="card-body flex flex-col items-center py-12 gap-2 text-center">
-          <p className="font-semibold text-sm">No upcoming games</p>
-          <p className="text-xs opacity-60">There are no NBA games scheduled in the next few days.</p>
-        </div>
+      <div className="border border-base-300 py-8 text-center">
+        <p className="font-semibold text-sm">No upcoming games</p>
+        <p className="text-xs text-muted">There are no NBA games scheduled in the next few days.</p>
       </div>
     );
   }
@@ -147,10 +106,23 @@ export const BettingOddsBoard = ({ games, loading, error, onRetry }: BettingOdds
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {visible.map((game) => (
-          <GameCard key={game.espn_event_id} game={game} />
-        ))}
+      <div className="overflow-x-auto">
+        <table className="table table-sm">
+          <thead>
+            <tr>
+              <th>Tipoff</th>
+              <th>Team</th>
+              <th>Spread</th>
+              <th>Total</th>
+              <th>Moneyline</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((game) => (
+              <GameRows key={game.espn_event_id} game={game} />
+            ))}
+          </tbody>
+        </table>
       </div>
       {hiddenCount > 0 && (
         <div className="flex justify-center">

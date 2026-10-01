@@ -19,7 +19,7 @@ const STAT_HINTS: Partial<Record<AnalyticsStat, string>> = {
     'Attempt-weighted excess makes: field goals made above what an average shooter would make on the same volume, so efficiency on real volume outranks a perfect 1-for-1.',
   ft_impact:
     'Attempt-weighted excess makes: free throws made above what an average shooter would make on the same volume, so efficiency on real volume outranks a perfect 1-for-1.',
-  tov: 'Percentile is inverted for turnovers — a higher percentile means fewer giveaways.',
+  tov: 'Percentile is inverted for turnovers: a higher percentile means fewer giveaways.',
 };
 
 export function statLabel(stat: string): string {
@@ -51,10 +51,9 @@ export function ordinal(value: number): string {
   }
 }
 
-export function percentileTier(percentile: number): 'success' | 'primary' | 'warning' | 'error' {
+export function percentileTier(percentile: number): 'success' | 'primary' | 'error' {
   if (percentile >= 75) return 'success';
-  if (percentile >= 50) return 'primary';
-  if (percentile >= 25) return 'warning';
+  if (percentile >= 25) return 'primary';
   return 'error';
 }
 
@@ -134,7 +133,6 @@ export function bucketLabel(lo: NumericLike, hi: NumericLike): string {
 }
 
 export interface DeltaDisplay {
-  arrow: string;
   text: string;
   className: string;
   notable: boolean;
@@ -148,16 +146,14 @@ export function deltaDisplay(
 ): DeltaDisplay {
   const deltaNum = toStatNumber(delta) ?? 0;
   const zNum = toStatNumber(z);
-  const arrow = deltaNum > 0 ? '▲' : deltaNum < 0 ? '▼' : '—';
   const text = `${deltaNum > 0 ? '+' : ''}${deltaNum.toFixed(1)}`;
 
-  if (zNum === null) return { arrow, text, className: 'opacity-40', notable: false };
+  if (zNum === null) return { text, className: 'text-faint', notable: false };
 
   const notable = Math.abs(zNum) > 1;
   const improved = lowerIsBetter ? deltaNum < 0 : deltaNum > 0;
-  if (!notable) return { arrow, text, className: 'opacity-60', notable };
+  if (!notable) return { text, className: 'text-muted', notable };
   return {
-    arrow,
     text,
     className: improved ? 'text-success font-semibold' : 'text-error font-semibold',
     notable,

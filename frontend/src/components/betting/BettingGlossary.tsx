@@ -34,20 +34,20 @@ const ENTRIES = [
 ];
 
 export const BettingGlossary = () => (
-  <div className="card bg-base-200 overflow-hidden">
-    <div className="px-4 py-3 border-b border-base-300">
-      <h2 className="text-sm font-semibold">New to betting? Start here</h2>
-    </div>
-    <div className="p-4 space-y-2">
+  <section>
+    <h2 className="font-display text-xl font-semibold uppercase tracking-wide border-b border-base-300 pb-1 mb-3">
+      New to betting? Start here
+    </h2>
+    <div className="space-y-2">
       {ENTRIES.map((entry) => (
-        <div key={entry.term} className="collapse collapse-arrow bg-base-300 rounded-lg">
+        <div key={entry.term} className="collapse collapse-arrow border border-base-300">
           <input type="checkbox" aria-label={`Toggle explanation of ${entry.term}`} />
           <div className="collapse-title text-sm font-medium min-h-0 py-3">{entry.term}</div>
           <div className="collapse-content">
-            <p className="text-xs opacity-70 leading-relaxed">{entry.body}</p>
+            <p className="text-sm text-muted leading-relaxed">{entry.body}</p>
           </div>
         </div>
       ))}
     </div>
-  </div>
+  </section>
 );

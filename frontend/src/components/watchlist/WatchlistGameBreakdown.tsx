@@ -11,7 +11,7 @@ export const WatchlistGameBreakdown = ({
   return (
     <table className="table table-xs w-auto">
       <thead>
-        <tr className="text-[10px] uppercase tracking-wider opacity-50">
+        <tr className="text-[10px] uppercase tracking-wider text-muted">
           <th className="font-normal">Date</th>
           <th className="font-normal">Opp</th>
           <th className="font-normal text-right">Min</th>
@@ -24,13 +24,13 @@ export const WatchlistGameBreakdown = ({
         {games.map((game) => (
           <tr key={`${game.game_date}-${game.nba_game_id}`}>
             <td className="whitespace-nowrap">{shortDay(game.game_date)}</td>
-            <td className="uppercase opacity-60">{game.opponent_team_abbr ?? STAT_PLACEHOLDER}</td>
+            <td className="uppercase text-muted">{game.opponent_team_abbr ?? STAT_PLACEHOLDER}</td>
             <td className="text-right">{formatStat(game.minutes_p50, 0)}</td>
             <td className="text-right">{formatStat(game.proj_pts)}</td>
-            <td className="text-right opacity-60">{formatStat(game.impact)}</td>
+            <td className="text-right text-muted">{formatStat(game.impact)}</td>
             <td
               className={
-                'text-right ' + ((toStatNumber(game.score) ?? 0) > 0 ? 'font-semibold' : 'opacity-40')
+                'text-right ' + ((toStatNumber(game.score) ?? 0) > 0 ? 'font-semibold' : 'text-faint')
               }
             >
               {formatStat(game.score, 2)}

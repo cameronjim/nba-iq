@@ -1,4 +1,5 @@
 import type { Player } from '../../types';
+import { IconClose } from '../icons';
 
 interface CompareModalProps {
   players: Player[];
@@ -46,8 +47,10 @@ export const CompareModal = ({ players, onClose }: CompareModalProps) => {
     <div className="modal modal-open">
       <div className="modal-box max-w-3xl max-h-[90vh] flex flex-col p-0">
         <div className="flex items-center justify-between px-5 py-4 border-b border-base-300 flex-shrink-0">
-          <h3 className="font-semibold text-base">Player Comparison</h3>
-          <button className="btn btn-sm btn-circle btn-ghost" onClick={onClose}>✕</button>
+          <h3 className="font-display font-semibold text-xl uppercase tracking-wide">Player Comparison</h3>
+          <button className="btn btn-sm btn-circle btn-ghost" onClick={onClose} aria-label="Close">
+            <IconClose size={14} />
+          </button>
         </div>
 
         <div className="overflow-y-auto">
@@ -56,7 +59,7 @@ export const CompareModal = ({ players, onClose }: CompareModalProps) => {
             {players.map((p) => (
               <div key={p.id} className="px-4 py-3 flex flex-col items-center gap-2 border-l border-base-300">
                 <div className="avatar">
-                  <div className="w-12 rounded-full ring ring-base-300">
+                  <div className="w-12 rounded-box border border-base-300">
                     <img
                       src={p.headshot_url || FALLBACK_SVG}
                       alt={p.name}
@@ -66,22 +69,22 @@ export const CompareModal = ({ players, onClose }: CompareModalProps) => {
                 </div>
                 <div className="text-center">
                   <div className="text-sm font-semibold leading-tight">{p.name}</div>
-                  <div className="text-xs opacity-50 mt-0.5">{p.position} · {p.team}</div>
+                  <div className="text-xs text-muted mt-0.5">{p.position} · {p.team}</div>
                 </div>
               </div>
             ))}
           </div>
 
-          {STATS.map((stat, rowIdx) => {
+          {STATS.map((stat) => {
             const values = players.map((p) => Number(p[stat.key]) || 0);
             const best = stat.higherIsBetter ? Math.max(...values) : Math.min(...values);
             return (
               <div
                 key={stat.key}
-                className={`grid border-b border-base-300 ${gridClass} ${rowIdx % 2 === 0 ? 'bg-base-200' : 'bg-base-100'}`}
+                className={`grid border-b border-base-300 ${gridClass}`}
               >
                 <div className="px-4 py-3 flex items-center">
-                  <span className="text-xs font-medium opacity-60">{stat.label}</span>
+                  <span className="text-xs font-medium text-muted">{stat.label}</span>
                 </div>
                 {players.map((p, pIdx) => {
                   const val = values[pIdx];
@@ -89,12 +92,10 @@ export const CompareModal = ({ players, onClose }: CompareModalProps) => {
                   return (
                     <div
                       key={p.id}
-                      className={`px-4 py-3 flex items-center justify-center border-l border-base-300 ${isBest ? 'text-success font-bold' : ''}`}
+                      className={`px-4 py-3 flex items-center justify-center border-l border-base-300 ${isBest ? 'font-bold' : ''}`}
                     >
                       <span className="text-sm tabular-nums">{stat.format(val)}</span>
-                      {isBest && players.length > 1 && (
-                        <span className="ml-1 text-[10px] text-success opacity-70">▲</span>
-                      )}
+                      {isBest && players.length > 1 && <span className="sr-only"> best</span>}
                     </div>
                   );
                 })}
@@ -115,7 +116,7 @@ export const CompareModal = ({ players, onClose }: CompareModalProps) => {
                   className={`px-4 py-3.5 flex items-center justify-center border-l border-base-300 ${isBest ? 'text-primary font-bold' : ''}`}
                 >
                   <span className="text-sm tabular-nums">{score.toFixed(1)}</span>
-                  {isBest && <span className="ml-1 text-[10px] opacity-70">★</span>}
+                  {isBest && <span className="sr-only"> best</span>}
                 </div>
               );
             })}

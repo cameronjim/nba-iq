@@ -2,19 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="data:," />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="description" content="NBA stats, nightly stat projections, and a fantasy roster tool." />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NBA IQ</title>
     <script>
-      // Apply persisted theme before React paints — prevents a flash of the
-      // wrong theme on load. Mirrors the THEMES list in src/hooks/useTheme.ts;
-      // keep the two in sync when adding or removing a theme.
+      // mirrors THEMES in src/hooks/useTheme.ts so the first paint uses the saved theme.
       (function () {
-        var themes = ['lofi', 'cream', 'sage', 'slate', 'ocean', 'business', 'graphite'];
+        var themes = ['night', 'paper'];
         var stored = localStorage.getItem('theme');
-        var theme = themes.indexOf(stored) !== -1
-          ? stored
-          : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'business' : 'lofi');
+        var theme = themes.indexOf(stored) !== -1 ? stored : 'night';
         document.documentElement.setAttribute('data-theme', theme);
       })();
     </script>

@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { Search, Plus, Trash2, RefreshCw, ChevronUp, ChevronDown } from 'lucide-react';
 import { getMyRoster, getPlayers, addToRoster, dropFromRoster, getTeamAnalysis } from '../api/client';
 import type { Player, RosterPlayer, TeamAnalysis } from '../types';
 import { getTeamLogoUrl } from '../utils/teamLogos';
+import { IconSearch, IconPlus, IconTrash, IconRefresh, IconChevronUp, IconChevronDown } from '../components/icons';
+import { SkeletonLines, SkeletonTable } from '../components/Skeleton';
 import { PreferencesPrompt } from '../components/PreferencesPrompt';
 import { Toast, type ToastVariant } from '../components/Toast';
 import { computeRosterAverages, formatAvg, AVG_CATEGORIES } from '../components/TeamAverages';
@@ -16,9 +17,9 @@ import { WeeklyOutlookCard } from '../components/fantasy/WeeklyOutlookCard';
 import { useWeeklyOutlook } from '../hooks/useWeeklyOutlook';
 
 const CAT_COLORS: Record<string, string> = {
-  strong: 'badge-success',
-  average: 'badge-warning',
-  weak: 'badge-error',
+  strong: 'text-success',
+  average: 'text-warning',
+  weak: 'text-error',
 };
 
 const ROSTER_COLUMNS: Array<{ key: keyof RosterPlayer | null; label: string; full: string }> = [
@@ -217,21 +218,21 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
 
   const injuryBadge = (status: string | null): JSX.Element | null => {
     if (!status) return null;
-    const cls = status === 'Out' ? 'badge-error'
-      : ['Day-To-Day', 'Day_To_Day', 'Questionable'].includes(status) ? 'badge-warning'
-      : status === 'Probable' ? 'badge-success'
-      : 'badge-error';
-    return <span className={`badge badge-xs ml-2 ${cls}`}>{status.replace(/_/g, ' ')}</span>;
+    const cls = status === 'Out' ? 'text-error'
+      : ['Day-To-Day', 'Day_To_Day', 'Questionable'].includes(status) ? 'text-warning'
+      : status === 'Probable' ? 'text-success'
+      : 'text-error';
+    return <span className={`text-[11px] font-semibold uppercase ml-2 ${cls}`}>{status.replace(/_/g, ' ')}</span>;
   };
 
   return (
     <div className="max-w-[1400px] mx-auto px-4 py-6 space-y-5">
       {isLoggedIn && <PreferencesPrompt />}
       {isLoggedIn && (
-        <div className="card bg-base-200">
-          <div className="card-body p-4">
+        <div>
+          <div>
             <label className="input input-bordered flex items-center gap-2">
-              <Search size={16} className="opacity-50" />
+              <IconSearch size={16} className="text-muted" />
               <input
                 type="text"
                 value={search}
@@ -239,16 +240,16 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                 placeholder="Search players to add to your team..."
                 className="grow"
               />
-              {searching && <span className="loading loading-spinner loading-xs" />}
+              {searching && <span className="text-xs text-muted">Searching</span>}
             </label>
 
             {searchResults.length > 0 && (
               <div className="mt-2 space-y-1 max-h-[300px] overflow-y-auto">
                 {searchResults.map((player) => (
-                  <div key={player.id} className="flex items-center justify-between px-3 py-2 rounded-lg hover:bg-base-300 transition-colors">
+                  <div key={player.id} className="flex items-center justify-between px-3 py-2 border-b border-base-300 hover:bg-base-200">
                     <div className="flex items-center gap-3">
                       <div className="avatar">
-                        <div className="w-7 rounded-full">
+                        <div className="w-7 rounded-box">
                           <img
                             src={player.headshot_url || ''}
                             alt=""
@@ -257,11 +258,11 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                         </div>
                       </div>
                       <span className="text-sm font-medium">{player.name}</span>
-                      <span className="text-xs opacity-50">{player.position} · {player.team}</span>
-                      <span className="text-xs opacity-70">{n(player.points_per_game).toFixed(1)} PPG</span>
+                      <span className="text-xs text-muted">{player.position} · {player.team}</span>
+                      <span className="text-xs text-muted">{n(player.points_per_game).toFixed(1)} PPG</span>
                     </div>
                     <button onClick={() => handleAdd(player)} className="btn btn-primary btn-xs gap-1">
-                      <Plus size={12} /> Add
+                      <IconPlus size={12} /> Add
                     </button>
                   </div>
                 ))}
@@ -271,29 +272,27 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
         </div>
       )}
 
-      <div className="card bg-base-200 overflow-hidden">
-        <div className="card-body p-0">
-          <div className="px-4 py-3 border-b border-base-300">
-            <h3 className="font-semibold text-sm">My Roster ({roster.length} players)</h3>
+      <section>
+        <div>
+          <div className="pb-2">
+            <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">My Roster <span className="font-sans text-base normal-case tracking-normal font-normal text-muted tabular-nums">({roster.length} players)</span></h1>
           </div>
 
           {!isLoggedIn ? (
             <div className="text-center p-12">
               <p className="font-semibold text-sm mb-1">Sign in to use My Team</p>
-              <p className="opacity-40 text-xs">Use the Sign In button in the top right to manage your roster.</p>
+              <p className="text-muted text-xs">Use the Sign In button in the top right to manage your roster.</p>
             </div>
           ) : rosterLoading ? (
-            <div className="flex justify-center p-8">
-              <span className="loading loading-spinner loading-lg" />
-            </div>
+            <SkeletonTable rows={8} cols={8} label="Loading roster" />
           ) : roster.length === 0 ? (
             <div className="text-center p-12">
-              <p className="opacity-40 text-sm">No players on your roster yet</p>
-              <p className="opacity-25 text-xs mt-1">Use the search bar above to add players</p>
+              <p className="text-muted text-sm">No players on your roster yet</p>
+              <p className="text-faint text-xs mt-1">Use the search bar above to add players</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="table table-zebra table-sm">
+              <table className="table table-sm">
                 <thead>
                   <tr>
                     {ROSTER_COLUMNS.map((col) => (
@@ -306,8 +305,8 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                         <span className="inline-flex items-center gap-1">
                           {col.label}
                           {col.key && sortKey === col.key
-                            ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)
-                            : <ChevronUp size={12} className="invisible" />}
+                            ? (sortDir === 'asc' ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />)
+                            : <IconChevronUp size={12} className="invisible" />}
                         </span>
                       </th>
                     ))}
@@ -320,7 +319,7 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                       <td className="font-medium whitespace-nowrap">
                         <span className="flex items-center gap-2">
                           <div className="avatar">
-                            <div className="w-6 rounded-full">
+                            <div className="w-6 rounded-box">
                               <img
                                 src={p.headshot_url || ''}
                                 alt=""
@@ -361,9 +360,9 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                         <td>
                           <button
                             onClick={() => handleDrop(p.player_id || p.id, p.name)}
-                            className="btn btn-error btn-xs gap-1"
+                            className="btn btn-ghost btn-xs gap-1 text-error"
                           >
-                            <Trash2 size={12} /> Drop
+                            <IconTrash size={12} /> Drop
                           </button>
                         </td>
                       )}
@@ -371,7 +370,7 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                   ))}
                   {/* kept inside <tbody>: daisyUI's <tfoot> css bolds and shrinks
                       its cells, which would make this row stand out wrong. */}
-                  <tr className="bg-base-300/40">
+                  <tr className="bg-base-200">
                     <td className="font-medium whitespace-nowrap text-xs">
                       {/* w-6 h-6 matches the avatar circles above, so "AVG" aligns with
                           the names and the row keeps the same height as body rows. */}
@@ -394,74 +393,76 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
             </div>
           )}
         </div>
-      </div>
+      </section>
 
       {isLoggedIn && roster.length > 0 && (
         <WeeklyOutlookCard state={outlookState} onReload={reloadOutlook} />
       )}
 
       {isLoggedIn && roster.length > 0 && (
-        <div className="card bg-base-200 overflow-hidden">
-          <div className="card-body p-0">
-            <div className="px-4 py-3 border-b border-base-300 flex items-center justify-between">
-              <h3 className="font-semibold text-sm">9-Category Analysis</h3>
-              <button
-                onClick={loadAnalysis}
-                disabled={analysisLoading}
-                className="btn btn-ghost btn-xs gap-1.5"
-              >
-                <RefreshCw size={12} className={analysisLoading ? 'animate-spin' : ''} />
-                {analysisLoading ? 'Analyzing...' : 'Refresh'}
-              </button>
-            </div>
-
-            {analysisLoading && !analysis ? (
-              <div className="flex flex-col items-center p-8 gap-3">
-                <span className="loading loading-spinner loading-lg" />
-                <p className="text-sm opacity-50">AI is analyzing your roster...</p>
-              </div>
-            ) : analysis?.categories ? (
-              <div className="p-4">
-                <div className="flex flex-wrap gap-2 mb-4">
-                  {Object.entries(analysis.categories).map(([cat, rating]) => (
-                    <span key={cat} className={`badge badge-lg ${CAT_COLORS[rating] ?? 'badge-warning'}`}>
-                      {cat}
-                      <span className="ml-1 opacity-70 capitalize text-xs">· {rating}</span>
-                    </span>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {[
-                    { title: 'Strengths', items: analysis.strengths, cls: 'text-success' },
-                    { title: 'Weaknesses', items: analysis.weaknesses, cls: 'text-error' },
-                    { title: 'Suggestions', items: analysis.suggestions, cls: 'text-info' },
-                  ].map((section) => (
-                    <div key={section.title} className="space-y-2">
-                      <p className={`text-xs font-bold uppercase tracking-wider ${section.cls}`}>{section.title}</p>
-                      <div className="space-y-1.5">
-                        {section.items?.map((item, i) => (
-                          <div key={i} className="flex items-start gap-2 px-3 py-2 rounded-lg bg-base-300">
-                            <span className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${section.cls} bg-current`} />
-                            <span className="text-xs leading-relaxed opacity-80">{item}</span>
-                          </div>
-                        ))}
-                        {(!section.items || section.items.length === 0) && (
-                          <p className="text-xs opacity-25 italic px-3">None identified</p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : !analysisLoading ? (
-              <div className="p-6 text-center flex flex-col items-center gap-3">
-                <p className="text-sm opacity-40">Add your players, then analyze your team</p>
-                <button onClick={loadAnalysis} className="btn btn-primary btn-sm">Analyze My Team</button>
-              </div>
-            ) : null}
+        <section className="border-t border-base-300 pt-3">
+          <div className="pb-2 flex items-center justify-between">
+            <h2 className="font-display text-xl font-semibold uppercase tracking-wide">
+              Claude&apos;s read on your roster
+            </h2>
+            <button
+              onClick={loadAnalysis}
+              disabled={analysisLoading}
+              className="btn btn-ghost btn-xs gap-1.5"
+            >
+              <IconRefresh size={12} />
+              {analysisLoading ? 'Reading' : 'Refresh'}
+            </button>
           </div>
-        </div>
+
+          {analysisLoading && !analysis ? (
+            <div className="space-y-3" role="status" aria-label="Loading roster analysis">
+              <p className="text-sm text-muted">Claude is reading your roster. This can take a few seconds.</p>
+              <SkeletonLines lines={2} label="Loading category ratings" />
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <SkeletonLines lines={4} label="Loading strengths" />
+                <SkeletonLines lines={4} label="Loading weaknesses" />
+                <SkeletonLines lines={4} label="Loading suggestions" />
+              </div>
+            </div>
+          ) : analysis?.categories ? (
+            <div>
+              <ul className="flex flex-wrap gap-x-5 gap-y-1 mb-4 border-y border-base-300 py-2">
+                {Object.entries(analysis.categories).map(([cat, rating]) => (
+                  <li key={cat} className="text-sm">
+                    <span className="font-semibold">{cat}</span>{' '}
+                    <span className={`capitalize ${CAT_COLORS[rating] ?? 'text-warning'}`}>{rating}</span>
+                  </li>
+                ))}
+              </ul>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {[
+                  { title: 'Strengths', items: analysis.strengths },
+                  { title: 'Weaknesses', items: analysis.weaknesses },
+                  { title: 'Suggestions', items: analysis.suggestions },
+                ].map((section) => (
+                  <div key={section.title}>
+                    <h3 className="text-sm font-semibold border-b border-base-300 pb-1 mb-1">{section.title}</h3>
+                    <ul className="divide-y divide-base-300">
+                      {section.items?.map((item) => (
+                        <li key={item} className="py-1.5 text-xs leading-relaxed">{item}</li>
+                      ))}
+                      {(!section.items || section.items.length === 0) && (
+                        <li className="py-1.5 text-xs text-faint">None identified</li>
+                      )}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : !analysisLoading ? (
+            <div className="py-6 text-center flex flex-col items-center gap-3">
+              <p className="text-sm text-muted">Add your players, then ask Claude to read your team.</p>
+              <button onClick={loadAnalysis} className="btn btn-primary btn-sm">Read my team</button>
+            </div>
+          ) : null}
+        </section>
       )}
 
       {toast && (

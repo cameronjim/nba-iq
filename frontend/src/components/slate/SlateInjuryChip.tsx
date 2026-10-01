@@ -5,19 +5,19 @@ function injuryTone(bucket: string | null): string {
   switch (bucket) {
     case 'out':
     case 'doubtful':
-      return 'badge-error';
+      return 'text-error';
     // null is the cleared case: a designation the run priced in that has since
     // come off the report, which is good news and reads as such.
     case 'probable':
     case 'available':
     case null:
-      return 'badge-success badge-outline';
+      return 'text-success';
     default:
-      return 'badge-warning';
+      return 'text-warning';
   }
 }
 
-// the CURRENT report, which can be newer than the projection. "· new" means the
+// the CURRENT report, which can be newer than the projection. "new" means the
 // designation moved after publication, so the projected numbers do not reflect it.
 export const InjuryChip = ({ player }: { player: SlatePlayer }): JSX.Element | null => {
   const status = player.injury_status ?? null;
@@ -37,12 +37,12 @@ export const InjuryChip = ({ player }: { player: SlatePlayer }): JSX.Element | n
 
   return (
     <span
-      className={`badge badge-xs uppercase tracking-wide ${injuryTone(status)}`}
+      className={`text-[11px] font-semibold uppercase tracking-wide ${injuryTone(status)}`}
       title={title}
       data-testid="injury-chip"
     >
       {label}
-      {changed && <span className="font-bold normal-case">&nbsp;· new</span>}
+      {changed && <span className="normal-case">&nbsp;· new</span>}
     </span>
   );
 };

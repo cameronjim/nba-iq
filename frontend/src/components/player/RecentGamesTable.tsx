@@ -24,15 +24,15 @@ export const RecentGamesTable = ({ games }: RecentGamesTableProps): JSX.Element 
   const newestFirst = [...games].reverse();
 
   return (
-    <section className="card bg-base-200 border border-base-300">
-      <div className="card-body p-4 sm:p-5 gap-3">
+    <section className="border-t border-base-300 pt-4">
+      <div className="flex flex-col gap-3">
         <div>
-          <h2 className="font-bold text-base">Recent Games</h2>
-          <p className="text-xs opacity-50 mt-0.5">Newest first.</p>
+          <h2 className="text-lg font-semibold">Recent Games</h2>
+          <p className="text-xs text-muted mt-0.5">Newest first.</p>
         </div>
 
-        <div className="overflow-x-auto rounded-box border border-base-300">
-          <table className="table table-zebra table-xs w-full min-w-[560px]">
+        <div className="overflow-x-auto border border-base-300">
+          <table className="table table-xs w-full min-w-[560px]">
             <thead>
               <tr>
                 <th className="whitespace-nowrap">Date</th>
@@ -50,7 +50,7 @@ export const RecentGamesTable = ({ games }: RecentGamesTableProps): JSX.Element 
                 <tr key={game.game_date}>
                   <td className="whitespace-nowrap font-medium">{formatGameDate(game.game_date)}</td>
                   <td className="whitespace-nowrap">
-                    <span className="opacity-40 mr-1">{game.is_home ? 'vs' : '@'}</span>
+                    <span className="text-faint mr-1">{game.is_home ? 'vs' : '@'}</span>
                     {formatText(game.opponent_team_abbr)}
                   </td>
                   {BOX_COLUMNS.map((col) => (

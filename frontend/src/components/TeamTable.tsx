@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { IconChevronUp, IconChevronDown } from './icons';
 import type { Team } from '../types';
 import { getTeamLogoUrl } from '../utils/teamLogos';
 
@@ -30,6 +30,8 @@ const COLUMNS: { key: SortKey; label: string; full: string; format?: (v: number)
 
 const NUMERIC_KEYS = new Set(['wins','losses','points_per_game','rebounds_per_game','assists_per_game','steals_per_game','blocks_per_game','field_goal_percentage','three_point_percentage','free_throw_percentage','turnovers_per_game','defensive_rating','offensive_rating','net_rating']);
 
+const alignClass = (key: SortKey): string => (NUMERIC_KEYS.has(key) ? 'text-right' : '');
+
 export const TeamTable = ({ teams }: TeamTableProps) => {
   const [sortKey, setSortKey] = useState<SortKey>('wins');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -58,8 +60,8 @@ export const TeamTable = ({ teams }: TeamTableProps) => {
   });
 
   return (
-    <div className="overflow-x-auto rounded-box border border-base-300">
-      <table className="table table-zebra table-sm w-full">
+    <div className="overflow-x-auto border border-base-300">
+      <table className="table table-sm w-full">
         <thead>
           <tr>
             {COLUMNS.map((col) => (
@@ -67,13 +69,13 @@ export const TeamTable = ({ teams }: TeamTableProps) => {
                 key={col.key}
                 onClick={() => handleSort(col.key)}
                 title={col.full}
-                className="cursor-pointer select-none whitespace-nowrap"
+                className={`cursor-pointer select-none whitespace-nowrap ${alignClass(col.key)} ${sortKey === col.key ? 'font-bold' : ''}`}
               >
                 <span className="inline-flex items-center gap-1">
                   {col.label}
                   {sortKey === col.key
-                    ? (sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)
-                    : <ChevronUp size={12} className="invisible" />}
+                    ? (sortDir === 'asc' ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />)
+                    : <IconChevronUp size={12} className="invisible" />}
                 </span>
               </th>
             ))}
@@ -87,7 +89,7 @@ export const TeamTable = ({ teams }: TeamTableProps) => {
                   return (
                     <td key={col.key}>
                       {team.conference && (
-                        <span className={`badge badge-sm ${team.conference === 'East' ? 'badge-info' : 'badge-warning'}`}>
+                        <span className="badge badge-sm badge-outline">
                           {team.conference}
                         </span>
                       )}
@@ -98,7 +100,7 @@ export const TeamTable = ({ teams }: TeamTableProps) => {
                   const val = Number(team.net_rating ?? 0);
 
                   return (
-                    <td key={col.key} className={`font-medium ${val > 0 ? 'text-success' : val < 0 ? 'text-error' : ''}`}>
+                    <td key={col.key} className={`text-right font-medium ${val > 0 ? 'text-success' : val < 0 ? 'text-error' : ''}`}>
                       {val > 0 ? '+' : ''}{val.toFixed(1)}
                     </td>
                   );
@@ -123,7 +125,7 @@ export const TeamTable = ({ teams }: TeamTableProps) => {
                   );
                 }
                 return (
-                  <td key={col.key}>
+                  <td key={col.key} className={alignClass(col.key)}>
                     {col.format && team[col.key] != null
                       ? col.format(team[col.key] as number)
                       : String(team[col.key] ?? '-')}
@@ -134,7 +136,7 @@ export const TeamTable = ({ teams }: TeamTableProps) => {
           ))}
           {sorted.length === 0 && (
             <tr>
-              <td colSpan={COLUMNS.length} className="text-center py-12 opacity-40">
+              <td colSpan={COLUMNS.length} className="text-center py-12 text-faint">
                 No teams found
               </td>
             </tr>

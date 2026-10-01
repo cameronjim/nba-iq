@@ -128,16 +128,16 @@ export function ratingTier(value: NumericLike | null | undefined): Rating2kTier 
 
 const TIER_BAR_CLASS: Record<Rating2kTier, string> = {
   elite: 'bg-success',
-  strong: 'bg-info',
-  average: 'bg-warning',
+  strong: 'bg-primary',
+  average: 'bg-base-content',
   weak: 'bg-error',
   unknown: 'bg-base-300',
 };
 
 const TIER_BADGE_CLASS: Record<Rating2kTier, string> = {
   elite: 'badge-success',
-  strong: 'badge-info',
-  average: 'badge-warning',
+  strong: 'badge-primary',
+  average: 'badge-outline',
   weak: 'badge-error',
   unknown: 'badge-ghost',
 };

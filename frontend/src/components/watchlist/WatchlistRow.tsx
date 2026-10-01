@@ -63,10 +63,10 @@ export const WatchlistRow = ({
   const preseason = player.preseason || player.games.some((game) => game.preseason);
 
   return (
-    <li className="border border-base-300 rounded-box bg-base-200">
+    <li className="border-b border-base-300">
       <details className="group">
         <summary className="flex flex-wrap items-center gap-x-3 gap-y-1.5 p-3 cursor-pointer list-none">
-          <span className="text-xs tabular-nums opacity-40 w-6 shrink-0">{rank}</span>
+          <span className="text-xs tabular-nums text-faint w-6 shrink-0">{rank}</span>
 
           {/* `basis-full` up to `sm` is what makes the row wrap instead of overflow
               on a phone: with `min-w-0` alone this column shrinks to nothing. */}
@@ -76,7 +76,7 @@ export const WatchlistRow = ({
                 className={
                   'text-sm truncate ' +
                   (player.name_is_placeholder
-                    ? 'font-mono text-xs italic opacity-60'
+                    ? 'font-mono text-xs italic text-muted'
                     : 'font-semibold')
                 }
                 title={
@@ -88,12 +88,12 @@ export const WatchlistRow = ({
                 {player.name}
               </span>
               <PositionChip position={player.position} />
-              <span className="text-[11px] opacity-50 uppercase tracking-wider shrink-0">
+              <span className="text-[11px] text-muted uppercase tracking-wider shrink-0">
                 {player.team_abbr ?? STAT_PLACEHOLDER}
                 {/* over a window there is no single opponent to name. */}
                 {!multi && player.opponent_team_abbr && (
                   <>
-                    <span className="opacity-50 lowercase"> vs </span>
+                    <span className="text-faint lowercase"> vs </span>
                     {player.opponent_team_abbr}
                   </>
                 )}
@@ -150,7 +150,7 @@ export const WatchlistRow = ({
               data-testid={`evidence-${player.nba_player_id}`}
             >
               {lines.map((line) => (
-                <li key={line} className="text-xs opacity-70 pl-6">
+                <li key={line} className="text-xs text-muted pl-6">
                   {line}
                 </li>
               ))}

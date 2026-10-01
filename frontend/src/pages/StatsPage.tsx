@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Search, GitCompare, X } from 'lucide-react';
+import { IconSearch, IconClose } from '../components/icons';
+import { SkeletonTable } from '../components/Skeleton';
 import { ScoreboardStrip } from '../components/ScoreboardStrip';
 import { PlayerTable } from '../components/player/PlayerTable';
 import { TeamTable } from '../components/TeamTable';
@@ -74,7 +75,7 @@ export const StatsPage = () => {
           </div>
 
           {view === 'players' && (
-            <span className="text-sm opacity-40">
+            <span className="text-sm text-faint">
               {filteredPlayers.length} player{filteredPlayers.length !== 1 ? 's' : ''}
             </span>
           )}
@@ -92,7 +93,7 @@ export const StatsPage = () => {
         {view === 'players' && (
           <div className="flex flex-wrap items-center gap-3 mb-5">
             <label className="input input-bordered input-sm flex items-center gap-2 flex-1 min-w-[200px] max-w-[360px]">
-              <Search size={14} className="opacity-50" />
+              <IconSearch size={14} className="text-muted" />
               <input
                 type="text"
                 value={search}
@@ -125,9 +126,7 @@ export const StatsPage = () => {
 
         {view === 'players' ? (
           loadingPlayers ? (
-            <div className="flex items-center justify-center py-20">
-              <span className="loading loading-spinner loading-lg" />
-            </div>
+            <SkeletonTable rows={12} cols={10} label="Loading players" />
           ) : (
             <PlayerTable
               players={filteredPlayers}
@@ -137,9 +136,7 @@ export const StatsPage = () => {
             />
           )
         ) : loadingTeams ? (
-          <div className="flex items-center justify-center py-20">
-            <span className="loading loading-spinner loading-lg" />
-          </div>
+          <SkeletonTable rows={12} cols={10} label="Loading teams" />
         ) : (
           <TeamTable
             teams={confFilter === 'All' ? teams : teams.filter((t) => t.conference?.toLowerCase().startsWith(confFilter.toLowerCase()))}
@@ -148,14 +145,14 @@ export const StatsPage = () => {
       </div>
 
       {comparePlayers.length >= 1 && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-base-200 border-t border-base-300 px-4 py-3 flex items-center justify-between shadow-2xl">
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-base-200 border-t border-base-300 px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-xs opacity-50">{comparePlayers.length}/3 selected</span>
+            <span className="text-xs text-muted">{comparePlayers.length}/3 selected</span>
             <div className="flex items-center gap-2">
               {comparePlayers.map((p) => (
-                <div key={p.id} className="flex items-center gap-1.5 bg-base-300 rounded-full pl-1 pr-2.5 py-1">
+                <div key={p.id} className="flex items-center gap-1.5 bg-base-300 rounded-box pl-1 pr-2 py-1">
                   <div className="avatar">
-                    <div className="w-5 rounded-full">
+                    <div className="w-5 rounded-box">
                       <img
                         src={p.headshot_url || ''}
                         alt=""
@@ -164,8 +161,12 @@ export const StatsPage = () => {
                     </div>
                   </div>
                   <span className="text-xs">{p.name.split(' ').pop()}</span>
-                  <button onClick={() => handleToggleCompare(p)} className="ml-0.5 opacity-40 hover:opacity-100">
-                    <X size={10} />
+                  <button
+                    onClick={() => handleToggleCompare(p)}
+                    className="ml-0.5 text-faint hover:text-base-content"
+                    aria-label={`Remove ${p.name} from comparison`}
+                  >
+                    <IconClose size={10} />
                   </button>
                 </div>
               ))}
@@ -178,9 +179,8 @@ export const StatsPage = () => {
             <button
               onClick={() => setShowCompare(true)}
               disabled={comparePlayers.length < 2}
-              className="btn btn-primary btn-sm gap-1.5"
+              className="btn btn-primary btn-sm"
             >
-              <GitCompare size={14} />
               Compare {comparePlayers.length >= 2 ? comparePlayers.length : ''} Players
             </button>
           </div>

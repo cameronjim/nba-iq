@@ -1,28 +1,153 @@
 @import "tailwindcss";
+@import "@fontsource-variable/libre-franklin";
+@import "@fontsource/barlow-condensed/500.css";
+@import "@fontsource/barlow-condensed/600.css";
+@import "@fontsource/barlow-condensed/700.css";
 @plugin "daisyui" {
-  themes: lofi --default, business --prefersdark;
+  themes: false;
 }
 
-/* components read these through daisyui's success/error classes, so never hardcode
-   a tailwind palette color like bg-emerald-500 in a component. */
-:root {
-  --brand-green: #10b981;
-  --brand-red: #ef4444;
+/* components read color through daisyui's semantic classes, so never hardcode a
+   tailwind palette color like bg-emerald-500 in a component. */
+@theme {
+  --font-sans: "Libre Franklin Variable", "Franklin Gothic Medium", "Arial Narrow", sans-serif;
+  --font-display: "Barlow Condensed", "Arial Narrow", sans-serif;
 }
 
-/* tailwind 4's preflight leaves <button> at cursor: default, so any clickable
-   button without daisyui's `btn` class loses its pointer affordance. */
+@plugin "daisyui/theme" {
+  name: "paper";
+  color-scheme: light;
+  --color-base-100: oklch(0.972 0.008 85);
+  --color-base-200: oklch(0.945 0.011 84);
+  --color-base-300: oklch(0.885 0.013 82);
+  --color-base-content: oklch(0.24 0.012 70);
+  --color-primary: oklch(0.4 0.085 255);
+  --color-primary-content: oklch(0.97 0.008 85);
+  --color-secondary: oklch(0.45 0.02 70);
+  --color-secondary-content: oklch(0.97 0.008 85);
+  --color-accent: oklch(0.5 0.17 322);
+  --color-accent-content: oklch(0.98 0.01 85);
+  --color-neutral: oklch(0.28 0.012 70);
+  --color-neutral-content: oklch(0.97 0.008 85);
+  --color-info: oklch(0.4 0.085 255);
+  --color-info-content: oklch(0.97 0.008 85);
+  --color-success: oklch(0.5 0.11 150);
+  --color-success-content: oklch(0.98 0.01 150);
+  --color-warning: oklch(0.72 0.13 75);
+  --color-warning-content: oklch(0.25 0.04 70);
+  --color-error: oklch(0.52 0.17 28);
+  --color-error-content: oklch(0.98 0.01 28);
+  --radius-selector: 0.125rem;
+  --radius-field: 0.125rem;
+  --radius-box: 0.125rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "night";
+  default: true;
+  color-scheme: dark;
+  --color-base-100: oklch(0.235 0.008 70);
+  --color-base-200: oklch(0.205 0.008 70);
+  --color-base-300: oklch(0.33 0.01 70);
+  --color-base-content: oklch(0.9 0.01 85);
+  --color-primary: oklch(0.75 0.08 250);
+  --color-primary-content: oklch(0.2 0.02 250);
+  --color-secondary: oklch(0.7 0.02 80);
+  --color-secondary-content: oklch(0.2 0.01 80);
+  --color-accent: oklch(0.72 0.17 318);
+  --color-accent-content: oklch(0.2 0.04 318);
+  --color-neutral: oklch(0.3 0.01 70);
+  --color-neutral-content: oklch(0.9 0.01 85);
+  --color-info: oklch(0.75 0.08 250);
+  --color-info-content: oklch(0.2 0.02 250);
+  --color-success: oklch(0.72 0.12 150);
+  --color-success-content: oklch(0.2 0.03 150);
+  --color-warning: oklch(0.8 0.12 80);
+  --color-warning-content: oklch(0.22 0.04 80);
+  --color-error: oklch(0.68 0.15 28);
+  --color-error-content: oklch(0.2 0.03 28);
+  --radius-selector: 0.125rem;
+  --radius-field: 0.125rem;
+  --radius-box: 0.125rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
 @layer base {
+  /* tailwind 4's preflight leaves <button> at cursor: default, so any clickable
+     button without daisyui's `btn` class loses its pointer affordance. */
   button:not(:disabled) {
     cursor: pointer;
   }
+
+  /* state changes are instant; nothing slides, fades, or scales on hover. */
+  *,
+  ::before,
+  ::after {
+    transition: none !important;
+  }
+
+  *:not(.skeleton),
+  ::before,
+  ::after {
+    animation: none !important;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-feature-settings: "lnum";
+  }
+
+  h1,
+  h2 {
+    font-family: var(--font-display);
+    letter-spacing: 0.01em;
+  }
+
+  /* stat columns only line up with fixed-width digits. */
+  table,
+  .tabular {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+
+  table thead th {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
 }
 
-/* a tooltip bubble otherwise inherits uppercase/tracking/weight from whatever it
-   sits inside. utilities layer so it wins against .tooltip's own rules. never put
-   a .tooltip inside an ancestor with opacity < 1, or the bubble inherits the
-   transparency and gets trapped under later content. */
 @layer utilities {
+  /* solid mixes instead of opacity, because a translucent ancestor traps tooltips. */
+  .text-muted {
+    color: color-mix(in oklab, var(--color-base-content) 68%, var(--color-base-100));
+  }
+
+  .text-faint {
+    color: color-mix(in oklab, var(--color-base-content) 48%, var(--color-base-100));
+  }
+
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .btn:active,
+  .btn:active:hover {
+    translate: none !important;
+    scale: none !important;
+    transform: none !important;
+  }
+
+  /* a tooltip bubble otherwise inherits uppercase/tracking/weight from whatever it
+     sits inside. never put a .tooltip inside an ancestor with opacity < 1. */
   .tooltip:before,
   .tooltip > .tooltip-content {
     max-width: 240px;
@@ -35,164 +160,9 @@
     padding: 0.5rem 0.65rem;
     z-index: 50;
   }
-}
 
-/* the two built-in themes don't carry the brand green/red; the custom themes below
-   bake the values in directly. */
-[data-theme="lofi"],
-[data-theme="business"] {
-  --color-success: var(--brand-green);
-  --color-error: var(--brand-red);
-}
-
-@plugin "daisyui/theme" {
-  name: "cream";
-  color-scheme: light;
-  --color-base-100: oklch(0.971 0.013 91);
-  --color-base-200: oklch(0.936 0.015 89);
-  --color-base-300: oklch(0.894 0.017 86);
-  --color-base-content: oklch(0.32 0.02 80);
-  --color-primary: oklch(0.55 0.095 245);
-  --color-primary-content: oklch(0.97 0.012 245);
-  --color-secondary: oklch(0.62 0.06 240);
-  --color-secondary-content: oklch(0.98 0.01 240);
-  --color-accent: oklch(0.6 0.08 215);
-  --color-accent-content: oklch(0.97 0.01 215);
-  --color-neutral: oklch(0.38 0.02 80);
-  --color-neutral-content: oklch(0.95 0.012 85);
-  --color-info: oklch(0.62 0.08 235);
-  --color-info-content: oklch(0.98 0.01 235);
-  --color-success: #10b981;
-  --color-success-content: oklch(0.98 0.02 160);
-  --color-warning: oklch(0.8 0.11 80);
-  --color-warning-content: oklch(0.28 0.04 80);
-  --color-error: #ef4444;
-  --color-error-content: oklch(0.98 0.02 20);
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 1rem;
-  --border: 1px;
-}
-
-@plugin "daisyui/theme" {
-  name: "sage";
-  color-scheme: light;
-  --color-base-100: oklch(0.972 0.012 130);
-  --color-base-200: oklch(0.94 0.014 130);
-  --color-base-300: oklch(0.9 0.016 128);
-  --color-base-content: oklch(0.32 0.02 140);
-  --color-primary: oklch(0.55 0.075 150);
-  --color-primary-content: oklch(0.97 0.02 150);
-  --color-secondary: oklch(0.62 0.05 160);
-  --color-secondary-content: oklch(0.98 0.01 160);
-  --color-accent: oklch(0.6 0.07 130);
-  --color-accent-content: oklch(0.2 0.02 130);
-  --color-neutral: oklch(0.38 0.02 140);
-  --color-neutral-content: oklch(0.95 0.012 130);
-  --color-info: oklch(0.62 0.07 230);
-  --color-info-content: oklch(0.98 0.01 230);
-  --color-success: #10b981;
-  --color-success-content: oklch(0.98 0.02 160);
-  --color-warning: oklch(0.8 0.11 80);
-  --color-warning-content: oklch(0.28 0.04 80);
-  --color-error: #ef4444;
-  --color-error-content: oklch(0.98 0.02 20);
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 1rem;
-  --border: 1px;
-}
-
-@plugin "daisyui/theme" {
-  name: "slate";
-  color-scheme: light;
-  --color-base-100: oklch(0.96 0.004 250);
-  --color-base-200: oklch(0.92 0.005 250);
-  --color-base-300: oklch(0.87 0.006 250);
-  --color-base-content: oklch(0.3 0.012 250);
-  --color-primary: oklch(0.5 0.03 250);
-  --color-primary-content: oklch(0.97 0.005 250);
-  --color-secondary: oklch(0.58 0.025 250);
-  --color-secondary-content: oklch(0.98 0.005 250);
-  --color-accent: oklch(0.62 0.04 230);
-  --color-accent-content: oklch(0.98 0.005 230);
-  --color-neutral: oklch(0.35 0.012 250);
-  --color-neutral-content: oklch(0.95 0.005 250);
-  --color-info: oklch(0.62 0.07 230);
-  --color-info-content: oklch(0.98 0.01 230);
-  --color-success: #10b981;
-  --color-success-content: oklch(0.98 0.02 160);
-  --color-warning: oklch(0.8 0.11 80);
-  --color-warning-content: oklch(0.28 0.04 80);
-  --color-error: #ef4444;
-  --color-error-content: oklch(0.98 0.02 20);
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 1rem;
-  --border: 1px;
-}
-
-@plugin "daisyui/theme" {
-  name: "ocean";
-  color-scheme: light;
-  --color-base-100: oklch(0.97 0.005 220);
-  --color-base-200: oklch(0.93 0.006 220);
-  --color-base-300: oklch(0.88 0.008 220);
-  --color-base-content: oklch(0.28 0.02 220);
-  --color-primary: oklch(0.58 0.13 200);
-  --color-primary-content: oklch(0.98 0.02 200);
-  --color-secondary: oklch(0.6 0.09 210);
-  --color-secondary-content: oklch(0.98 0.02 210);
-  --color-accent: oklch(0.62 0.11 190);
-  --color-accent-content: oklch(0.2 0.03 190);
-  --color-neutral: oklch(0.34 0.02 220);
-  --color-neutral-content: oklch(0.96 0.01 220);
-  --color-info: oklch(0.62 0.09 215);
-  --color-info-content: oklch(0.98 0.01 215);
-  --color-success: #10b981;
-  --color-success-content: oklch(0.98 0.02 160);
-  --color-warning: oklch(0.8 0.11 80);
-  --color-warning-content: oklch(0.28 0.04 80);
-  --color-error: #ef4444;
-  --color-error-content: oklch(0.98 0.02 20);
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 1rem;
-  --border: 1px;
-}
-
-@plugin "daisyui/theme" {
-  name: "graphite";
-  color-scheme: dark;
-  --color-base-100: oklch(0.25 0.005 250);
-  --color-base-200: oklch(0.22 0.005 250);
-  --color-base-300: oklch(0.19 0.006 250);
-  --color-base-content: oklch(0.88 0.005 250);
-  --color-primary: oklch(0.68 0.04 250);
-  --color-primary-content: oklch(0.2 0.01 250);
-  --color-secondary: oklch(0.62 0.03 250);
-  --color-secondary-content: oklch(0.18 0.01 250);
-  --color-accent: oklch(0.66 0.05 230);
-  --color-accent-content: oklch(0.18 0.01 230);
-  --color-neutral: oklch(0.3 0.006 250);
-  --color-neutral-content: oklch(0.9 0.005 250);
-  --color-info: oklch(0.68 0.08 230);
-  --color-info-content: oklch(0.18 0.01 230);
-  --color-success: #10b981;
-  --color-success-content: oklch(0.18 0.02 160);
-  --color-warning: oklch(0.8 0.11 80);
-  --color-warning-content: oklch(0.2 0.04 80);
-  --color-error: #ef4444;
-  --color-error-content: oklch(0.98 0.02 20);
-  --radius-selector: 0.5rem;
-  --radius-field: 0.5rem;
-  --radius-box: 1rem;
-  --border: 1px;
-}
-
-/* daisyui's default field focus is a 2px outline offset 2px outside the 1px border,
-   which reads as a thick double ring. keep the affordance, make it a hairline. */
-@layer utilities {
+  /* daisyui's default field focus is a 2px outline offset 2px outside the 1px
+     border, which reads as a thick double ring. */
   .input:focus,
   .input:focus-within,
   .select:focus,
@@ -201,6 +171,26 @@
   .textarea:focus-within {
     outline-width: 1px;
     outline-offset: 0px;
+  }
+
+  /* daisyui's skeleton is a sweeping gradient; a flat slow pulse reads calmer. */
+  .skeleton {
+    background-image: none !important;
+    background-color: var(--color-base-300);
+    border-radius: var(--radius-box);
+    animation: skeleton-pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes skeleton-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
   }
 }
 

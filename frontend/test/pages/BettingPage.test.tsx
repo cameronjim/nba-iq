@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { BettingPage } from '../../src/pages/BettingPage';
 
 vi.mock('../../src/api/client', async (importOriginal) => {
@@ -30,27 +31,54 @@ beforeEach(() => {
   prefsMock.mockResolvedValue({});
 });
 
-describe('BettingPage', () => {
-  it('shows the responsible-gambling footer without the old banner', async () => {
-    render(<BettingPage isLoggedIn={false} />);
+const renderPage = (isLoggedIn: boolean): ReturnType<typeof render> =>
+  render(
+    <MemoryRouter>
+      <BettingPage isLoggedIn={isLoggedIn} />
+    </MemoryRouter>
+  );
 
-    expect(await screen.findByText(/1-800-GAMBLER/)).toBeInTheDocument();
+describe('BettingPage', () => {
+  it('shows the responsible-gambling line with a Terms link and no banner', async () => {
+    // arrange + act
+    renderPage(false);
+
+    // assert
+    expect(await screen.findByText(/Picks are informational, not betting advice/)).toBeInTheDocument();
+    expect(screen.getByText(/1-800-GAMBLER/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Terms' })).toHaveAttribute('href', '/terms');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('shows the sign-in prompt, odds board, chat, and glossary when logged out', async () => {
-    render(<BettingPage isLoggedIn={false} />);
+  it('shows skeleton tables while odds and bets load', () => {
+    // arrange
+    oddsMock.mockReturnValue(new Promise(() => {}));
+    betsMock.mockReturnValue(new Promise(() => {}));
+    picksMock.mockReturnValue(new Promise(() => {}));
 
-    expect(await screen.findByText(/Sign in to unlock AI betting picks/i)).toBeInTheDocument();
+    // act
+    renderPage(true);
+
+    // assert
+    expect(screen.getByRole('status', { name: 'Loading upcoming games and odds' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading bets' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading picks' })).toBeInTheDocument();
+    expect(document.querySelector('.loading-spinner')).toBeNull();
+  });
+
+  it('shows the sign-in prompt, odds board, chat, and glossary when logged out', async () => {
+    renderPage(false);
+
+    expect(await screen.findByText(/Sign in to see Claude's betting picks/i)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /Upcoming Games & Odds/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /New to betting\? Start here/i })).toBeInTheDocument();
-    expect(screen.getByText('AI Assistant')).toBeInTheDocument();
+    expect(screen.getByText('Ask Claude')).toBeInTheDocument();
     expect(picksMock).not.toHaveBeenCalled();
     expect(betsMock).not.toHaveBeenCalled();
   });
 
   it('loads picks, ledger, and prefs when logged in', async () => {
-    render(<BettingPage isLoggedIn={true} />);
+    renderPage(true);
 
     expect(await screen.findByText(/No bettable games right now/i)).toBeInTheDocument();
     expect(picksMock).toHaveBeenCalled();
@@ -61,7 +89,7 @@ describe('BettingPage', () => {
   it('shows the odds error state with a retry button', async () => {
     oddsMock.mockRejectedValue(new Error('espn down'));
 
-    render(<BettingPage isLoggedIn={false} />);
+    renderPage(false);
 
     expect(await screen.findByText(/Failed to load odds/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Try Again/i })).toBeInTheDocument();

@@ -11,8 +11,7 @@ export class LoginPage {
     await this.page.goto('/login');
   }
 
-  // the login labels are not linked to their inputs by for/id, so getByLabel does not match.
   usernameInput(): Locator {
-    return this.page.locator('input[autocomplete="username"]');
+    return this.page.getByLabel('Username or email');
   }
 }

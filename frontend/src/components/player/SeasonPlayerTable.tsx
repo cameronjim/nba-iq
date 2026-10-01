@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronUp, ChevronDown } from 'lucide-react';
+import { IconChevronUp, IconChevronDown } from '../icons';
 import type { PlayerSeasonRow } from '../../types';
 import { getTeamLogoUrl } from '../../utils/teamLogos';
 import { SEASON_STAT_COLUMNS, type SeasonStatKey } from '../../utils/seasonColumns';
@@ -41,22 +41,22 @@ export const SeasonPlayerTable = ({ rows, onSelect }: SeasonPlayerTableProps): J
   const sortIcon = (key: SortKey): JSX.Element => {
     if (sortKey !== key) {
       // always rendered, just hidden: an absent icon would change the column width.
-      return <ChevronUp size={12} className="invisible" />;
+      return <IconChevronUp size={12} className="invisible" />;
     }
-    return sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />;
+    return sortDir === 'asc' ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />;
   };
 
   return (
     <div>
-      <div className="overflow-x-auto rounded-box border border-base-300">
+      <div className="overflow-x-auto border border-base-300">
         {/* table-fixed: re-sorting can never change column widths. */}
-        <table className="table table-zebra table-sm table-fixed min-w-[1100px] w-full">
+        <table className="table table-sm table-fixed min-w-[1100px] w-full">
           <thead>
             <tr>
               <th
                 onClick={() => handleSort('player_name')}
                 title="Player Name"
-                className="cursor-pointer select-none whitespace-nowrap w-[220px]"
+                className={`cursor-pointer select-none whitespace-nowrap w-[220px] ${sortKey === 'player_name' ? 'font-bold' : ''}`}
               >
                 <span className="inline-flex items-center gap-1">
                   Player
@@ -66,7 +66,7 @@ export const SeasonPlayerTable = ({ rows, onSelect }: SeasonPlayerTableProps): J
               <th
                 onClick={() => handleSort('team')}
                 title="Team"
-                className="cursor-pointer select-none whitespace-nowrap w-[78px]"
+                className={`cursor-pointer select-none whitespace-nowrap w-[78px] ${sortKey === 'team' ? 'font-bold' : ''}`}
               >
                 <span className="inline-flex items-center gap-1">
                   Team
@@ -78,7 +78,7 @@ export const SeasonPlayerTable = ({ rows, onSelect }: SeasonPlayerTableProps): J
                   key={col.key}
                   onClick={() => handleSort(col.key)}
                   title={col.full}
-                  className={`cursor-pointer select-none whitespace-nowrap ${col.w}`}
+                  className={`cursor-pointer select-none whitespace-nowrap text-right ${col.w} ${sortKey === col.key ? 'font-bold' : ''}`}
                 >
                   <span className="inline-flex items-center gap-1">
                     {col.label}
@@ -116,7 +116,7 @@ export const SeasonPlayerTable = ({ rows, onSelect }: SeasonPlayerTableProps): J
                     </span>
                   </td>
                   {SEASON_STAT_COLUMNS.map((col) => (
-                    <td key={col.key} className="whitespace-nowrap tabular-nums">
+                    <td key={col.key} className="whitespace-nowrap text-right tabular-nums">
                       {formatStat(row[col.key], col.decimals)}
                     </td>
                   ))}
@@ -125,7 +125,7 @@ export const SeasonPlayerTable = ({ rows, onSelect }: SeasonPlayerTableProps): J
             })}
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={SEASON_STAT_COLUMNS.length + 2} className="text-center py-12 opacity-40">
+                <td colSpan={SEASON_STAT_COLUMNS.length + 2} className="text-center py-12 text-faint">
                   No players found
                 </td>
               </tr>
@@ -135,7 +135,7 @@ export const SeasonPlayerTable = ({ rows, onSelect }: SeasonPlayerTableProps): J
       </div>
 
       {sorted.length > 0 && (
-        <div className="text-center text-xs opacity-30 py-3">
+        <div className="text-center text-xs text-faint py-3">
           {sorted.length} player{sorted.length !== 1 ? 's' : ''}
         </div>
       )}

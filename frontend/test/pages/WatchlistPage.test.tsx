@@ -209,6 +209,18 @@ beforeEach(() => {
 });
 
 describe('WatchlistPage', () => {
+  it('shows a row-list skeleton, not a spinner, while the watchlist loads', () => {
+    // arrange
+    watchlistMock.mockReturnValue(new Promise(() => {}));
+
+    // act
+    const { container } = renderPage();
+
+    // assert
+    expect(screen.getByRole('status', { name: /loading watchlist/i })).toBeInTheDocument();
+    expect(container.querySelector('.loading')).toBeNull();
+  });
+
   it('renders the ranked candidates with their scores', async () => {
     renderPage();
 

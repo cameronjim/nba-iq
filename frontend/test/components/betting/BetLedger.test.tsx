@@ -93,8 +93,8 @@ describe('BetLedger', () => {
     expect(screen.getByText('New York Knicks -2.5')).toBeInTheDocument();
     expect(screen.getByText('Brunson over 28.5 points')).toBeInTheDocument();
     expect(screen.getByText('First basket: Wembanyama')).toBeInTheDocument();
-    expect(screen.getByText('won')).toBeInTheDocument();
-    expect(screen.getAllByText('pending')).toHaveLength(2);
+    expect(screen.getByText('W')).toBeInTheDocument();
+    expect(screen.getAllByText('Pending')).toHaveLength(2);
   });
 
   it('offers Won/Lost buttons only on pending non-straight bets', async () => {
@@ -181,5 +181,24 @@ describe('BetLedger', () => {
     await user.selectOptions(screen.getByLabelText('Bet type'), 'parlay');
     expect(screen.getByLabelText('List the legs')).toBeInTheDocument();
     expect(screen.queryByLabelText('Game')).not.toBeInTheDocument();
+  });
+
+  it('shows a skeleton table while loading', () => {
+    // arrange + act
+    render(
+      <BetLedger
+        bets={[]}
+        summary={{ wins: 0, losses: 0, pushes: 0, pending: 0 }}
+        loading
+        error=""
+        games={[]}
+        onTrackBet={noopTrack}
+        onSettleBet={noopSettle}
+        onRemoveBet={noopRemove}
+      />
+    );
+
+    // assert
+    expect(screen.getByRole('status', { name: 'Loading bets' })).toBeInTheDocument();
   });
 });

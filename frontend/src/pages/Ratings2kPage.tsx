@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Gamepad2, Search } from 'lucide-react';
+import { IconSearch } from '../components/icons';
+import { SkeletonTable } from '../components/Skeleton';
 import type { Rating2kSummary, Rating2kTeamType } from '../types';
 import { Rating2kTable } from '../components/ratings2k/Rating2kTable';
 import { Rating2kModal } from '../components/ratings2k/Rating2kModal';
@@ -39,37 +40,28 @@ export const Ratings2kPage = (): JSX.Element => {
 
   const renderBody = (): JSX.Element => {
     if (loading) {
-      return (
-        <div className="flex items-center justify-center py-20">
-          <span className="loading loading-spinner loading-lg" />
-        </div>
-      );
+      return <SkeletonTable rows={12} cols={5} label="Loading 2K ratings" />;
     }
 
     if (error) {
       return (
-        <div className="card bg-base-200">
-          <div className="card-body flex flex-col items-center py-12 gap-4">
-            <p className="text-error text-sm">{error}</p>
-            <button onClick={() => void reload()} className="btn btn-primary btn-sm">
-              Try Again
-            </button>
-          </div>
+        <div className="flex flex-col items-center py-12 gap-4 border border-base-300">
+          <p className="text-error text-sm">{error}</p>
+          <button onClick={() => void reload()} className="btn btn-primary btn-sm">
+            Try Again
+          </button>
         </div>
       );
     }
 
     if (rows.length === 0) {
       return (
-        <div className="card bg-base-200">
-          <div className="card-body items-center text-center py-12 gap-2">
-            <Gamepad2 size={32} className="opacity-30" />
-            <p className="font-semibold">No 2K ratings available yet</p>
-            <p className="text-sm opacity-60 max-w-md">
-              Player ratings and attributes show up here once the 2K roster has been
-              imported. Real NBA stats are on the Stats tab in the meantime.
-            </p>
-          </div>
+        <div className="flex flex-col items-center text-center py-12 gap-2 border border-base-300">
+          <p className="font-semibold">No 2K ratings available yet</p>
+          <p className="text-sm text-muted max-w-md">
+            Player ratings and attributes show up here once the 2K roster has been
+            imported. Real NBA stats are on the Stats tab in the meantime.
+          </p>
         </div>
       );
     }
@@ -80,11 +72,10 @@ export const Ratings2kPage = (): JSX.Element => {
   return (
     <div className="pb-20">
       <div className="max-w-[1400px] mx-auto px-4 py-6">
-        <div className="flex items-center gap-2 mb-1">
-          <Gamepad2 size={20} className="opacity-60" />
-          <h1 className="text-xl font-bold">2K Ratings</h1>
-        </div>
-        <p className="text-sm opacity-50 mb-5">
+        <h1 className="font-display text-3xl font-semibold uppercase tracking-wide mb-1">
+          2K Ratings
+        </h1>
+        <p className="text-sm text-muted mb-5">
           Overall ratings and full attribute breakdowns. Click a player for all 35 attributes.
         </p>
 
@@ -103,7 +94,7 @@ export const Ratings2kPage = (): JSX.Element => {
           </div>
 
           <label className="input input-bordered input-sm flex items-center gap-2 flex-1 min-w-[200px] max-w-[360px]">
-            <Search size={14} className="opacity-50" />
+            <IconSearch size={14} className="text-muted" />
             <input
               type="text"
               value={search}
@@ -115,7 +106,7 @@ export const Ratings2kPage = (): JSX.Element => {
           </label>
 
           {truncated && (
-            <span className="text-xs opacity-40">
+            <span className="text-xs text-faint">
               showing the top {rows.length} of {total} by rating
             </span>
           )}

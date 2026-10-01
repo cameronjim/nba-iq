@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  deltaDisplay,
   formatGameDate,
   formatTimeWithZone,
   formatTimestampBeside,
   formatTimestampWithZone,
+  percentileTier,
 } from '../../src/utils/analytics';
 
 describe('formatGameDate', () => {
@@ -71,5 +73,47 @@ describe('formatTimestampBeside', () => {
     expect(
       formatTimestampBeside('2026-09-30T23:00:00Z', '2026-10-01T17:11:00Z', 'America/Los_Angeles')
     ).toMatch(/^Sep 30, 4:00\sPM PDT$/);
+  });
+});
+
+describe('deltaDisplay', () => {
+  it('signs the text and uses plain glyphs only', () => {
+    // act
+    const up = deltaDisplay(1.24, 2, false);
+    const down = deltaDisplay(-0.4, 0.2, false);
+    const flat = deltaDisplay(0, 0.1, false);
+
+    // assert
+    expect([up.text, down.text, flat.text]).toEqual(['+1.2', '-0.4', '0.0']);
+  });
+
+  it('colors a notable move good or bad, flipping for lower-is-better stats', () => {
+    // act
+    const scoring = deltaDisplay(2, 1.5, false);
+    const turnovers = deltaDisplay(2, 1.5, true);
+
+    // assert
+    expect(scoring.className).toContain('text-success');
+    expect(turnovers.className).toContain('text-error');
+    expect(scoring.notable).toBe(true);
+  });
+
+  it('keeps a small or unstandardized move grey', () => {
+    // act
+    const small = deltaDisplay(0.5, 0.4, false);
+    const noSample = deltaDisplay(0.5, null, false);
+
+    // assert
+    expect(small).toMatchObject({ className: 'text-muted', notable: false });
+    expect(noSample).toMatchObject({ className: 'text-faint', notable: false });
+  });
+});
+
+describe('percentileTier', () => {
+  it('uses success and error only at the extremes and primary in between', () => {
+    // act + assert
+    expect([90, 75, 60, 25, 24].map(percentileTier)).toEqual([
+      'success', 'success', 'primary', 'primary', 'error',
+    ]);
   });
 });

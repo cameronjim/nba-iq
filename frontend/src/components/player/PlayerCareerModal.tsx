@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { IconClose } from '../icons';
 import { PlayerCareerSection } from './PlayerCareerSection';
 
 interface PlayerCareerModalProps {
@@ -28,17 +29,17 @@ export const PlayerCareerModal = ({
       <div className="modal-box max-w-3xl">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div className="min-w-0">
-            <h3 className="font-bold text-xl truncate" title={playerName}>
+            <h3 className="font-display font-semibold text-2xl uppercase tracking-wide truncate" title={playerName}>
               {playerName}
             </h3>
-            <p className="text-sm opacity-60">Every season on record</p>
+            <p className="text-sm text-muted">Every season on record</p>
           </div>
           <button
             className="btn btn-sm btn-circle btn-ghost"
             onClick={onClose}
             aria-label="Close season history"
           >
-            ✕
+            <IconClose size={14} />
           </button>
         </div>
 

@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Lightbulb, Target, TrendingUp, RefreshCw } from 'lucide-react';
 import { getWaiverSuggestions } from '../api/client';
 import { ChatBox } from '../components/ChatBox';
+import { IconRefresh } from '../components/icons';
+import { SkeletonLines } from '../components/Skeleton';
 import { PreferencesPrompt } from '../components/PreferencesPrompt';
 import { getCachedSuggestions, setCachedSuggestions } from '../api/clientCaches';
 
@@ -13,6 +14,32 @@ interface Suggestion {
 interface ImproveTeamPageProps {
   isLoggedIn: boolean;
 }
+
+const SuggestionList = ({
+  title,
+  items,
+  empty,
+}: {
+  title: string;
+  items: Suggestion[];
+  empty: string;
+}): JSX.Element => (
+  <section className="border-t border-base-300 pt-3">
+    <h2 className="font-display text-xl font-semibold uppercase tracking-wide mb-1">{title}</h2>
+    {items.length === 0 ? (
+      <p className="text-sm text-muted py-2">{empty}</p>
+    ) : (
+      <ul className="divide-y divide-base-300">
+        {items.map((item) => (
+          <li key={item.name} className="py-2.5">
+            <div className="font-semibold text-sm mb-0.5">{item.name}</div>
+            <p className="text-xs text-muted leading-relaxed">{item.reasoning}</p>
+          </li>
+        ))}
+      </ul>
+    )}
+  </section>
+);
 
 export const ImproveTeamPage = ({ isLoggedIn }: ImproveTeamPageProps) => {
   const initial = getCachedSuggestions();
@@ -80,13 +107,14 @@ export const ImproveTeamPage = ({ isLoggedIn }: ImproveTeamPageProps) => {
 
   return (
     <div className="max-w-[1400px] mx-auto px-4 py-6 space-y-5">
+      <h1 className="font-display text-3xl font-semibold uppercase tracking-wide">Improve Team</h1>
       {isLoggedIn && <PreferencesPrompt />}
       {isLoggedIn ? (
         <>
           <div className="flex items-center justify-between">
             <div>
               {cachedAt && (
-                <span className="text-xs opacity-40">Last updated {formatCacheTime(cachedAt)}</span>
+                <span className="text-xs text-muted">Last updated {formatCacheTime(cachedAt)}</span>
               )}
             </div>
             <button
@@ -94,97 +122,60 @@ export const ImproveTeamPage = ({ isLoggedIn }: ImproveTeamPageProps) => {
               disabled={refreshing || loading}
               className="btn btn-ghost btn-xs gap-1.5"
             >
-              <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-              {refreshing ? 'Refreshing...' : 'Refresh Suggestions'}
+              <IconRefresh size={12} />
+              {refreshing ? 'Refreshing' : 'Refresh suggestions'}
             </button>
           </div>
 
           {loading ? (
-            <div className="card bg-base-200">
-              <div className="card-body flex flex-col items-center py-16 gap-3">
-                <span className="loading loading-spinner loading-lg" />
-                <p className="text-sm opacity-50">AI is analyzing your roster and finding improvements...</p>
-                <p className="text-xs opacity-30">This may take a moment</p>
+            <div className="space-y-5" role="status" aria-label="Loading suggestions">
+              <p className="text-sm text-muted">Claude is reading your roster. This can take a few seconds.</p>
+              <SkeletonLines lines={3} label="Loading roster summary" />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <SkeletonLines lines={5} label="Loading trade targets" />
+                <SkeletonLines lines={5} label="Loading waiver pickups" />
               </div>
             </div>
           ) : error ? (
-            <div className="card bg-base-200">
-              <div className="card-body flex flex-col items-center py-16 gap-4">
-                <p className="text-error text-sm">{error}</p>
-                <button onClick={() => loadSuggestions()} className="btn btn-primary btn-sm">Try Again</button>
-              </div>
+            <div className="border border-base-300 flex flex-col items-center py-16 gap-4">
+              <p className="text-error text-sm">{error}</p>
+              <button onClick={() => loadSuggestions()} className="btn btn-primary btn-sm">Try again</button>
             </div>
           ) : emptyRoster ? (
-            <div className="card bg-base-200">
-              <div className="card-body flex flex-col items-center py-16 gap-2 text-center">
-                <p className="font-semibold text-sm">Add players to your team first</p>
-                <p className="text-xs opacity-60 max-w-xs">
-                  Go to <span className="font-medium">My Team</span> and add a few players. We'll suggest trades and waiver pickups based on your roster's weak categories.
-                </p>
-              </div>
+            <div className="border border-base-300 flex flex-col items-center py-16 gap-2 text-center">
+              <p className="font-semibold text-sm">Add players to your team first</p>
+              <p className="text-xs text-muted max-w-xs">
+                Go to <span className="font-medium">My Team</span> and add a few players. Trade and waiver suggestions are built around your roster&apos;s weak categories.
+              </p>
             </div>
           ) : (
             <>
               {summary && (
-                <div className="card bg-base-200">
-                  <div className="card-body p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Lightbulb size={16} className="text-primary" />
-                      <span className="text-sm font-semibold">Strategy Summary</span>
-                    </div>
-                    <p className="text-sm opacity-80 leading-relaxed">{summary}</p>
-                  </div>
-                </div>
+                <section className="border-t border-base-300 pt-3">
+                  <h2 className="font-display text-xl font-semibold uppercase tracking-wide mb-1">Claude&apos;s read on your roster</h2>
+                  <p className="text-sm leading-relaxed">{summary}</p>
+                </section>
               )}
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                <div className="card bg-base-200 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-base-300 flex items-center gap-2">
-                    <Target size={16} className="text-primary" />
-                    <h2 className="text-sm font-semibold">Trade Targets</h2>
-                  </div>
-                  <div className="p-4 space-y-3">
-                    {tradeTargets.length === 0 ? (
-                      <p className="text-sm opacity-40 text-center py-4">No trade targets found. Add players to your roster first.</p>
-                    ) : (
-                      tradeTargets.map((t, i) => (
-                        <div key={i} className="bg-base-300 rounded-lg p-3">
-                          <div className="font-medium text-sm mb-1">{t.name}</div>
-                          <p className="text-xs opacity-60 leading-relaxed">{t.reasoning}</p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div className="card bg-base-200 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-base-300 flex items-center gap-2">
-                    <TrendingUp size={16} className="text-success" />
-                    <h2 className="text-sm font-semibold">Waiver Wire Pickups</h2>
-                  </div>
-                  <div className="p-4 space-y-3">
-                    {waiverPickups.length === 0 ? (
-                      <p className="text-sm opacity-40 text-center py-4">No waiver suggestions found. Add players to your roster first.</p>
-                    ) : (
-                      waiverPickups.map((w, i) => (
-                        <div key={i} className="bg-base-300 rounded-lg p-3">
-                          <div className="font-medium text-sm mb-1">{w.name}</div>
-                          <p className="text-xs opacity-60 leading-relaxed">{w.reasoning}</p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-5">
+                <SuggestionList
+                  title="Trade targets"
+                  items={tradeTargets}
+                  empty="No trade targets found. Add players to your roster first."
+                />
+                <SuggestionList
+                  title="Waiver pickups"
+                  items={waiverPickups}
+                  empty="No waiver suggestions found. Add players to your roster first."
+                />
               </div>
             </>
           )}
         </>
       ) : (
-        <div className="card bg-base-200">
-          <div className="card-body flex flex-col items-center py-16 gap-2 text-center">
-            <p className="font-semibold">Sign in to unlock AI suggestions</p>
-            <p className="text-sm opacity-50">Use the Sign In button in the top right to get trade targets, waiver pickups, and AI chat.</p>
-          </div>
+        <div className="border border-base-300 flex flex-col items-center py-16 gap-2 text-center">
+          <p className="font-semibold">Sign in to get suggestions</p>
+          <p className="text-sm text-muted">Use the Sign In button in the top right to get trade targets, waiver pickups, and to ask Claude questions.</p>
         </div>
       )}
 

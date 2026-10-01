@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User } from 'lucide-react';
 import { chatWithAI } from '../api/client';
+import { IconSend } from './icons';
+import { SkeletonLines } from './Skeleton';
 import type { ChatMessage } from '../types';
 
 interface ChatBoxProps {
@@ -59,14 +60,14 @@ export const ChatBox = ({ contextType, isLoggedIn = true, emptyHint }: ChatBoxPr
   const formatMessage = (text: string): JSX.Element[] => {
     return text.split('\n').map((line, index) => {
       if (!line) {
-        return <span key={index} className="block">{' '}</span>;
+        return <span key={index} className="block">{' '}</span>;
       }
 
       const numbered = line.match(/^(\d+)\.\s(.*)$/);
       if (numbered) {
         return (
           <span key={`${index}-${line}`} className="block">
-            <span className="text-primary font-semibold">{numbered[1]}.</span>{' '}
+            <span className="font-semibold tabular-nums">{numbered[1]}.</span>{' '}
             {renderInline(numbered[2])}
           </span>
         );
@@ -74,8 +75,7 @@ export const ChatBox = ({ contextType, isLoggedIn = true, emptyHint }: ChatBoxPr
 
       if (line.startsWith('- ') || line.startsWith('* ')) {
         return (
-          <span key={`${index}-${line}`} className="block">
-            {'• '}
+          <span key={`${index}-${line}`} className="block pl-3">
             {renderInline(line.slice(2))}
           </span>
         );
@@ -86,62 +86,47 @@ export const ChatBox = ({ contextType, isLoggedIn = true, emptyHint }: ChatBoxPr
   };
 
   return (
-    <div className="card bg-base-200 overflow-hidden flex flex-col">
-      <div className="px-4 py-2.5 border-b border-base-300 flex items-center gap-2">
-        <Bot size={16} className="text-primary" />
-        <span className="text-sm font-semibold">AI Assistant</span>
-      </div>
+    <section className="border border-base-300 flex flex-col">
+      <h2 className="px-3 py-2 border-b border-base-300 bg-base-200 font-display text-lg font-semibold uppercase tracking-wide">
+        Ask Claude
+      </h2>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-[200px] max-h-[360px]">
+      <div className="flex-1 overflow-y-auto min-h-[200px] max-h-[360px]">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-8 text-center">
-            <Bot size={28} className="opacity-20 mb-2" />
-            <p className="text-xs opacity-40">
-              {isLoggedIn
-                ? emptyHint ?? 'Ask me anything about your fantasy team, player stats, or trade advice.'
-                : 'Sign in to chat with the AI assistant.'}
-            </p>
-          </div>
+          <p className="text-sm text-muted p-4">
+            {isLoggedIn
+              ? emptyHint ?? 'Ask about your fantasy team, player stats, or a trade.'
+              : 'Sign in to ask Claude questions.'}
+          </p>
         )}
 
-        {messages.map((msg, i) => (
-          <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`flex items-start gap-2 max-w-[85%] ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-              <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
-                msg.role === 'user' ? 'bg-primary' : 'bg-base-300 border border-base-content/10'
-              }`}>
-                {msg.role === 'user'
-                  ? <User size={12} className="text-primary-content" />
-                  : <Bot size={12} className="text-primary" />}
-              </div>
-              <div className={`px-3 py-2 rounded-xl text-sm leading-relaxed ${
-                msg.role === 'user'
-                  ? 'bg-primary text-primary-content rounded-tr-sm'
-                  : 'bg-base-300 rounded-tl-sm'
-              }`}>
-                {msg.role === 'assistant' ? formatMessage(msg.message) : msg.message}
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {loading && (
-          <div className="flex justify-start">
-            <div className="flex items-start gap-2">
-              <div className="w-6 h-6 rounded-full bg-base-300 flex items-center justify-center flex-shrink-0">
-                <Bot size={12} className="text-primary" />
-              </div>
-              <div className="bg-base-300 rounded-xl rounded-tl-sm px-4 py-3">
-                <span className="loading loading-dots loading-sm" />
-              </div>
-            </div>
-          </div>
+        {messages.length > 0 && (
+          <ol className="divide-y divide-base-300">
+            {messages.map((msg, i) => (
+              <li key={i} className="px-3 py-2.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted mb-0.5">
+                  {msg.role === 'user' ? 'You' : 'Claude'}
+                </p>
+                <div className="text-sm leading-relaxed">
+                  {msg.role === 'assistant' ? formatMessage(msg.message) : msg.message}
+                </div>
+              </li>
+            ))}
+            {loading && (
+              <li className="px-3 py-2.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted mb-1">
+                  Claude
+                </p>
+                <SkeletonLines lines={2} label="Claude is replying" />
+              </li>
+            )}
+          </ol>
         )}
 
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="px-3 py-2.5 border-t border-base-300 bg-base-300/50">
+      <div className="px-3 py-2.5 border-t border-base-300 bg-base-200">
         <div className="flex items-center gap-2">
           <input
             ref={inputRef}
@@ -149,19 +134,21 @@ export const ChatBox = ({ contextType, isLoggedIn = true, emptyHint }: ChatBoxPr
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder={isLoggedIn ? 'Ask the AI assistant...' : 'Sign in to chat...'}
+            placeholder={isLoggedIn ? 'Ask a question' : 'Sign in to chat'}
+            aria-label="Message for Claude"
             className="input input-bordered input-sm flex-1"
             disabled={loading || !isLoggedIn}
           />
           <button
             onClick={handleSend}
             disabled={loading || !input.trim() || !isLoggedIn}
-            className="btn btn-primary btn-sm btn-square"
+            className="btn btn-primary btn-sm gap-1.5"
           >
-            <Send size={14} />
+            <IconSend size={14} />
+            Send
           </button>
         </div>
       </div>
-    </div>
+    </section>
   );
 };

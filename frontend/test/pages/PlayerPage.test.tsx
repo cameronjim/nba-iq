@@ -225,6 +225,16 @@ describe('PlayerPage', () => {
     expect(screen.getByText(/Game logs as of no game logs yet/i)).toBeInTheDocument();
   });
 
+  it('shows skeletons instead of a spinner while the analytics load', () => {
+    analyticsMock.mockReturnValue(new Promise(() => {}));
+
+    const { container } = renderPage();
+
+    expect(screen.getByRole('status', { name: 'Loading player' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading player stats' })).toBeInTheDocument();
+    expect(container.querySelector('.loading-spinner')).toBeNull();
+  });
+
   it('omits the prediction card while the api returns a null prediction', async () => {
     renderPage();
     await screen.findByRole('heading', { name: 'Test Allstar' });
@@ -246,7 +256,7 @@ describe('PlayerPage', () => {
 
     renderPage();
 
-    expect(await screen.findByRole('heading', { name: /Projection/i })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Model projection' })).toBeInTheDocument();
     expect(screen.getByText(/Usage should hold/i)).toBeInTheDocument();
     expect(screen.getByText('30.1')).toBeInTheDocument();
     expect(screen.getByText(/medium confidence/i)).toBeInTheDocument();

@@ -116,7 +116,7 @@ describe('rating tiers', () => {
     expect(tierBarClass('40')).toBe('bg-error');
   });
 
-  it('maps every tier to a daisyUI semantic class, never a palette color', () => {
+  it('maps every tier to a single-hue daisyUI class, never a palette color', () => {
     const classes = [
       tierBarClass(98), tierBarClass(80), tierBarClass(60), tierBarClass(30), tierBarClass(null),
       tierBadgeClass(98), tierBadgeClass(80), tierBadgeClass(60), tierBadgeClass(30),
@@ -124,8 +124,8 @@ describe('rating tiers', () => {
     ];
 
     expect(classes).toEqual([
-      'bg-success', 'bg-info', 'bg-warning', 'bg-error', 'bg-base-300',
-      'badge-success', 'badge-info', 'badge-warning', 'badge-error', 'badge-ghost',
+      'bg-success', 'bg-primary', 'bg-base-content', 'bg-error', 'bg-base-300',
+      'badge-success', 'badge-primary', 'badge-outline', 'badge-error', 'badge-ghost',
     ]);
     for (const className of classes) {
       expect(className).not.toMatch(

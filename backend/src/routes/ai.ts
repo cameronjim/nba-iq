@@ -6,11 +6,15 @@ import { getUserPreferences, buildPreferencesPromptBlock, buildBettingPromptBloc
 import { getCurrentBenchmarks, formatBenchmarksLine } from '../services/benchmarks.js';
 import { getUpcomingOdds } from '../services/odds.js';
 import { sanitizeChatHistory, MAX_MESSAGE_LENGTH } from '../services/chatHistory.js';
+import { stripSlop, stripSlopList } from '../services/plainText.js';
 import type { AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 
-const PROMPT_VERSION = 'v6-ranked-candidates';
+const PROMPT_VERSION = 'v7-plain-text';
+
+const PLAIN_OUTPUT_RULE =
+  'Write in plain sentences. Never use emoji and never use em dashes; use commas, periods or hyphens instead.';
 
 async function getRosterHash(userId: number): Promise<string> {
   const result = await query(
@@ -40,20 +44,22 @@ router.post('/chat', async (req: Request, res: Response): Promise<void> => {
     let persona: string;
     let prefsBlock: string;
     if (context_type === 'betting') {
-      persona = 'You are an expert NBA betting analyst. You help users understand betting markets and find value in upcoming games. Be honest about uncertainty: lines are efficient and big edges are rare. Plain text only, no markdown headers, and never use em dashes.';
+      persona = 'You are an expert NBA betting analyst. You help users understand betting markets and find value in upcoming games. Be honest about uncertainty: lines are efficient and big edges are rare. Plain text only, no markdown headers. ' + PLAIN_OUTPUT_RULE;
       prefsBlock = buildBettingPromptBlock(prefs);
       try {
         const games = (await getUpcomingOdds()).filter((g) => Object.keys(g.markets).length > 0);
         if (games.length > 0) context = await buildBettingContext(games);
-      } catch { /* espn unavailable — chat continues without game context */ }
+      } catch { /* espn unavailable, chat continues without game context */ }
     } else {
-      persona = 'You are an expert fantasy basketball assistant for 9-category leagues (PTS, REB, AST, STL, BLK, FG%, FT%, 3PM, TO). You help users analyze their roster and make strategic decisions.';
+      persona = 'You are an expert fantasy basketball assistant for 9-category leagues (PTS, REB, AST, STL, BLK, FG%, FT%, 3PM, TO). You help users analyze their roster and make strategic decisions. ' + PLAIN_OUTPUT_RULE;
       prefsBlock = buildPreferencesPromptBlock(prefs);
       if (context_type === 'myteam') context = await buildTeamContext(userId);
       else if (context_type === 'waiver') context = await buildWaiverContext(userId, prefs.league_size);
     }
 
-    const systemPrompt = `${persona}${prefsBlock}\n\n${context ? `Current context:\n\n${context}` : 'No additional context.'}\n\nProvide concise, actionable advice. Reference specific stats. Be direct.`;
+    const systemPrompt = `${persona}${prefsBlock}\n\n${context ? `Current context:\n\n${context}` : 'No additional context.'}\n\nProvide concise, actionable advice. Reference specific stats. Be direct.
+
+${PLAIN_OUTPUT_RULE}`;
 
     const messages: Array<{ role: string; content: string }> = [
       ...sanitizeChatHistory(history),
@@ -61,7 +67,7 @@ router.post('/chat', async (req: Request, res: Response): Promise<void> => {
     ];
 
     const reply = await callClaude(systemPrompt, messages, { model: 'claude-sonnet-5', maxTokens: 1024 });
-    res.json({ reply });
+    res.json({ reply: stripSlop(reply) });
   } catch {
     res.status(500).json({ error: 'Failed to process chat' });
   }
@@ -112,10 +118,10 @@ router.get('/team-analysis', async (req: Request, res: Response): Promise<void> 
 Benchmarks are the actual current per-player averages across active NBA rotation players (n=${benchmarks.sample_size}, filter: 30+ games & 20+ minutes per game):
   ${formatBenchmarksLine(benchmarks)}
 
-STRICT rating rules — compute the roster's per-player average for each category, then apply these thresholds. Do not inflate ratings:
+STRICT rating rules: compute the roster's per-player average for each category, then apply these thresholds. Do not inflate ratings:
 
   "strong"  = team average is at least 10% above the benchmark
-              (for TO, lower is better — strong means at least 10% BELOW ${benchmarks.TO})
+              (for TO, lower is better, so strong means at least 10% BELOW ${benchmarks.TO})
   "average" = team average is within plus or minus 10% of the benchmark
   "weak"    = team average is at least 10% below the benchmark
               (for TO, weak means at least 10% ABOVE ${benchmarks.TO})
@@ -140,13 +146,19 @@ Return ONLY a JSON object with this exact shape (no prose, no markdown):
   "suggestions": ["<actionable suggestion>", ...]
 }
 
-You MUST include at least 2 entries in each of strengths, weaknesses, and suggestions. Rate every one of the 9 categories using the strict rules above. Return ONLY valid JSON.`;
+You MUST include at least 2 entries in each of strengths, weaknesses, and suggestions. Rate every one of the 9 categories using the strict rules above. ${PLAIN_OUTPUT_RULE} Return ONLY valid JSON.`;
 
     const messages = [{ role: 'user', content: `Analyze this roster:\n\n${context}` }];
     const reply = await callClaude(systemPrompt, messages, { maxTokens: 2048 });
 
     try {
-      const analysis = JSON.parse(extractJSON(reply));
+      const parsed = JSON.parse(extractJSON(reply));
+      const analysis = {
+        ...parsed,
+        strengths: stripSlopList(parsed.strengths),
+        weaknesses: stripSlopList(parsed.weaknesses),
+        suggestions: stripSlopList(parsed.suggestions),
+      };
 
       const empty =
         Object.keys(analysis.categories ?? {}).length === 0 &&
@@ -170,7 +182,7 @@ You MUST include at least 2 entries in each of strengths, weaknesses, and sugges
       );
       res.json(analysis);
     } catch {
-      res.json({ raw_analysis: reply, strengths: [], weaknesses: [], suggestions: [], categories: {} });
+      res.json({ raw_analysis: stripSlop(reply), strengths: [], weaknesses: [], suggestions: [], categories: {} });
     }
   } catch {
     res.status(500).json({ error: 'Failed to analyze team' });
@@ -229,7 +241,7 @@ Rules:
 - Only recommend players from the candidate lists provided. Do not invent player names.
 - The candidate lists are already ranked numerically by marginal value to this roster. Explain and sanity-check that ranking rather than re-ranking from scratch: favor the top of each list, and if you skip a higher-ranked player, say why in the reasoning of the player you chose instead.
 - Each player name must appear at most once across the entire response.
-- The "reasoning" field must be plain text only — no markdown, no rank numbers, no meta-commentary.
+- The "reasoning" field must be plain text only, no markdown, no rank numbers, no meta-commentary.
 - Do not include phrases like "Duplicate entry", "instead recommend", or any self-correction notes.
 - Provide exactly 5 trade targets and exactly 5 waiver pickups.
 
@@ -244,7 +256,7 @@ Return ONLY a JSON object with this exact shape (no prose, no markdown):
   "summary": "<2-3 sentence plain text strategy focused on the team's biggest weaknesses>"
 }
 
-Return ONLY valid JSON.`;
+${PLAIN_OUTPUT_RULE} Return ONLY valid JSON.`;
 
     const messages = [{ role: 'user', content: `Suggest improvements:\n\n${context}` }];
     const reply = await callClaude(systemPrompt, messages, { maxTokens: 2048 });
@@ -258,12 +270,16 @@ Return ONLY valid JSON.`;
           if (!key || seen.has(key)) return false;
           seen.add(key);
           return true;
-        }).slice(0, 5);
+        }).slice(0, 5).map((item) => ({
+          ...item,
+          name: stripSlop(item.name),
+          reasoning: stripSlop(item.reasoning ?? ''),
+        }));
 
       const suggestions = {
         trade_targets: dedup(raw.trade_targets),
         waiver_pickups: dedup(raw.waiver_pickups),
-        summary: raw.summary ?? '',
+        summary: stripSlop(raw.summary ?? ''),
       };
 
       const empty = suggestions.trade_targets.length === 0 && suggestions.waiver_pickups.length === 0;
@@ -283,7 +299,7 @@ Return ONLY valid JSON.`;
       );
       res.json(suggestions);
     } catch {
-      res.json({ raw: reply, trade_targets: [], waiver_pickups: [], summary: '' });
+      res.json({ raw: stripSlop(reply), trade_targets: [], waiver_pickups: [], summary: '' });
     }
   } catch {
     res.status(500).json({ error: 'Failed to generate suggestions' });

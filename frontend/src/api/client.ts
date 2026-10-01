@@ -41,11 +41,6 @@ export async function register(username: string, email: string, password: string
   setAuthToken(data.token);
 }
 
-export async function googleSignIn(credential: string): Promise<void> {
-  const { data } = await api.post('/auth/google', { credential });
-  setAuthToken(data.token);
-}
-
 export async function googleSignInWithToken(accessToken: string): Promise<void> {
   const { data } = await api.post('/auth/google', { access_token: accessToken });
   setAuthToken(data.token);
@@ -128,17 +123,6 @@ export async function getPreferences(): Promise<AIPreferences> {
 
 export async function updatePreferences(prefs: AIPreferences): Promise<AIPreferences> {
   const { data } = await api.patch('/preferences', prefs);
-  return data;
-}
-
-export interface DataStatus {
-  players_updated_at: string | null;
-  teams_updated_at: string | null;
-  games_updated_at: string | null;
-}
-
-export async function getDataStatus(): Promise<DataStatus> {
-  const { data } = await api.get('/status');
   return data;
 }
 

@@ -64,13 +64,13 @@ test.describe('Projections sort and reasons', () => {
     );
   });
 
-  test('the header dates the run by publish time, never by artifact id', async ({ page }) => {
+  test('the header says when injuries were read, not the publish time or artifact id', async ({ page }) => {
     await mockApi(page);
     const projections = new ProjectionsPage(page);
     await projections.goto();
 
-    await expect(projections.subtitle).toContainText('published Feb 4');
-    await expect(projections.subtitle).toContainText('injuries as of');
+    await expect(projections.subtitle).toContainText('Injuries as of Feb 4');
+    await expect(projections.subtitle).not.toContainText('published');
     await expect(projections.subtitle).not.toContainText('v1-decomposed');
     await expect(projections.coverageNotice).toHaveCount(0);
   });
