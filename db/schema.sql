@@ -456,6 +456,9 @@ CREATE TABLE IF NOT EXISTS player_injury_reports (
     status_normalized TEXT,
     reason TEXT,
     source TEXT NOT NULL,
+    team_id TEXT,
+    report_url TEXT,
+    team_submitted BOOLEAN,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -534,6 +537,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_player_team_stints_one_open
   ON player_team_stints(nba_player_id) WHERE valid_to IS NULL;
 CREATE INDEX IF NOT EXISTS idx_player_injury_reports_player_captured
   ON player_injury_reports(nba_player_id, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_player_injury_reports_game_as_of
+  ON player_injury_reports(nba_game_id, report_as_of DESC) WHERE nba_game_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_predicted_at ON prediction_runs(status, predicted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_prediction_runs_channel_served ON prediction_runs(channel, status, predicted_at DESC);
 -- the UNIQUE constraint above does not bite for expected values: Postgres treats

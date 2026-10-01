@@ -18,6 +18,7 @@ from config import (
 from database import TARGET_DEV, TARGET_PROD, get_db, resolve_database_url  # noqa: F401
 from parsing import parse_team_types, season_range, season_start_year
 from fetching import stats_nba_reachable
+from injury_report import scrape_official_injuries
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
@@ -122,7 +123,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--injuries-only",
         dest="injuries_only",
         action="store_true",
-        help="run ONLY the injury-report scrape, skipping every other phase",
+        help="run ONLY the injury scrapes (CBS, then the official report)",
+    )
+    parser.add_argument(
+        "--official-injuries-only",
+        dest="official_injuries_only",
+        action="store_true",
+        help="run ONLY the official nba injury report, skipping CBS",
     )
     parser.add_argument(
         "--dry-run",
@@ -153,6 +160,14 @@ def _run_phase(name: str, phase: Callable[[], object]) -> bool:
         return False
 
 
+def _injury_phases(conn: psycopg2.extensions.connection, dry_run: bool) -> None:
+    # official second so its game-specific designations overwrite CBS's on players.
+    _run_phase("injuries (cbs)", lambda: scrape_injuries(conn, dry_run=dry_run))
+    _run_phase(
+        "injuries (official)", lambda: scrape_official_injuries(conn, dry_run=dry_run)
+    )
+
+
 def _truth_layer_phases(
     conn: psycopg2.extensions.connection, season: str, dry_run: bool
 ) -> bool:
@@ -166,7 +181,7 @@ def _truth_layer_phases(
     _run_phase(
         "game status", lambda: scrape_game_status(conn, season, dry_run=dry_run)
     )
-    _run_phase("injuries", lambda: scrape_injuries(conn, dry_run=dry_run))
+    _injury_phases(conn, dry_run)
     return schedule_ok
 
 
@@ -225,7 +240,9 @@ def main(argv: list[str] | None = None) -> None:
         elif args.sync_truth:
             schedule_ok = _truth_layer_phases(conn, args.season, args.dry_run)
         elif args.injuries_only:
-            scrape_injuries(conn, dry_run=args.dry_run)
+            _injury_phases(conn, args.dry_run)
+        elif args.official_injuries_only:
+            scrape_official_injuries(conn, dry_run=args.dry_run)
         else:
             stats_reachable = stats_nba_reachable()
             if not stats_reachable:
@@ -238,7 +255,7 @@ def main(argv: list[str] | None = None) -> None:
             if stats_reachable:
                 scrape_teams(conn, dry_run=args.dry_run)
             scrape_scoreboard(conn, dry_run=args.dry_run)
-            scrape_injuries(conn, dry_run=args.dry_run)
+            _injury_phases(conn, args.dry_run)
             # truth layer runs last: the four scrapes above back user-visible
             # pages that must not be held hostage to it.
             # offseason trades, signings and rookies must land before predictions.
