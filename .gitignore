@@ -19,3 +19,4 @@ frontend/playwright/.cache/
 
 # local infra notes, maintainer only
 SETUP_GUIDE.txt
+scraper/logs/
