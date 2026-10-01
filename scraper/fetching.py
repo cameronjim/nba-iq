@@ -24,10 +24,19 @@ from config import (
     NBA_2K_PAGE_LIMIT,
     NBA_2K_REQUEST_DELAY_SECONDS,
     NBA_2K_RETRY_DELAY_SECONDS,
+    NBA_WEB_GAMES_URL,
+    NBA_WEB_PLAYERS_URL,
+    NBA_WEB_TIMEOUT_SECONDS,
     SEASON,
     SEASON_TYPE_REGULAR,
 )
-from parsing import _normalize_name, _opt_float, season_start_year, v2_inactive_is_unreliable
+from parsing import (
+    _normalize_name,
+    _opt_float,
+    extract_next_data,
+    season_start_year,
+    v2_inactive_is_unreliable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -422,11 +431,46 @@ def _fetch_inactive_players(game_id: str, game_date: date | None) -> tuple[list[
     return rows, "v2-suspect" if v2_unreliable else "v2"
 
 
-def _fetch_team_roster(team_id: str, season: str) -> list[dict]:
+def _fetch_team_roster(
+    team_id: str,
+    season: str,
+    max_attempts: int = BACKFILL_MAX_ATTEMPTS,
+    timeout: int = 60,
+) -> list[dict]:
     def fetch() -> commonteamroster.CommonTeamRoster:
         return commonteamroster.CommonTeamRoster(
-            team_id=team_id, season=season, timeout=60
+            team_id=team_id, season=season, timeout=timeout
         )
 
-    roster = _fetch_with_retry(f"team roster {team_id} {season}", fetch)
+    roster = _fetch_with_retry(
+        f"team roster {team_id} {season}", fetch, max_attempts=max_attempts
+    )
     return roster.get_data_frames()[0].to_dict("records")
+
+
+def _fetch_nba_web_page(label: str, url: str, params: dict | None = None) -> dict:
+    # nba.com pages are reachable from CI when stats.nba.com is not; a desktop
+    # user agent is required.
+    def fetch() -> dict:
+        resp = requests.get(
+            url,
+            params=params,
+            headers={"User-Agent": BROWSER_USER_AGENT},
+            timeout=NBA_WEB_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return extract_next_data(resp.text)
+
+    return _fetch_with_retry(label, fetch, max_attempts=2, initial_delay=3.0)
+
+
+def _fetch_nba_web_games(game_date: date) -> dict:
+    return _fetch_nba_web_page(
+        f"nba.com games {game_date.isoformat()}",
+        NBA_WEB_GAMES_URL,
+        {"date": game_date.isoformat()},
+    )
+
+
+def _fetch_nba_web_players() -> dict:
+    return _fetch_nba_web_page("nba.com players index", NBA_WEB_PLAYERS_URL)

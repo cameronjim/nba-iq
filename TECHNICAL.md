@@ -12,7 +12,8 @@ conventions (style, testing, pre-commit checklist), see [AGENTS.md](AGENTS.md).
 | ESPN public API (`site.api.espn.com`) | Games, scores, live scoreboard, betting odds | Not IP-blocked from AWS, which is why it backs the scoreboard and odds board instead of `cdn.nba.com`. |
 | [CBS Sports](https://www.cbssports.com/nba/injuries/) | Injury reports and specific positions | Parsed with Beautiful Soup. |
 | [`nba2kapi.com`](https://nba2kapi.com) | NBA 2K overall ratings, 35 attributes, badges, and rating history | Data originates from [2kratings.com](https://www.2kratings.com). Not affiliated with or endorsed by 2K Sports, Take-Two, or the NBA. Matching to our players is name-based, since 2K publishes no NBA ids. |
-| `stats.nba.com` &rarr; `scheduleleaguev2` | The season schedule, including games not yet played | Publishes the whole season in advance, which is what lets a prediction be made for tonight's game before any box score exists. Falls back to reconstructing completed games from `leaguegamelog` when the endpoint is unavailable. ESPN is deliberately *not* the fallback: it keys on its own event ids, which do not join to any `stats.nba.com` game id. |
+| `stats.nba.com` &rarr; `scheduleleaguev2` | The season schedule, including games not yet played | Publishes the whole season in advance, which is what lets a prediction be made for tonight's game before any box score exists. When the endpoint is unavailable it falls back to the `nba.com/games?date=` pages (real NBA game ids, reachable from CI), then to reconstructing completed games from `leaguegamelog`. ESPN is deliberately *not* a fallback: it keys on its own event ids, which do not join to any `stats.nba.com` game id. |
+| `nba.com` web pages (`/games?date=`, `/players`) | Schedule fallback and roster fallback for `player_team_stints` | Read from the `__NEXT_DATA__` JSON embedded in each page, with a desktop user agent. The players index gives every current team assignment in one request. |
 | `stats.nba.com` &rarr; `playergamelogs`, `leaguegamelog` | Per-game player and team box scores | One request each covers a whole season, or any date window within it, so the incremental sync costs two requests per run rather than one per game. |
 | `stats.nba.com` &rarr; `boxscoresummaryv3` (fallback `boxscoresummaryv2`) | Official per-game inactive lists, from the `InactivePlayers` result set | The only phase that costs a request **per game**, which is why the truth-layer backfill is slow and opt-in. `v3` is tried first because `nba_api` documents `v2` as having no data for games on or after 2025-04-10. |
 
@@ -191,8 +192,9 @@ Ids are `TEXT` throughout, because NBA game ids carry leading zeros
 (`0022300061`) and stop being valid ids the moment something parses them as a
 number.
 
-**The incremental half runs as part of the normal 6-hour cron** — schedule, game
-logs, then game status, after the existing four scrapes. Each phase logs and
+**The incremental half runs as part of the normal 6-hour cron** — roster snapshot,
+schedule, game logs, then game status, after the existing four scrapes. The run
+exits non-zero if the schedule sync failed from every source. Each phase logs and
 continues on failure, so an outage in one cannot cost the others. The game-log
 sync is watermarked on `MAX(game_date)` and re-reads a trailing few-day window to
 pick up scorer corrections. The status phase is bounded to recent games per run,

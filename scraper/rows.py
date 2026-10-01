@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 
 from config import (
     ABBR_TO_TEAM_ID,
+    TEAM_ID_TO_ABBR,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
 )
 from parsing import (
@@ -82,6 +83,14 @@ def plan_stint_change(
         close_valid_to=close_to,
     )
     return change
+
+
+def stint_is_newer_than_game_log(
+    open_stint: tuple[str, date] | None, latest_game_date: date
+) -> bool:
+    # a roster snapshot observed a move newer than any game we hold; the game
+    # log is stale for him until his debut and must not reopen the old team.
+    return open_stint is not None and open_stint[1] > latest_game_date
 
 
 def plan_roster_snapshot(
@@ -282,6 +291,67 @@ def schedule_rows_from_league_schedule(
             }
         )
     return rows
+
+
+def _parse_utc(val: object) -> datetime | None:
+    if not val:
+        return None
+    try:
+        return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def schedule_rows_from_nba_web(
+    next_data: Mapping, game_date: date, season: str
+) -> list[dict]:
+    # same row shape as schedule_rows_from_league_schedule. game_date is the
+    # requested page date, which is the eastern game date; gameTimeEastern is
+    # unusable because it carries a misleading Z suffix.
+    page_props = (next_data.get("props") or {}).get("pageProps") or {}
+    modules = (page_props.get("gameCardFeed") or {}).get("modules") or []
+    rows: list[dict] = []
+    for module in modules:
+        for card in (module or {}).get("cards") or []:
+            data = (card or {}).get("cardData")
+            if not isinstance(data, Mapping):
+                continue
+            game_id = str(data.get("gameId") or "").strip()
+            if not game_id:
+                continue
+            home = data.get("homeTeam") or {}
+            away = data.get("awayTeam") or {}
+            rows.append(
+                {
+                    "nba_game_id": game_id,
+                    "season": str(data.get("seasonYear") or season),
+                    "season_type": season_type_from_game_id(game_id),
+                    "game_date": game_date,
+                    "scheduled_at": _parse_utc(data.get("gameTimeUtc")),
+                    "home_team_id": str(home.get("teamId") or "") or None,
+                    "away_team_id": str(away.get("teamId") or "") or None,
+                    "home_team_abbr": home.get("teamTricode") or None,
+                    "away_team_abbr": away.get("teamTricode") or None,
+                    "game_status": data.get("gameStatusText") or None,
+                    "postponed_status": None,
+                    "source": "nba_web",
+                }
+            )
+    return rows
+
+
+def roster_rows_from_nba_players_index(next_data: Mapping) -> dict[str, str]:
+    # player id -> team id, in the shape fetch_roster_snapshot builds. free
+    # agents carry no team and are skipped, never closed.
+    page_props = (next_data.get("props") or {}).get("pageProps") or {}
+    snapshot: dict[str, str] = {}
+    for raw in page_props.get("players") or []:
+        player_id = str(raw.get("PERSON_ID") or "").strip()
+        team_id = str(raw.get("TEAM_ID") or "").strip()
+        if not player_id or team_id in ("", "0") or team_id not in TEAM_ID_TO_ABBR:
+            continue
+        snapshot[player_id] = team_id
+    return snapshot
 
 
 def build_player_game_log_row(

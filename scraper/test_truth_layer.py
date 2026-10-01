@@ -5,6 +5,7 @@ import pytest
 
 from backfill import NOT_POSTPONED_PREDICATE
 from config import (
+    current_season,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
     ROSTER_SNAPSHOT_SOURCE,
     SEASON,
@@ -13,6 +14,7 @@ from config import (
 from database import is_write_statement
 from parsing import (
     box_score_violations,
+    extract_next_data,
     in_season,
     normalize_injury_status,
     parse_game_date,
@@ -33,12 +35,16 @@ from rows import (
     normalize_inactive_rows,
     plan_roster_snapshot,
     plan_stint_change,
+    roster_rows_from_nba_players_index,
     schedule_rows_from_league_schedule,
+    schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
     split_rows_on_season_boundary,
+    stint_is_newer_than_game_log,
     supplement_player_log_rows,
 )
-from run_scraper import _parse_args
+from run_scraper import _parse_args, _run_phase
+from truth_layer import fetch_nba_web_schedule_rows
 
 # fixtures use the real column names from the endpoints this scraper calls,
 # copied from nba_api 1.11.4's own expected_data declarations: a fixture that
@@ -908,3 +914,193 @@ class TestSeasonCli:
     def test_the_backfill_to_season_default_is_unchanged(self):
         # --season must not have quietly become --to; they are different bounds
         assert _parse_args(["--season", "2026-27"]).to_season == SEASON
+
+
+def _card(game_id, home=("1610612765", "DET"), away=("1610612738", "BOS"), **extra):
+    data = {
+        "gameId": game_id,
+        "seasonYear": "2026-27",
+        "seasonType": "Regular Season",
+        "gameStatus": 1,
+        "gameStatusText": "7:00 pm ET",
+        "gameTimeUtc": "2026-10-20T23:00:00Z",
+        "homeTeam": {"teamId": int(home[0]), "teamTricode": home[1]},
+        "awayTeam": {"teamId": int(away[0]), "teamTricode": away[1]},
+    }
+    data.update(extra)
+    return {"cardData": data}
+
+
+def _games_page(*cards):
+    return {"props": {"pageProps": {"gameCardFeed": {"modules": [{"cards": list(cards)}]}}}}
+
+
+class TestCurrentSeason:
+    def test_before_july_belongs_to_the_season_that_started_last_year(self):
+        assert current_season(date(2026, 6, 30)) == "2025-26"
+
+    def test_july_first_starts_the_next_season(self):
+        assert current_season(date(2026, 7, 1)) == "2026-27"
+
+    def test_fall_and_spring_of_one_season_agree(self):
+        assert current_season(date(2026, 9, 30)) == "2026-27"
+        assert current_season(date(2027, 4, 1)) == "2026-27"
+
+    def test_century_rollover_keeps_two_digits(self):
+        assert current_season(date(2099, 10, 1)) == "2099-00"
+
+    def test_agrees_with_the_season_window_helpers(self):
+        for day in (date(2026, 6, 30), date(2026, 7, 1), date(2027, 6, 30)):
+            assert in_season(day, current_season(day))
+
+
+class TestExtractNextData:
+    def test_reads_the_embedded_json(self):
+        html = (
+            '<html><script id="__NEXT_DATA__" type="application/json">'
+            '{"props": {"pageProps": {"a": 1}}}</script></html>'
+        )
+        assert extract_next_data(html) == {"props": {"pageProps": {"a": 1}}}
+
+    def test_a_page_without_the_payload_raises(self):
+        with pytest.raises(ValueError):
+            extract_next_data("<html>blocked</html>")
+
+
+class TestScheduleFromNbaWeb:
+    def test_preseason_and_regular_games_use_the_game_id_for_season_type(self):
+        page = _games_page(_card("0012600009"), _card("0022600001"))
+
+        rows = schedule_rows_from_nba_web(page, date(2026, 10, 20), "2026-27")
+
+        assert [r["season_type"] for r in rows] == ["Pre Season", "Regular Season"]
+        assert rows[0]["nba_game_id"] == "0012600009"
+
+    def test_row_matches_the_shape_of_the_primary_source(self):
+        primary = schedule_rows_from_league_schedule([SEASON_GAME_ROW], "2025-26")[0]
+
+        row = schedule_rows_from_nba_web(
+            _games_page(_card("0022600001")), date(2026, 10, 20), "2026-27"
+        )[0]
+
+        assert set(row) == set(primary)
+        assert row["home_team_id"] == "1610612765"
+        assert row["away_team_abbr"] == "BOS"
+        assert row["game_date"] == date(2026, 10, 20)
+        assert row["game_status"] == "7:00 pm ET"
+        assert row["postponed_status"] is None
+        assert row["source"] == "nba_web"
+
+    def test_scheduled_at_is_utc_aware(self):
+        row = schedule_rows_from_nba_web(
+            _games_page(_card("0022600001")), date(2026, 10, 20), "2026-27"
+        )[0]
+        assert row["scheduled_at"].isoformat() == "2026-10-20T23:00:00+00:00"
+
+    def test_cards_without_card_data_or_game_id_are_skipped(self):
+        page = _games_page({"cardType": "promo"}, _card(""), _card("0022600001"))
+        page["props"]["pageProps"]["gameCardFeed"]["modules"].append({})
+
+        rows = schedule_rows_from_nba_web(page, date(2026, 10, 20), "2026-27")
+
+        assert [r["nba_game_id"] for r in rows] == ["0022600001"]
+
+    def test_missing_season_year_falls_back_to_the_argument(self):
+        page = _games_page(_card("0022600001", seasonYear=None))
+        row = schedule_rows_from_nba_web(page, date(2026, 10, 20), "2026-27")[0]
+        assert row["season"] == "2026-27"
+
+    def test_a_page_with_no_feed_yields_nothing(self):
+        assert schedule_rows_from_nba_web({}, date(2026, 10, 20), "2026-27") == []
+
+
+class TestNbaWebScheduleCrawl:
+    def test_gives_up_after_consecutive_failures(self, monkeypatch):
+        calls = []
+
+        def boom(game_date):
+            calls.append(game_date)
+            raise OSError("blocked")
+
+        monkeypatch.setattr("truth_layer._fetch_nba_web_games", boom)
+
+        rows = fetch_nba_web_schedule_rows("2026-27", date(2026, 10, 1), 0)
+
+        assert rows == []
+        assert len(calls) == 3
+
+    def test_covers_the_window_around_today(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            "truth_layer._fetch_nba_web_games",
+            lambda game_date: seen.append(game_date) or _games_page(_card("0022600001")),
+        )
+
+        rows = fetch_nba_web_schedule_rows("2026-27", date(2026, 10, 10), 0)
+
+        assert seen[0] == date(2026, 10, 7)
+        assert seen[-1] == date(2026, 10, 31)
+        assert len(rows) == len(seen)
+
+
+class TestRosterFromNbaPlayersIndex:
+    def test_maps_player_to_team_as_strings(self):
+        data = {"props": {"pageProps": {"players": [
+            {"PERSON_ID": 1630173, "TEAM_ID": 1610612758},
+        ]}}}
+        assert roster_rows_from_nba_players_index(data) == {"1630173": "1610612758"}
+
+    def test_free_agents_and_unknown_teams_are_skipped(self):
+        data = {"props": {"pageProps": {"players": [
+            {"PERSON_ID": 1, "TEAM_ID": 0},
+            {"PERSON_ID": 2, "TEAM_ID": None},
+            {"PERSON_ID": 3, "TEAM_ID": 999},
+            {"PERSON_ID": None, "TEAM_ID": 1610612758},
+            {"PERSON_ID": 4, "TEAM_ID": 1610612738},
+        ]}}}
+        assert roster_rows_from_nba_players_index(data) == {"4": "1610612738"}
+
+    def test_feeds_the_stint_planner_idempotently(self):
+        snapshot = roster_rows_from_nba_players_index(
+            {"props": {"pageProps": {"players": [
+                {"PERSON_ID": 4, "TEAM_ID": 1610612738},
+            ]}}}
+        )
+        open_stints = {"4": ("1610612738", date(2026, 1, 1))}
+        assert plan_roster_snapshot(snapshot, open_stints, date(2026, 10, 1)) == []
+
+
+class TestRunPhase:
+    def test_a_handled_failure_is_reported(self):
+        assert _run_phase("x", lambda: False) is False
+
+    def test_an_exception_is_reported_not_raised(self):
+        def boom():
+            raise RuntimeError("down")
+
+        assert _run_phase("x", boom) is False
+
+    def test_a_phase_returning_nothing_counts_as_success(self):
+        assert _run_phase("x", lambda: None) is True
+
+
+class TestSnapshotStintVersusGameLog:
+    def test_snapshot_opened_stint_newer_than_the_last_game_is_kept(self):
+        open_stint = ("1610612738", date(2026, 2, 5))
+
+        assert stint_is_newer_than_game_log(open_stint, date(2026, 2, 1)) is True
+
+    def test_a_game_log_change_after_the_stint_began_still_produces_a_change(self):
+        open_stint = ("1610612738", date(2025, 12, 1))
+
+        skipped = stint_is_newer_than_game_log(open_stint, date(2026, 1, 10))
+        change = plan_stint_change(
+            open_stint, "1610612752", date(2026, 1, 10), date(2026, 1, 8)
+        )
+
+        assert skipped is False
+        assert change is not None
+        assert change["open_team_id"] == "1610612752"
+
+    def test_no_open_stint_is_never_skipped(self):
+        assert stint_is_newer_than_game_log(None, date(2026, 1, 10)) is False

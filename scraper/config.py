@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 TEAM_META = {
     "ATL": {"conference": "East", "division": "Southeast", "full_name": "Atlanta Hawks"},
@@ -55,9 +56,16 @@ NAME_TO_ABBR = {
 }
 NAME_TO_ABBR["la clippers"] = "LAC"
 
-# the un-flagged cron follows this default; --season overrides it per run, so
-# opening week needs no code change.
-SEASON = "2025-26"
+
+
+def current_season(today: date) -> str:
+    # july 1 starts a season, matching season_start_date in parsing.py.
+    start_year = today.year if today.month >= 7 else today.year - 1
+    return f"{start_year}-{(start_year + 1) % 100:02d}"
+
+
+# the un-flagged cron follows this default; --season overrides it per run.
+SEASON = current_season(datetime.now(ZoneInfo("America/New_York")).date())
 
 BACKFILL_DEFAULT_FROM_SEASON = "1979-80"
 # stats.nba.com resets connections after a handful of rapid requests, so the
@@ -116,4 +124,12 @@ TRUTH_LAYER_TABLES = (
 # a game-log stint is an observation, a snapshot stint a declaration; the source
 # label is how a query tells them apart.
 ROSTER_SNAPSHOT_SOURCE = "roster_snapshot"
+ROSTER_WEB_SOURCE = "nba_web_players"
+
+NBA_WEB_GAMES_URL = "https://www.nba.com/games"
+NBA_WEB_PLAYERS_URL = "https://www.nba.com/players"
+NBA_WEB_TIMEOUT_SECONDS = 30
+NBA_WEB_PAGE_DELAY_SECONDS = 1.5
+NBA_WEB_SCHEDULE_DAYS_BACK = 3
+NBA_WEB_SCHEDULE_DAYS_AHEAD = 21
 ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS = BACKFILL_REQUEST_DELAY_SECONDS

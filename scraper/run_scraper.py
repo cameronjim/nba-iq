@@ -141,26 +141,32 @@ def _truth_layer_season_bounds(args: argparse.Namespace) -> tuple[str, str]:
     return from_season, args.to_season
 
 
-def _run_phase(name: str, phase: Callable[[], None]) -> None:
+def _run_phase(name: str, phase: Callable[[], object]) -> bool:
     # each phase is independent: an outage during the game-log sync must not
-    # cost the injury scrape that would have run after it.
+    # cost the injury scrape that would have run after it. a phase that returns
+    # False reports a failure it handled itself.
     try:
-        phase()
+        return phase() is not False
     except Exception as e:  # noqa: BLE001 - independence is the whole point
         logger.error("%s failed, continuing (%s)", name, e)
+        return False
 
 
 def _truth_layer_phases(
     conn: psycopg2.extensions.connection, season: str, dry_run: bool
-) -> None:
+) -> bool:
     # dependency order. The injury report is not season-scoped: it is here
-    # because player_injury_reports is a truth-layer table.
-    _run_phase("schedule", lambda: scrape_schedule(conn, season, dry_run=dry_run))
+    # because player_injury_reports is a truth-layer table. returns whether the
+    # schedule sync succeeded; the other phases are not fatal.
+    schedule_ok = _run_phase(
+        "schedule", lambda: scrape_schedule(conn, season, dry_run=dry_run)
+    )
     _run_phase("game logs", lambda: scrape_game_logs(conn, season, dry_run=dry_run))
     _run_phase(
         "game status", lambda: scrape_game_status(conn, season, dry_run=dry_run)
     )
     _run_phase("injuries", lambda: scrape_injuries(conn, dry_run=dry_run))
+    return schedule_ok
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -199,6 +205,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         logger.info("--dry-run: reads will run, writes will be counted and skipped")
 
+    schedule_ok = True
     conn = get_db(args.target)
     try:
         if args.backfill_history:
@@ -215,7 +222,7 @@ def main(argv: list[str] | None = None) -> None:
                 snapshot_out=args.snapshot_out,
             )
         elif args.sync_truth:
-            _truth_layer_phases(conn, args.season, args.dry_run)
+            schedule_ok = _truth_layer_phases(conn, args.season, args.dry_run)
         elif args.injuries_only:
             scrape_injuries(conn, dry_run=args.dry_run)
         else:
@@ -225,7 +232,12 @@ def main(argv: list[str] | None = None) -> None:
             scrape_injuries(conn, dry_run=args.dry_run)
             # truth layer runs last: the four scrapes above back user-visible
             # pages that must not be held hostage to it.
+            # offseason trades, signings and rookies must land before predictions.
             _run_phase(
+                "roster snapshot",
+                lambda: scrape_roster_snapshot(conn, args.season, dry_run=args.dry_run),
+            )
+            schedule_ok = _run_phase(
                 "schedule", lambda: scrape_schedule(conn, args.season, dry_run=args.dry_run)
             )
             _run_phase(
@@ -239,6 +251,11 @@ def main(argv: list[str] | None = None) -> None:
         conn.close()
 
     logger.info("all done!")
+    if not schedule_ok:
+        # the one fatal phase: without a schedule the prediction cron has no games,
+        # and a red workflow is the alert.
+        logger.error("schedule sync failed from every source")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
