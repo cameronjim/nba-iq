@@ -52,36 +52,6 @@ an explicit `cleared` row when a player drops off the CBS page, so a recovered
 player's last OUT no longer stands forever. A failed or empty scrape writes
 nothing rather than clearing everyone. Full policy table in `MODEL.md` section 7.1.
 
-### Coherence corrections (off by default)
-
-`predict.py --coherence {none,team_minutes,points_identity,all}` applies two
-model-free corrections after the injury overrides. `team_minutes` scales each
-team-game's conditional minutes so `sum(P_PLAY * E_MIN_COND)` is 240 (factor
-clipped to [0.8, 1.25], overtime unmodelled), carries the same factor into every
-production stat and shifts quantiles by the conditional delta; the factor lands on
-each row as `TEAM_MIN_FACTOR`. `points_identity` sets `E_PTS_COND` to
-`2*FGM + FG3M + FTM` and records the change as `PTS_IDENTITY_DELTA`. `all` runs
-both, minutes first. The choice is written to the run notes (`coherence=<value>`)
-and the registry entry. Frozen serving (`daily_run.py`) keeps `none`, which returns
-the frame unchanged. `fnba_ml/eval_coherence.py::coherence_endpoints` measures
-each variant against `none` on a scored validation frame (unconditional PTS/MIN and
-conditional MIN MAE, by cohort), and `report_coherence.py --dataset ... --version
-...` runs that over the five `ORIGINS` with the promoted path.
-
-**Scenario serving (`predict.py --scenarios`, off by default).** A questionable
-star's blended `p_j` fed once through the nonlinear minutes model is not the
-average of the night he plays and the night he sits. With the flag on,
-`fnba_ml/scenarios.py` finds each team-game's pivotal players (questionable or
-doubtful as of the boundary, and `tm_MIN >= SCENARIO_MIN_MAGNITUDE` (20) or
-top-3 by usage, at most `SCENARIO_MAX_PIVOTAL` (2) per team-game), scores the
-team-game once per play/sit world (teammate `p_j` forced to 1.0 or the OUT 0.02),
-and weight-averages his teammates' outputs over the worlds, treating two pivotal
-players as independent. The star's own row keeps his blended `P(play)` and takes
-his conditional numbers from the worlds he plays in. Every other team-game is
-scored exactly once, as without the flag. The per-player audit (world weights,
-the backup with the largest minutes swing and that swing) is written to
-`<out>_scenarios.parquet`, and `notes` gains `scenarios=on; scenario_team_games=N`.
-
 ---
 
 ## Runbook
@@ -117,12 +87,6 @@ python train.py --feature-set v1 --version 20260818
 python evaluate.py --version 2026-08-16
 python evaluate.py --version 2026-08-16 --rate-halflife-selection
 
-# 3b. phase-2 challengers (never served): poisson count models for STL/BLK/FG3M/TOV
-#     vs the rate composition, and per-minutes-tier interval offsets vs pooled ->
-#     reports/counts_<version>_*.csv
-python report_counts.py --version 2026-08-16
-python train.py --version 2026-08-16 --tiered-quantiles   # adds production.quantiles_by_tier
-
 # 4. predict: next games -> parquet, and optionally to postgres
 python predict.py --version 2026-08-16 --out data\predictions.parquet
 python predict.py --version 2026-08-16 --statuses data\statuses.parquet --horizon lock
@@ -136,6 +100,14 @@ python score_runs.py --run-id 412 --run-id 413 --md reports\scoring\look_dec1.md
 
 # 6. the daily publisher, as predictions.yml runs it (run A, the v1 shadow, run B)
 python daily_run.py --shadow-feature-set v1 --dry-run
+
+# 7. challengers and serving options, all off by default (see the section below).
+#    one look per candidate: the reports are the record, not a draft.
+python report_coherence.py --version 20260818            # reports/<version>_coherence.csv
+python run_p3_bracket.py --version p3                     # needs data/dataset_v4.parquet
+python report_counts.py --version 20260818               # reports/counts_<version>_*.csv
+python train.py --version <new> --tiered-quantiles      # never into models/20260818/
+python predict.py --version 20260818 --coherence all --scenarios --out data\challenger.parquet
 
 # tests
 python -m pytest tests -v
@@ -228,33 +200,73 @@ from played rows or passed as `--history-through`), and `forecast_cutoff_at`, th
 later of `information_as_of` and the start of the `--run-at` day. `--run-at` only
 selects which games are scored; `predicted_at` is when the run was generated.
 
-### P3 challengers (candidates, nothing served)
+### Challengers and serving options (all off by default)
 
-Two challengers to the frozen `prospective_2026_27_v1` serving path, scored once
-each by a bar written into `config`'s P3 block before any result existed:
+`prospective_2026_27_v2` serves none of these, and `daily_run.py` passes none of
+them except the v1 shadow, whose run is `channel = 'shadow'` and never read by the
+app. Each was pre-registered before any result existed and gets one look on real
+data; none has one yet. Promoting any of them changes an emitted number and is a
+13.2 re-freeze. The full record, bars and look order are `MODEL.md` section 18.
 
-- **`v5-stakes`** (`config.FEATURE_SETS["v5-stakes"]`, `CANDIDATE_FEATURE_VERSION_V5 = "v5"`):
-  the 51 served columns plus the seven stakes columns MODEL.md 15.11 says a v5
-  should keep. No `late_season`, no `stakes_lockedness` column, no blowout or pace
-  family. Gated on availability Brier or minutes MAE.
-- **Residual production rate** (`fnba_ml/rate_model.py`): a small LightGBM per stat
-  (`RATE_MODEL_TARGETS` = PTS, AST, REB, FGA; `RATE_MODEL_PARAMS`) fitted on
-  appearances to `stat / max(MIN, 4) - served rate`, so the challenger rate is the
-  champion's EWMA plus a context correction, floored at 0, composed through the
-  same `minutes_propagated_estimate`. Fitted on the incumbent's availability and
-  minutes models. Gated on conditional or unconditional PTS MAE.
+| Item | Switch | Measured by | Gate |
+|---|---|---|---|
+| serving coherence | `predict.py --coherence {none,team_minutes,points_identity,all}` | `report_coherence.py` | report-only |
+| scenario serving | `predict.py --scenarios` | `<out>_scenarios.parquet` audit | not backtestable |
+| `v5-stakes` | `config.FEATURE_SETS["v5-stakes"]` | `run_p3_bracket.py` | availability Brier or minutes MAE |
+| residual rate | `fnba_ml/rate_model.py` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
+| count models | `fnba_ml/count_model.py` | `report_counts.py` | report-only |
+| tiered intervals | `train.py --tiered-quantiles` | `report_counts.py` | report-only |
+| v1 shadow | `train.py --feature-set v1`, `daily_run.py --shadow-feature-set v1` | `score_runs.py` | ladder rung (c), MODEL.md 13.4 |
 
-```powershell
-# needs data/dataset_v4.parquet (build_v4_dataset.py); one look per --version
-python run_p3_bracket.py --version p3
-```
+**Serving coherence.** Applied last, after the injury overrides and any scenario
+mix. `team_minutes` scales each team-game's conditional minutes so
+`sum(P_PLAY * E_MIN_COND)` is 240 (factor clipped to [0.8, 1.25], overtime
+unmodelled), carries the same factor into every production stat and shifts
+quantiles by the conditional delta; the factor lands on each row as
+`TEAM_MIN_FACTOR`. `points_identity` sets `E_PTS_COND` to `2*FGM + FG3M + FTM` and
+records the change as `PTS_IDENTITY_DELTA`. `all` runs both, minutes first. A
+non-default choice is written to the run notes (`coherence=<value>`) and the
+registry entry; `none` returns the frame unchanged and adds no note token, so the
+frozen note text is untouched. `report_coherence.py` scores every variant against
+`none` over the five `ORIGINS` with the promoted path (unconditional PTS/MIN and
+conditional MIN MAE, by cohort, plus the raw minute-sum diagnostic).
 
-Writes `reports/<version>_p3_decision.csv`, `_per_origin.csv`, `_cohorts.csv`,
-`_cohorts_all_endpoints.csv`, `_clip_rates.csv` and `<version>_p3.md`. The bar:
-paired 7-day moving-block bootstrap over `DEV_ORIGINS`, 95% CI excluding zero, at
-least 1% relative improvement on a gated endpoint, and no gated-endpoint cohort
-regressing by more than 1%. A pass is a recommendation to re-freeze, not a
-promotion: `FEATURE_COLS`, `FEATURE_VERSION` and the served rate are unchanged.
+**Scenario serving.** A questionable star's blended `p_j` fed once through the
+nonlinear minutes model is not the average of the night he plays and the night he
+sits. `fnba_ml/scenarios.py` finds each team-game's pivotal players (questionable or
+doubtful as of the boundary, and `tm_MIN >= SCENARIO_MIN_MAGNITUDE` (20) or top-3 by
+usage, at most `SCENARIO_MAX_PIVOTAL` (2) per team-game), scores the team-game once
+per play/sit world (teammate `p_j` forced to 1.0 or the OUT 0.02), and
+weight-averages the outputs, treating two pivotal players as independent. The
+star's own row keeps his blended `P(play)` and takes his conditional numbers from
+the worlds he plays in. Every other team-game is scored once, as without the flag.
+The audit (world weights, the backup with the largest minutes swing and that swing)
+goes to `<out>_scenarios.parquet`, and `notes` gains
+`scenarios=on; scenario_team_games=N`.
+
+**`v5-stakes` and the residual rate (`run_p3_bracket.py`).** `v5-stakes` is the 51
+served columns plus the seven stakes columns MODEL.md 15.11 says a v5 should keep
+(no `late_season` or `stakes_lockedness` column, no blowout or pace family). The
+residual rate is a small LightGBM per stat (`RATE_MODEL_TARGETS` = PTS, AST, REB,
+FGA; `RATE_MODEL_PARAMS`) fitted on appearances to `stat / max(MIN, 4) - served
+rate`, so the challenger rate is the champion's plus a context correction, floored at
+0 and composed through the same `minutes_propagated_estimate`, on the incumbent's
+availability and minutes models. One invocation takes both looks: paired 7-day
+moving-block bootstrap over `DEV_ORIGINS`, 95% CI excluding zero, at least 1%
+relative improvement on a gated endpoint, and no gated-endpoint cohort regressing by
+more than 1% (`config`'s P3 block). It reads `data/dataset_v4.parquet`
+(`build_v4_dataset.py`) and writes `reports/<version>_p3.md` plus
+`_decision.csv`, `_per_origin.csv`, `_cohorts.csv`, `_cohorts_all_endpoints.csv`,
+`_clip_rates.csv` and `_coherence.csv`. It refuses to overwrite an existing decision
+csv. A pass is a recommendation to re-freeze, not a promotion.
+
+**Count models and tiered intervals (`report_counts.py`).** LightGBM Poisson
+boosters for STL/BLK/FG3M/TOV with a `log E[MIN]` offset plus the league log rate,
+a small grid chosen on inner folds, against the rate composition; and per-minutes-
+tier interval offsets (pooled fallback below `MIN_TIER_ROWS` = 200 residuals)
+against the pooled ones, 80% coverage and width. Five `ORIGINS`, tidy csvs, no bar.
+`train.py --tiered-quantiles` additionally stores the tiered offsets under
+`production.quantiles_by_tier`; nothing reads that key.
 
 ### Artifacts
 
@@ -291,29 +303,34 @@ fnba_ml/
   models.py              the ladder, availability + minutes champions, per-minute
                          rates, the minutes-propagating composition, OOF guards
   overrides.py           serving-time injury-report policy on P(play) (pure)
-  scenarios.py           --scenarios: per-world scoring and output mixing for
-                         questionable/doubtful stars (off by default)
   evaluate.py            rolling-origin harness, segments, skill scores, champion
                          picks, composition parity check (per stat), the 9-cat
                          rate ladder and the inner-fold halflife selection
   intervals.py           empirical residual quantiles -> non-crossing P10/P50/P90,
                          plus the per-minutes-tier challenger (pooled fallback
                          below MIN_TIER_ROWS = 200 residuals)
-  count_model.py         challenger: LightGBM poisson for STL/BLK/FG3M/TOV with a
-                         log E[MIN] offset, small grid chosen on inner folds; the
-                         docstring states how it differs from tournament M6
-  eval_counts.py         tidy [variant, endpoint, stat, cohort, n, value] endpoints
-                         for both challengers, importable without a dataset
-  coherence.py           opt-in team-minutes and points-identity corrections (pure)
-  eval_coherence.py      their retrospective endpoints and the minute-sum diagnostic
   store.py               the migration-014 row builder (pure) and its transaction
   registry.py            models/registry.json
-  rate_model.py          P3 candidate: the contextual residual rate (not served)
+  scoring.py             look-report endpoints for stored runs (pure)
   promotion.py           the pre-registered paired-bootstrap promotion rule
+
+  challengers and serving options, all off by default (MODEL.md 18):
+  coherence.py           --coherence: team-minutes and points-identity corrections (pure)
+  eval_coherence.py      their retrospective endpoints and the minute-sum diagnostic
+  scenarios.py           --scenarios: per-world scoring and output mixing for
+                         questionable/doubtful stars
+  rate_model.py          P3 candidate: the contextual residual rate
+  count_model.py         LightGBM poisson for STL/BLK/FG3M/TOV with a log E[MIN]
+                         offset, small grid chosen on inner folds; the docstring
+                         states how it differs from tournament M6
+  eval_counts.py         tidy [variant, endpoint, stat, cohort, n, value] endpoints
+                         for counts and tiered intervals, importable without a dataset
 ```
 
-Scripts at the top level (`build_dataset.py`, `train.py`, `evaluate.py`,
-`predict.py`) are thin CLIs. All logic lives in the package.
+Scripts at the top level are thin CLIs: `build_dataset.py`, `train.py`,
+`evaluate.py`, `predict.py`, `score_runs.py` and `daily_run.py` on the served path;
+`report_coherence.py`, `run_p3_bracket.py` and `report_counts.py` for the
+challengers. All logic lives in the package.
 
 ---
 
@@ -575,7 +592,7 @@ protocol says so up front rather than discovering it in April.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 704 tests
+python -m pytest tests -q      # 790 tests
 ```
 
 | File | Covers |
@@ -593,6 +610,9 @@ python -m pytest tests -q      # 704 tests
 | `tests/test_teammates.py` | the **oracle** (v2) teammate family, kept because it is the evaluation bracket's upper bound and an oracle whose arithmetic is wrong is a useless bound: self-exclusion under a rebuilt feature frame, the split as-of contract with negative controls on both halves, the usage arithmetic against a hand computation, rank independence from the row's own availability |
 | `tests/test_teammates_v3.py` | the **served** (v3) family: teammate-outcome invariance pinned to PASS on the expected columns and to **FAIL** on the oracle ones; closed-form sensitivity to `p_j` for every column; the shrinkage weight at four points; career-scoped magnitudes crossing the season boundary; backward-only reliability features; the base model refusing teammate context; the cross-fit's out-of-fold stamp on every row plus a tampered-cutoff rejection; the team-game block permutation collapsing both gain share and out-of-sample MAE |
 | `tests/test_prospective_freeze.py` | **the 2026-27 pre-registration, enforced.** Every pinned artifact checksum recomputed from the bytes on disk, per file so a failure names *which* artifact moved, plus an assertion that the pinned set covers the whole directory (six passing per-file checks would not notice a seventh file appearing). Then the frozen serving configuration against the live module: champions, per-stat halflives and estimators (parametrised per stat, with STL's `expanding` called out separately because it is the most surprising entry), the 51-column feature contract by digest, the override constants against `overrides.DEFAULT_POLICY` — including the PROBABLE floor condition `s >= 1 - w`, which the defaults satisfy with *equality* and which therefore needs a float tolerance to be checkable at all — the horizon windows, the coherence constraints and the frozen cohort definitions. Then the protocol's own shape: exactly three look dates asserted literally, ordered, inside the season, with non-decreasing row minimums; and the falsification table checked for the properties that make it binding — every endpoint names all three looks (a `None` is a pre-registered "no power here", a *missing* key is an oversight), no threshold is a placeholder, no endpoint is report-only everywhere, thresholds only tighten across looks, no bar demands more than the retrospective effect it tests, and the Dec-1 teammate-context bars sit on the *worse* side of zero because at ~1.5 month-blocks the MDE exceeds the effect. The one row we expect to fail (REB/TOV/FG3M at halflife 20, which section 12.4's validation rows already contradict) is pinned as expected-to-fail |
+| `tests/test_coherence.py` | team minutes: factors are 240 over the `P_PLAY`-weighted sum within bounds, a team at 190 is clipped and logged, every production stat takes the same factor, quantiles shift without crossing, `P_PLAY` untouched; the points identity by formula, idempotent, skipped when a make column is missing; `none` a byte-identical identity, `all` minutes first; the endpoints and minute-sum diagnostic by hand; the `predict.py` flag defaulting to `none` and the default leaving the frozen note untouched |
+| `tests/test_scenarios.py` | no pivotal player leaves the output byte-identical; a backup's minutes are the average of the two forced worlds; the star keeps his blended `P(play)` and his plays-world minutes; two pivotal players make four worlds whose weights sum to one; quantiles do not cross after mixing; a doubtful bench player is not pivotal; a report captured after the boundary cannot make anyone pivotal; forced probabilities reach the teammate sums and default to off |
+| `tests/test_train.py` | `--feature-set`: the served set by default, v1 accepted and suffixed `-v1`, other sets refused; the shadow inherits the pinned cutoff unless one is passed; the v1 artifact's metadata, its 36 columns with no teammate column, no base model, a verifying registry entry, and `predict.py` skipping `rebuild_context` for it |
 | `tests/test_count_model.py` | the count challenger: fits and predicts non-negative counts on the fixture, refuses training rows past its cutoff and a minutes forecast that is in-fold or from another cutoff, doubling the minutes forecast doubles the conditional count (and recovers a hand-built constant rate), inner-fold selection returns a grid member deterministically, and the count endpoints computed by hand |
 | `tests/test_intervals_tiered.py` | tiered intervals: a wide tier gets wider offsets than a narrow one, the pooled fallback below `MIN_TIER_ROWS`, non-crossing per tier even from unsorted hand offsets, the metadata round trip, `train.py --tiered-quantiles` off by default, coverage and width endpoints by hand, and `report_counts.run` end to end on the fixture |
 | `tests/test_serving_context.py` | the serving wiring: an injury report must raise a teammate's `exp_vacated_minutes` by exactly the probability shift times the absent player's magnitude, the as-of filter applies at the context stage too, an absent report is an identity, the rebuilt features carry the base model's cutoff, and the corrected measured-offset horizon definition with its stored per-run facts |
