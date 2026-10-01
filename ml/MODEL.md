@@ -3787,3 +3787,201 @@ rows come from the same box score the appearances do, so they extend the
 reconstruction rather than audit it against an independent roster source. Games whose
 player rows were already stamped `details_fetched_at` before this change are not
 revisited by the backfill and gain no active-DNP rows until those stamps are cleared.
+
+## 18. Phase 2 challengers (2026-10-01): built, pre-registered, none served
+
+**Verdict first: everything Phase 2 built is a challenger or a serving option that is
+off by default, and none of it has been measured on real data.**
+`prospective_2026_27_v2` serves exactly as section 17 froze it: artifact `20260818`,
+the 51 `FEATURE_COLS` (digest `914cdc17…`), the 13.1 champions, and a `daily_run.py`
+that passes no Phase 2 flag except `--shadow-feature-set v1`, whose run is written
+`channel = 'shadow'` and never read by the app (17.4).
+`tests/test_prospective_freeze.py` is green. Sections 13 and 17 are not edited.
+
+### 18.1 What Phase 2 is and is not
+
+| Item | Kind | Switch (default) | Measured by |
+|---|---|---|---|
+| serving coherence | serving option | `predict.py --coherence` (`none`) | `report_coherence.py` |
+| scenario serving | serving option | `predict.py --scenarios` (off) | its audit parquet only (18.3d) |
+| `v5-stakes` | feature-set challenger | `FEATURE_SETS["v5-stakes"]` (not served) | `run_p3_bracket.py` |
+| residual rate | estimator challenger | `rate_model.py` (not served) | `run_p3_bracket.py` |
+| count models | estimator challenger | `count_model.py` (not served) | `report_counts.py` |
+| tiered intervals | interval challenger | `train.py --tiered-quantiles` (off) | `report_counts.py` |
+| v1 shadow | ladder rung (c) | `daily_run.py --shadow-feature-set v1` | `score_runs.py` (17.7) |
+| active-DNP rows | data | scraper box-details pass | `build_dataset.py` printout (17.8) |
+
+**Nothing here has a number yet.** This machine has no database, so every figure in
+this section comes from a synthetic test fixture and says how the code behaves, not
+what the challenger is worth. The measurement path is the ML Evaluate workflow's
+dataset build against prod, then `run_p3_bracket.py`, `report_coherence.py` and
+`report_counts.py` on that build. None of the three is a workflow step yet, and the
+workflow does not upload parquet, so a look is either a new step or a local run with
+`DATABASE_URL`. **One look per candidate, per 13.6**, as v4 got in 15.1: a result
+that disappoints is the result, and a fix is a new version with its own look.
+
+### 18.2 The pre-registered bars, quoted before any result exists
+
+From `config`'s P3 block, committed in `3574289` before `run_p3_bracket.py` had run:
+
+```
+P3_PROMOTION_FLOOR: float = 0.01
+P3_COHORT_REGRESSION_TOLERANCE: float = 0.01
+P3_V5_GATED_ENDPOINTS: tuple[str, ...] = ("availability_brier", "minutes_mae")
+P3_RATE_GATED_ENDPOINTS: tuple[str, ...] = ("cond_pts_mae", "uncond_pts_mae")
+```
+
+The rule is P2's (15.1), applied by the same `promotion.decide`: a paired 7-day
+moving-block bootstrap over game dates (2,000 replicates, the tournament's
+`bootstrap.py` loaded by path) on `DEV_ORIGINS` (the five `ORIGINS` plus the March
+2025 late-season origin, 15.3); a **95% CI excluding zero AND at least 1.0% pooled
+relative improvement on at least one gated endpoint, AND no cohort of a gated endpoint
+regressing by more than 1.0%**. 1% and not 2% for the reason 15.1 gives: `v5-stakes`
+is a feature-set change to an existing champion, and the rate is a correction to the
+champion rate rather than a new model class in its place.
+
+| Candidate | Gates | Reported only |
+|---|---|---|
+| `v5-stakes` | availability Brier, minutes MAE | unconditional PTS MAE |
+| residual rate | conditional PTS MAE, unconditional PTS MAE | AST, REB, FGA (both forms), clip rates, coherence endpoints |
+| serving coherence | none: report-only | unconditional PTS and MIN MAE, conditional MIN MAE, by cohort; the raw minute-sum diagnostic |
+| count models | none: report-only | conditional and unconditional MAE, conditional Poisson deviance, by tier |
+| tiered intervals | none: report-only | 80% coverage and mean width, pooled vs tiered, by tier |
+
+A pass on the bracket is a recommendation to re-freeze (18.4), not a promotion: the
+script changes no served constant. It refuses to overwrite an existing
+`<version>_p3_decision.csv`, so a second look needs a new `--version`, in the open.
+
+### 18.3 The challengers
+
+**(a) `v5-stakes` (`FEATURE_COLS` + 7).** 15.11's recommendation taken literally: the
+stakes family alone, so the dilution 15.11 blamed for −1.91% on the stakes cohort
+becoming +0.66% pooled is as small as it can be. `team_games_remaining`,
+`team_win_pct`, `team_games_over_500`, the three interactions
+`stakes_late_x_over500`, `stakes_x_minutes_share` and `stakes_x_veteran`, and
+`minutes_share`, kept as a column because the share interactions multiply it (15.2).
+Dropped: `late_season` and `stakes_lockedness` as columns (15.8: the model wanted the
+continuous count and the 15-game threshold carried 0.0002% of gain), the blowout
+family (15.7) and the pace family. `FEATURE_VERSION` stays `v3`; the candidate is
+`v5` only in `CANDIDATE_FEATURE_VERSION_V5`.
+
+**(b) Contextual residual rate (`rate_model.py`).** For PTS, AST, REB and FGA, a
+LightGBM regressor on appearances fitted to `stat / max(MIN, 4) − served rate`, so
+the challenger rate is `max(0, served rate + f(context))`: it can move the champion's
+per-minute rate, never replace it, and it composes through the same
+`minutes_propagated_estimate`. Context is the 15 `RATE_CONTEXT_COLS` (usage, four
+expected-context and star columns, home, rest, back-to-back, `OPP_DEF_FORM`, both
+paces, opponent defensive rating and 3PA/FTA allowed, `minutes_share`), plus the row's
+served rate, a minutes column and one-hot `POS_GROUP`. `RATE_MODEL_PARAMS` are 200
+trees, 15 leaves, `min_child_samples = 200`: a residual target is mostly noise, four
+stats are four chances to fit it, and `LGBM_PARAMS` overfit the P2 blowout frame
+(15.7). On training rows the minutes input is the strictly prior `ewma_MIN`, because
+an in-fold `MIN_PRED` would be fitted on the same games; scoring requires the
+out-of-fold `MIN_PRED`, and the rate and minutes cutoffs must match. It is fitted on
+the incumbent's availability and minutes models, so the comparison differs in the
+rate and nothing else. **The permutation control matters for reading the result:**
+on a fixture whose residual is pure noise, the booster *costs* 1-2% of residual MAE
+across seeds and never buys anything (`test_rate_model.py`). A real gain has to
+clear that noise-fitting tax as well as the 1% floor.
+
+**(c) Serving coherence (`coherence.py`).** Two model-free corrections.
+`team_minutes` scales each team-game's conditional minutes so
+`sum(P_PLAY × E_MIN_COND) = 240` (overtime unmodelled), with the factor clipped to
+`[0.8, 1.25]` so a thin or stale roster cannot be inflated without bound; a clipped
+team-game is logged and still does not sum to 240. Every production stat takes the
+same factor (they are rate × minutes), quantiles shift by the conditional delta, and
+`P_PLAY` is never touched. `points_identity` sets `E_PTS_COND = 2·FGM + FG3M + FTM` and
+carries the delta to `E_PTS` and the PTS quantiles. `all` runs minutes first, so the
+identity sees rescaled makes. In `predict.py` it is applied **last**, after the
+injury overrides and after the scenario mix. `none` returns the input frame itself,
+and the `coherence=<value>` note token is written only for a non-default choice, so
+the frozen run's note text stays byte-identical to what 13 and 17 pinned (`5a036bc`).
+
+**(d) Scenario serving (`scenarios.py`).** `f(E[p])` is not `E[f(p)]`: a
+questionable star's blended `p_j` fed once through nonlinear models gives his backup
+a projection that is neither night nor their average. A player is **pivotal** if his
+latest status at the boundary is questionable or doubtful **and** his shrunk
+`tm_MIN ≥ 20` (`SCENARIO_MIN_MAGNITUDE`) or he is top-3 by usage among established
+players (the `p_star_out` rule). At most `SCENARIO_MAX_PIVOTAL = 2` per team-game,
+largest magnitude kept; the rest are served at their blended `p` and logged. Each
+pivotal team-game is enumerated over its `2^k` play/sit worlds (`p_j` forced to 1.0
+or the OUT 0.02), and each world is context-rebuilt, rescored and overridden. The
+**outputs** are then averaged, with world weights the product of `p` or `1 − p`:
+every teammate column is the weighted average; the star keeps his blended
+`P(play)`, takes his conditional numbers from the worlds he plays in, and his
+unconditional ones are `P(play) × conditional`. The coherence clip and a quantile
+sort run after mixing; a team-game with no pivotal player is the single run
+unchanged. **Assumption, stated in the code:** two pivotal teammates play or sit
+independently, which a team resting both on one back-to-back violates. The audit
+(`<out>_scenarios.parquet`) records per pivotal player his status, `p`, magnitude,
+the world count and weights, and the backup with the largest `E_MIN_COND` swing with
+both values; notes gain `scenarios=on; scenario_team_games=N`. It cannot be
+backtested: the report history starts 2026-08-16 (7.1), so past rows carry no
+designations to build worlds from.
+
+**(e) Count models (`count_model.py`).** The 12.7 gap: a per-minute constant for a
+stat averaging under one event a game. A LightGBM Poisson booster for STL, BLK, FG3M
+and TOV. It is not a rerun of tournament M6/M7, which were fitted only for PTS and
+AST, ran untuned on `LGBM_PARAMS`, and lost by under 0.5%. Here: (1) the rare stats;
+(2) a grid of 8 small configurations (`n_estimators {100, 200}`, `num_leaves {7, 15}`,
+`min_child_samples {100, 300}`) chosen by Poisson deviance on inner folds inside each
+origin's training window, each fold's offset from a minutes model fitted before it;
+(3) `init_score = log(max(E[MIN|plays], 1)) + log(league rate)`, the offset being
+`MIN_PRED` on validation rows and `ewma_MIN` on training rows. The league log-rate
+term (`sum(stat) / sum(offset minutes)` over training rows) is there because LightGBM
+skips `boost_from_average` when an `init_score` is supplied, so without it a 100-tree
+booster spends itself climbing to the intercept. Champion and count model share one
+availability and one minutes model per origin.
+
+**(f) Tiered intervals (`intervals.py`).** The pooled offsets give a star and a
+fringe player the same band. The challenger fits one offset set per minutes tier
+(`roll10_MIN`, the 13.3 tiers), same construction; a tier with fewer than
+`MIN_TIER_ROWS = 200` finite residuals takes the pooled set itself, and the fallback
+tiers are listed. `train.py --tiered-quantiles` stores them under
+`production.quantiles_by_tier` in `metadata.json`, and only with the flag. Nothing
+reads that key. It is a training option, so it writes a new artifact; `20260818` is
+never retrained for it.
+
+**(g) The v1 shadow.** See 17.7.
+
+**(h) Active-DNP rows.** See 17.8. They change the training universe, so a rebuild on
+a backfilled database is a 13.2 item (7) change on its own, independent of every
+challenger above, and every look in 18.4 must record which universe its dataset was
+built from.
+
+### 18.4 What promotion would mean, and the order of looks
+
+Every promotion below changes an emitted number, so under 13.2 it bumps the protocol
+to `prospective_2026_27_v3` and re-freezes **before opening night (2026-10-20)**.
+After it, a promotion ends the `v2` test, so a pass found then waits for the 2027-28
+freeze, as 13.5 says of F8.
+
+| Candidate | 13.2 item(s) |
+|---|---|
+| serving coherence | (4): a new coherence constraint on emitted rows |
+| `v5-stakes` | (6) `FEATURE_COLS`, and (7) the refit |
+| residual rate | (1) the production champion and (3) `RATE_ESTIMATORS` for four stats, and (7) |
+| count models | (1) and (3), naming STL explicitly (item 3 calls out its `expanding`), and (7) |
+| tiered intervals | (7): a refit whose metadata the served quantiles come from |
+| scenario serving | 13.2's last paragraph (a serving change that moves emitted numbers), plus two new hand-set constants (20 minutes, 2 players) of the kind item (5) exists to catch |
+
+**Order.** (1) **Coherence first**: model-free, no fitting beyond the promoted path,
+the cheapest look, and its answer (whether team minute sums sit far enough from 240
+to matter) conditions how every other number is read. (2) **`run_p3_bracket.py`
+once**, which takes the `v5-stakes` and residual-rate looks in one invocation. Read
+`v5-stakes` first. The rate was fitted on the `v3-honest` incumbent's pieces, so if
+`v5-stakes` is promoted the rate's verdict describes a composition that no longer
+ships; it is recorded as such, not re-run. (3) **`report_counts.py`** for counts and
+tiered intervals, as reports. Neither has a bar, so neither can be promoted from
+this look; promotion would first need a bar pre-registered here.
+
+### 18.5 Open items
+
+- **No real-data run yet**, of any challenger. The first database-backed look is the
+  next step and the only one that can produce a number.
+- **The v1 artifact is not trained or committed** (17.7), so rung (c) and F2 to F4
+  still have no data.
+- **Scenario independence.** Correlated rest of two pivotal teammates is not
+  modelled; the audit will show how often a team-game has two.
+- **E5 is still not in `score_runs.py`** (17.5, 17.6), nor the shifted-rate skill or
+  the frozen-baseline rows. The `dec1` look needs them for F1 and F6.

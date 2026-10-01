@@ -42,6 +42,14 @@ on:
         description: "Train the v1 shadow artifact models/<version>-v1/ and upload it"
         type: boolean
         default: false
+      challengers:
+        description: "One look at the Phase 2 challengers: run_p3_bracket, report_coherence, report_counts (MODEL.md 18)"
+        type: boolean
+        default: false
+      challenger_version:
+        description: "Report stem for the challenger look, e.g. p3-2026-12-01; a repeat stem is refused"
+        type: string
+        default: ""
 
 concurrency:
   group: ml-evaluate
@@ -135,6 +143,28 @@ jobs:
             echo "::error title=Composition regression::evaluate.py exited 1: the promoted composition lost more than 1% MAE against the one it replaced. See ml/reports/$VERSION.md in the artifact."
           fi
           exit "$status"
+
+      # one look per candidate (MODEL.md 13.6, 18.1): run_p3_bracket refuses a
+      # stem it has already written, so a rerun needs a new challenger_version.
+      - name: Challenger look
+        if: inputs.challengers && !cancelled()
+        env:
+          VERSION: ${{ inputs.version }}
+          STEM: ${{ inputs.challenger_version }}
+        run: |
+          stem="${STEM:-p3-$(date -u +%Y-%m-%d)}"
+          python ml/run_p3_bracket.py --version "$stem" --reports-dir ml/reports/challengers
+          python ml/report_coherence.py --version "$VERSION" --reports-dir ml/reports/challengers
+          python ml/report_counts.py --version "$VERSION" --reports-dir ml/reports/challengers
+
+      - name: Upload challenger reports
+        if: always() && inputs.challengers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-challengers-${{ inputs.target }}-${{ github.run_id }}
+          path: ml/reports/challengers/**
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Score runs
         if: inputs.score_runs && !cancelled()
