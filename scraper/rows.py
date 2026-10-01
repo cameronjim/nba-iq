@@ -85,6 +85,14 @@ def plan_stint_change(
     return change
 
 
+def stint_is_newer_than_game_log(
+    open_stint: tuple[str, date] | None, latest_game_date: date
+) -> bool:
+    # a roster snapshot observed a move newer than any game we hold; the game
+    # log is stale for him until his debut and must not reopen the old team.
+    return open_stint is not None and open_stint[1] > latest_game_date
+
+
 def plan_roster_snapshot(
     snapshot: Mapping[str, str],
     open_stints: Mapping[str, tuple[str, date]],

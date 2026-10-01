@@ -42,6 +42,7 @@ from rows import (
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
     split_rows_on_season_boundary,
+    stint_is_newer_than_game_log,
     supplement_player_log_rows,
 )
 
@@ -626,9 +627,11 @@ def _sync_player_team_stints(
         cur.close()
 
     changes: list[tuple[str, dict]] = []
-    for player_id, (team_id, _latest_date) in latest_by_player.items():
+    for player_id, (team_id, latest_date) in latest_by_player.items():
         open_stint = open_by_player.get(player_id)
         if open_stint is not None and open_stint[0] == team_id:
+            continue
+        if stint_is_newer_than_game_log(open_stint, latest_date):
             continue
 
         boundaries = _stint_boundaries(conn, player_id, team_id, open_stint)

@@ -40,6 +40,7 @@ from rows import (
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
     split_rows_on_season_boundary,
+    stint_is_newer_than_game_log,
     supplement_player_log_rows,
 )
 from run_scraper import _parse_args, _run_phase
@@ -1081,3 +1082,25 @@ class TestRunPhase:
 
     def test_a_phase_returning_nothing_counts_as_success(self):
         assert _run_phase("x", lambda: None) is True
+
+
+class TestSnapshotStintVersusGameLog:
+    def test_snapshot_opened_stint_newer_than_the_last_game_is_kept(self):
+        open_stint = ("1610612738", date(2026, 2, 5))
+
+        assert stint_is_newer_than_game_log(open_stint, date(2026, 2, 1)) is True
+
+    def test_a_game_log_change_after_the_stint_began_still_produces_a_change(self):
+        open_stint = ("1610612738", date(2025, 12, 1))
+
+        skipped = stint_is_newer_than_game_log(open_stint, date(2026, 1, 10))
+        change = plan_stint_change(
+            open_stint, "1610612752", date(2026, 1, 10), date(2026, 1, 8)
+        )
+
+        assert skipped is False
+        assert change is not None
+        assert change["open_team_id"] == "1610612752"
+
+    def test_no_open_stint_is_never_skipped(self):
+        assert stint_is_newer_than_game_log(None, date(2026, 1, 10)) is False
