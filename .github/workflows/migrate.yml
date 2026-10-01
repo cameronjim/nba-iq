@@ -1,0 +1,70 @@
+# Manual database migrations.
+#
+# Applying to prod is a deliberate act: someone picks target=prod AND ticks
+# apply. Migrations applied here must be additive (new tables, nullable
+# columns, new indexes) so the running backend and the daily predictions job
+# keep working against the new schema; anything destructive is still done by
+# hand. apply defaults to false so a mis-click prints the plan and writes
+# nothing. Each file runs in its own transaction with its schema_migrations row,
+# and the first failure rolls back and stops, leaving later files unapplied.
+name: DB Migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Database to migrate"
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
+      apply:
+        description: "Actually apply (unticked = dry run, print the plan only)"
+        type: boolean
+        default: false
+      only:
+        description: "Apply only this file, e.g. 015_prediction_run_provenance.sql (optional)"
+        type: string
+        required: false
+        default: ""
+
+# one migrator per database; a queued run waits rather than killing one mid-file.
+concurrency:
+  group: migrate-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Migrate ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # the scraper's database.py reads the dev branch from DATABASE_URL_DEV.
+      DATABASE_URL_DEV: ${{ secrets.DEV_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scraper/requirements.txt
+
+      # exits 1 whenever anything is unapplied, which is the normal state before
+      # a migrate, so its report is informational here.
+      - name: Report migration state (before)
+        continue-on-error: true
+        run: python scraper/check_migrations.py --${{ inputs.target }}
+
+      - name: Apply migrations (${{ inputs.apply && 'APPLY' || 'dry run' }})
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          python scraper/apply_migrations.py --${{ inputs.target }} \
+            ${{ inputs.apply && '--apply' || '--dry-run' }} \
+            ${ONLY:+--only "$ONLY"}
