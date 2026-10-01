@@ -1271,3 +1271,38 @@ class TestRescoreWorkflow:
 
         # assert
         assert self.CRON == f"45 {injuries}"
+
+
+class TestStatusScopeColumns:
+    def test_the_parquet_frame_always_carries_game_and_source(self, tmp_path: Path) -> None:
+        # arrange
+        statuses = pd.DataFrame({
+            "nba_player_id": ["2544"],
+            "status_normalized": ["out"],
+            "captured_at": [pd.Timestamp("2026-03-01T12:00:00Z")],
+        })
+        path = tmp_path / "statuses.parquet"
+
+        # act
+        daily_run.with_status_scope_columns(statuses).to_parquet(path, index=False)
+        reread = pd.read_parquet(path)
+
+        # assert
+        assert {"nba_game_id", "source"} <= set(reread.columns)
+        assert reread["nba_game_id"].isna().all()
+
+    def test_present_columns_pass_through_unchanged(self) -> None:
+        # arrange
+        statuses = pd.DataFrame({
+            "nba_player_id": ["2544"],
+            "status_normalized": ["out"],
+            "captured_at": [pd.Timestamp("2026-03-01T12:00:00Z")],
+            "nba_game_id": ["0022500123"],
+            "source": ["nba_official"],
+        })
+
+        # act
+        out = daily_run.with_status_scope_columns(statuses)
+
+        # assert
+        pd.testing.assert_frame_equal(out, statuses)

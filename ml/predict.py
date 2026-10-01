@@ -74,6 +74,7 @@ from fnba_ml.overrides import (  # noqa: E402
     P_PLAY_MODEL,
     apply_status_overrides,
     latest_statuses,
+    override_provenance_counts,
     override_summary,
     resolve_overrides,
 )
@@ -244,7 +245,8 @@ def rebuild_context(
     # ruled-out star's minutes never move to his teammates.
     base_p = base_model.predict_proba(features)
     resolved = resolve_overrides(
-        features["PLAYER_ID"], base_p, statuses, policy, as_of=as_of
+        features["PLAYER_ID"], base_p, statuses, policy, as_of=as_of,
+        game_ids=features["GAME_ID"] if "GAME_ID" in features.columns else None,
     )
     probability = resolved.probability
     forced = None
@@ -559,6 +561,7 @@ def write_run(
             "rows": len(rows),
             "player_games": int(len(predictions)),
             "status_overrides": overridden,
+            "status_override_provenance": override_provenance_counts(predictions),
             "coherence": coherence,
             "override_policy": DEFAULT_POLICY.as_dict() if overridden else None,
         },
@@ -742,6 +745,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"overrides : {int(summary['rows'].sum()):,} rows, as of {statuses_as_of}")
         print(summary.to_string(index=False))
+        provenance = override_provenance_counts(predictions)
+        print(f"  by scope  {provenance['scope']}")
+        print(f"  by source {provenance['source']}")
     if scenario_audit is None:
         print("scenarios : off")
     else:

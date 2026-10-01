@@ -255,3 +255,91 @@ def test_a_run_with_no_horizon_writes_no_horizon_token_into_notes():
     )
 
     assert "horizon=" not in record["notes"]
+
+
+def _two_game_serving_frame() -> pd.DataFrame:
+    first = _serving_frame()
+    second = _serving_frame().assign(
+        GAME_ID="g2", GAME_DATE=pd.to_datetime(["2026-03-03"] * 3)
+    )
+    return pd.concat([first, second], ignore_index=True)
+
+
+def _game_scoped_out_for_g1() -> pd.DataFrame:
+    return pd.DataFrame({
+        "nba_player_id": ["star"],
+        "status_normalized": ["out"],
+        "captured_at": ["2026-03-01T18:00:00+00:00"],
+        "nba_game_id": ["g1"],
+        "source": ["nba_official"],
+    })
+
+
+def test_by_default_a_game_scoped_report_reaches_every_game_of_the_player():
+    # arrange
+    frame = _two_game_serving_frame()
+    base = _FakeBaseModel(
+        {"star": 0.93, "backup": 0.88, "other": 0.9}, pd.Timestamp("2026-03-01")
+    )
+
+    # act
+    _, audit = rebuild_context(
+        frame, base, _game_scoped_out_for_g1(), pd.Timestamp("2026-03-02T00:00:00")
+    )
+
+    # assert
+    assert audit["CONTEXT_OVERRIDDEN"].tolist() == [True, False, False] * 2
+
+
+def test_the_context_stage_passes_game_ids_to_game_scoped_resolution(monkeypatch):
+    # arrange
+    import functools
+
+    import predict
+    from fnba_ml import overrides
+
+    monkeypatch.setattr(
+        predict, "resolve_overrides",
+        functools.partial(
+            overrides.resolve_overrides, game_scoped=True, expire_unavailable=False
+        ),
+    )
+    frame = _two_game_serving_frame()
+    base = _FakeBaseModel(
+        {"star": 0.93, "backup": 0.88, "other": 0.9}, pd.Timestamp("2026-03-01")
+    )
+
+    # act
+    rebuilt, audit = rebuild_context(
+        frame, base, _game_scoped_out_for_g1(), pd.Timestamp("2026-03-02T00:00:00")
+    )
+
+    # assert
+    assert audit["CONTEXT_OVERRIDDEN"].tolist() == [True, False, False, False, False, False]
+    assert audit.loc[0, "P_CONTEXT"] == pytest.approx(0.02)
+    assert audit.loc[3, "P_CONTEXT"] == pytest.approx(0.93)
+    assert rebuilt.loc[1, "exp_vacated_minutes"] > rebuilt.loc[4, "exp_vacated_minutes"]
+
+
+def test_horizon_metadata_counts_players_when_reports_carry_game_and_source():
+    # arrange
+    statuses = pd.DataFrame({
+        "nba_player_id": ["0", "0", "1"],
+        "status_normalized": ["out", "questionable", "out"],
+        "captured_at": [
+            "2026-03-01T12:00:00+00:00", "2026-03-01T14:00:00+00:00",
+            "2026-03-01T16:00:00+00:00",
+        ],
+        "nba_game_id": ["g0", None, None],
+        "source": ["nba_official", "cbssports", "cbssports"],
+    })
+
+    # act
+    facts = horizon_metadata(
+        _slate(["2026-03-02", "2026-03-03"]), statuses,
+        pd.Timestamp("2026-03-02T00:00:00"), "early",
+    )
+
+    # assert
+    assert facts["report_count"] == 2
+    assert facts["latest_report_at"] == "2026-03-01T16:00:00"
