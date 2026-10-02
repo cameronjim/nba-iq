@@ -18,6 +18,8 @@ from config import (
     NBA_WEB_PAGE_DELAY_SECONDS,
     NBA_WEB_SCHEDULE_DAYS_AHEAD,
     NBA_WEB_SCHEDULE_DAYS_BACK,
+    ROSTER_SNAPSHOT_SOURCE,
+    ROSTER_WEB_SOURCE,
     SEASON,
     SEASON_TYPES_DISCOVERED,
     SEASON_TYPES_INGESTED,
@@ -45,6 +47,8 @@ from fetching import (
 from parsing import season_end_date, season_start_date
 from rows import (
     BOX_DETAILS_SOURCE,
+    Stint,
+    derive_stints,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
     active_dnp_status_rows,
@@ -60,7 +64,6 @@ from rows import (
     game_log_rows_from_web,
     web_game_is_final,
     web_inactive_rows,
-    plan_stint_change,
     player_ids_absent_from_box,
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
@@ -68,7 +71,6 @@ from rows import (
     schedule_rows_from_team_logs,
     season_types_to_fetch,
     split_rows_on_season_boundary,
-    stint_is_newer_than_game_log,
     supplement_player_log_rows,
 )
 
@@ -1316,134 +1318,109 @@ def scrape_game_status(
     return written
 
 
-def _stint_boundaries(
-    conn: psycopg2.extensions.connection,
-    player_id: str,
-    new_team_id: str,
-    open_stint: tuple[str, date] | None,
-) -> dict:
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            SELECT MIN(game_date) FROM player_game_logs
-             WHERE nba_player_id = %s AND team_id = %s AND game_date >= %s
-            """,
-            (player_id, new_team_id, open_stint[1] if open_stint else date.min),
-        )
-        row = cur.fetchone()
-        first_with_new = row[0] if row and row[0] else date.today()
+STINT_SNAPSHOT_SOURCES = (ROSTER_SNAPSHOT_SOURCE, ROSTER_WEB_SOURCE)
 
-        last_with_open: date | None = None
-        if open_stint is not None:
-            cur.execute(
-                """
-                SELECT MAX(game_date) FROM player_game_logs
-                 WHERE nba_player_id = %s AND team_id = %s AND game_date >= %s
-                """,
-                (player_id, open_stint[0], open_stint[1]),
-            )
-            row = cur.fetchone()
-            last_with_open = row[0] if row else None
+# serializes stint rebuilds across concurrent backfill jobs on one database
+STINT_SYNC_LOCK_KEY = 7_201_302
 
-        return {
-            "first_with_new_team": first_with_new,
-            "last_with_open_team": last_with_open,
-        }
-    finally:
-        cur.close()
+STINT_INSERT_SQL = """
+    INSERT INTO player_team_stints (nba_player_id, team_id, valid_from, valid_to, source)
+    VALUES %s
+"""
 
 
 def _sync_player_team_stints(
     conn: psycopg2.extensions.connection, season: str, dry_run: bool = False
 ) -> None:
-    # a season with no game logs yet yields no changes, which is why this can be
-    # called unconditionally during the preseason. What it cannot do then is
-    # notice an offseason trade; that is what the roster snapshot is for.
+    # one locked transaction, so a concurrent rebuild cannot act on a stale read
+    previous_autocommit = conn.autocommit
+    conn.autocommit = False
     cur = conn.cursor()
     try:
-        # DISTINCT ON gives the newest game-log row per player, which is the team
-        # he currently belongs to as far as the truth layer can observe.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (STINT_SYNC_LOCK_KEY,))
         cur.execute(
             """
-            SELECT DISTINCT ON (nba_player_id)
-                   nba_player_id, team_id, game_date
+            SELECT DISTINCT nba_player_id
               FROM player_game_logs
              WHERE season = %s AND team_id IS NOT NULL
-             ORDER BY nba_player_id, game_date DESC, nba_game_id DESC
             """,
             (season,),
         )
-        latest_by_player = {
-            str(pid): (str(team_id), game_date) for pid, team_id, game_date in cur.fetchall()
-        }
+        players = sorted(str(row[0]) for row in cur.fetchall())
+        if not players:
+            conn.commit()
+            logger.info("stints: no team changes to record")
+            return
 
         cur.execute(
             """
-            SELECT nba_player_id, team_id, valid_from
-              FROM player_team_stints
-             WHERE valid_to IS NULL
-            """
+            SELECT nba_player_id, game_date, team_id, season_type
+              FROM player_game_logs
+             WHERE nba_player_id = ANY(%s) AND team_id IS NOT NULL
+            """,
+            (players,),
         )
-        open_by_player = {
-            str(pid): (str(team_id), valid_from) for pid, team_id, valid_from in cur.fetchall()
-        }
+        appearances: dict[str, list[tuple[date, str, str]]] = {}
+        for pid, game_date, team_id, season_type in cur.fetchall():
+            appearances.setdefault(str(pid), []).append((game_date, str(team_id), season_type))
+
+        cur.execute(
+            """
+            SELECT nba_player_id, team_id, valid_from, valid_to, source
+              FROM player_team_stints
+             WHERE nba_player_id = ANY(%s)
+            """,
+            (players,),
+        )
+        existing: dict[str, set[Stint]] = {}
+        for pid, team_id, valid_from, valid_to, source in cur.fetchall():
+            existing.setdefault(str(pid), set()).add(
+                Stint(str(team_id), valid_from, valid_to, source)
+            )
+
+        rewrites: dict[str, list[Stint]] = {}
+        for player_id in players:
+            current = existing.get(player_id, set())
+            snapshots = [
+                (s.team_id, s.valid_from, s.source)
+                for s in current if s.source in STINT_SNAPSHOT_SOURCES
+            ]
+            derived = derive_stints(appearances.get(player_id, []), snapshots)
+            if set(derived) != current:
+                rewrites[player_id] = derived
+
+        write_cur = maybe_write_cursor(conn.cursor(), dry_run)
+        try:
+            if rewrites:
+                write_cur.execute(
+                    "DELETE FROM player_team_stints WHERE nba_player_id = ANY(%s)",
+                    (sorted(rewrites),),
+                )
+                _batch_upsert(
+                    write_cur,
+                    STINT_INSERT_SQL,
+                    [
+                        (player_id, *stint)
+                        for player_id, stints in sorted(rewrites.items())
+                        for stint in stints
+                    ],
+                )
+        finally:
+            write_cur.close()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         cur.close()
+        conn.autocommit = previous_autocommit
 
-    changes: list[tuple[str, dict]] = []
-    for player_id, (team_id, latest_date) in latest_by_player.items():
-        open_stint = open_by_player.get(player_id)
-        if open_stint is not None and open_stint[0] == team_id:
-            continue
-        if stint_is_newer_than_game_log(open_stint, latest_date):
-            continue
-
-        boundaries = _stint_boundaries(conn, player_id, team_id, open_stint)
-        change = plan_stint_change(
-            open_stint,
-            team_id,
-            boundaries["first_with_new_team"],
-            boundaries["last_with_open_team"],
-        )
-        if change is not None:
-            changes.append((player_id, change))
-
-    if not changes:
+    if not rewrites:
         logger.info("stints: no team changes to record")
         return
-
-    write_cur = maybe_write_cursor(conn.cursor(), dry_run)
-    try:
-        for player_id, change in changes:
-            if change["close_team_id"] is not None:
-                write_cur.execute(
-                    """
-                    UPDATE player_team_stints
-                       SET valid_to = %s, updated_at = NOW()
-                     WHERE nba_player_id = %s AND team_id = %s
-                       AND valid_from = %s AND valid_to IS NULL
-                    """,
-                    (
-                        change["close_valid_to"],
-                        player_id,
-                        change["close_team_id"],
-                        change["close_valid_from"],
-                    ),
-                )
-            write_cur.execute(
-                """
-                INSERT INTO player_team_stints (nba_player_id, team_id, valid_from, source)
-                VALUES (%s, %s, %s, 'playergamelogs')
-                ON CONFLICT (nba_player_id, team_id, valid_from) DO NOTHING
-                """,
-                (player_id, change["open_team_id"], change["open_valid_from"]),
-            )
-    finally:
-        write_cur.close()
-
     logger.info(
-        "stints: recorded %d team change(s)%s",
-        len(changes),
+        "stints: rebuilt %d of %d player(s)%s",
+        len(rewrites),
+        len(players),
         " (dry run: nothing written)" if dry_run else "",
     )
