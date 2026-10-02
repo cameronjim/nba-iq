@@ -90,6 +90,11 @@ ENDPOINT_FAMILIES: dict[str, tuple[str, ...]] = {
 
 _EPS = 1e-6
 
+# 13.3's endpoints read regular-season games only; any other graded season type
+# (the preseason, MODEL.md 20.5) is reported as its own split beside them.
+ENDPOINT_SEASON_TYPES: tuple[str, ...] = TRAINING_SEASON_TYPES
+SEASON_TYPE_COHORT_PREFIX = "season_type="
+
 # baseline column names; roll10_MIN is config.TIER_BASIS so the tier is assigned
 # by the same function the retrospective reports use.
 AVAIL_RATE = "avail_rate_10"
@@ -423,7 +428,7 @@ def cohorts(frame: pd.DataFrame) -> dict[str, pd.Series]:
     masks["cold_start=true"] = frame["cold_start"].astype(bool)
     masks["cold_start=false"] = ~frame["cold_start"].astype(bool)
     for season_type in sorted(frame["season_type"].dropna().unique()):
-        masks[f"season_type={season_type}"] = frame["season_type"] == season_type
+        masks[f"{SEASON_TYPE_COHORT_PREFIX}{season_type}"] = frame["season_type"] == season_type
     if MINUTES_TIER in frame.columns:
         for tier in TIER_ORDER:
             masks[tier] = frame[MINUTES_TIER] == tier
@@ -483,6 +488,38 @@ def score_run(
     results = pd.DataFrame(rows)
     results.insert(0, "run_id", run_label)
     return results[RESULT_COLUMNS]
+
+
+def split_endpoint_rows(
+    predictions: pd.DataFrame,
+    truth: pd.DataFrame,
+    season_types: tuple[str, ...] = ENDPOINT_SEASON_TYPES,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """(predictions the endpoints read, excluded player-games per season type).
+
+    a game is judged by its truth row's season type; a game with no truth row is
+    pending and kept, since a pending row never reaches an endpoint anyway.
+    """
+    games = truth.assign(nba_game_id=truth["nba_game_id"].astype(str))
+    by_game = games.drop_duplicates("nba_game_id").set_index("nba_game_id")["season_type"]
+    game_type = predictions["nba_game_id"].astype(str).map(by_game)
+    excluded = game_type.notna() & ~game_type.isin(season_types)
+    keys = predictions.loc[excluded, KEY].astype(str).assign(season_type=game_type[excluded])
+    counts = keys.drop_duplicates(KEY)["season_type"].value_counts().sort_index()
+    return (
+        predictions[~excluded].reset_index(drop=True),
+        {str(t): int(n) for t, n in counts.items()},
+    )
+
+
+def excluded_season_type_rows(
+    results: pd.DataFrame, season_types: tuple[str, ...] = ENDPOINT_SEASON_TYPES
+) -> pd.DataFrame:
+    """the season-type cohort rows for every type the endpoints do not read."""
+    cohort = results["cohort"].astype(str)
+    split = cohort.str.startswith(SEASON_TYPE_COHORT_PREFIX)
+    endpoint_cohorts = {f"{SEASON_TYPE_COHORT_PREFIX}{t}" for t in season_types}
+    return results[split & ~cohort.isin(endpoint_cohorts)].reset_index(drop=True)
 
 
 def channel_of(runs: pd.DataFrame) -> pd.Series:
@@ -1173,13 +1210,23 @@ def render_look_report(
     pairs: pd.DataFrame,
     rows_scored: int,
     looks: tuple[tuple[str, str, int], ...] = PROSPECTIVE_LOOKS,
+    excluded: dict[str, int] | None = None,
+    split: pd.DataFrame | None = None,
+    pool: str = pool_label("production", True),
 ) -> str:
-    """the 'Look report' markdown section."""
+    """the 'Look report' markdown section.
+
+    ``excluded`` counts the player-games of season types the endpoints do not
+    read; ``split`` is their cohort rows, shown apart from the table.
+    """
     date, minimum = _look(look, looks)
     binding = "BINDING" if rows_scored >= minimum else "NON-BINDING"
+    left_out = ", ".join(f"{t} {n:,}" for t, n in (excluded or {}).items()) or "none"
     lines = [
         f"## Look report: {look}\n",
         f"- cutoff: games strictly before {date}",
+        f"- endpoint rows: {', '.join(ENDPOINT_SEASON_TYPES)} only; "
+        f"excluded player-games: {left_out}",
         f"- scheduled rows (pooled prospective production): {rows_scored:,}; "
         f"minimum {minimum:,}: **{binding}**",
         f"- paired served and v1 shadow runs: {len(pairs)}",
@@ -1193,4 +1240,9 @@ def render_look_report(
     if not comparison.empty:
         lines += ["### v3 served vs v1 shadow (paired 7-day moving-block bootstrap)\n",
                   comparison.to_markdown(index=False, floatfmt=".4f"), ""]
+    shown = None if split is None else split[split["run_id"] == pool]
+    if shown is not None and not shown.empty:
+        lines += ["### season types outside the endpoints (reported, never binding)\n",
+                  shown[["cohort", "endpoint", "stat", "n", "value"]]
+                  .to_markdown(index=False, floatfmt=".4f"), ""]
     return "\n".join(lines) + "\n"

@@ -7,6 +7,7 @@ import psycopg2
 from config import (
     BACKFILL_REQUEST_DELAY_SECONDS,
     NAME_TO_ABBR,
+    SEASON_TYPE_PRESEASON,
     SEASON_TYPE_REGULAR,
     SEASON_TYPES_INGESTED,
     TRUTH_LAYER_TABLES,
@@ -490,16 +491,18 @@ def validate_game_logs(
             ", ".join(f"{season_type} {count}" for season_type, count in games_by_type),
         )
 
+        # a preseason opponent can be an overseas club with no team log of its own.
         _report_examples(
             "team rows per game == 2",
             _rows(
                 conn,
                 """
                 SELECT nba_game_id, COUNT(*) FROM team_game_logs
-                 WHERE season = %s GROUP BY nba_game_id HAVING COUNT(*) <> 2
+                 WHERE season = %s AND season_type <> %s
+                 GROUP BY nba_game_id HAVING COUNT(*) <> 2
                  ORDER BY nba_game_id
                 """,
-                (season,),
+                (season, SEASON_TYPE_PRESEASON),
             ),
         )
         # a team-game the schedule row doesn't name is invisible to every

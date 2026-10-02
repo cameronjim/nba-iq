@@ -4423,3 +4423,57 @@ exact integer probabilities and push mass, a real tail instead of a linear one, 
 joint draw (shared minutes and pace) that prices PRA and same-game combinations
 without the independence assumption. Until then the low-count and PRA markets should
 be read with the most suspicion in the summary.
+
+### 20.5 Preseason games are truth only
+
+**The gap.** The daily run has published preseason forecasts since September 30
+(`daily_run.SLATE_SEASON_TYPES` serves the Pre Season slate), but no preseason box
+score was ever ingested. `score_runs.py` could not grade those runs, and the
+season-start experiment's part (c) had no realized preseason minutes to compare the
+projections with, so its "accidentally right" verdict could only read NOT MEASURABLE.
+
+**The rule.** Preseason games are collected as truth and nothing else. They land in
+`player_game_logs`, `team_game_logs` and `player_game_status` with `season_type = 'Pre
+Season'` (game id prefix `001`), they are graded, and they never become a training row
+or a rate input. Preseason minutes are not representative: starters play a half or
+less, rotations are auditions, and the opponent can be an overseas club. A rate history
+that read them would drag every star's October EWMA toward an exhibition workload, the
+opposite of what 20.1 adds the playoffs for.
+
+**What changed:**
+
+- **Scraper.** `config.SEASON_TYPES_INGESTED` now leads with `"Pre Season"`, so the
+  incremental game-log phase, `--backfill-game-logs` and the schedule's team-log
+  fallback fetch it, with its own watermark. `rows.season_types_to_fetch` asks for it
+  only from September 15 through October 31 of the season's first year
+  (`PRESEASON_WINDOW_START` / `PRESEASON_WINDOW_END`), so the rest of the year pays no
+  request. The status and box-score path is unchanged: it selects games from
+  `team_game_logs`, so a preseason game gets status rows once its logs land. The
+  validation gate "completed schedule games have logs" stays regular season only, and
+  "team rows per game == 2" now skips preseason games, whose opponent may have no team
+  log of its own.
+- **Sources and frames.** `COMPETITION` gains `preseason`. `HISTORY_SEASON_TYPES` and
+  `TRAINING_SEASON_TYPES` do not include it, so the dataset build never loads a
+  preseason row. For frames that do carry one: the status universe drops the status
+  rows of every non-training game (not only postseason ones), `build_features` refuses
+  a preseason row as a modelled row, and `career_history` admits only play-in and
+  playoff rows even with `RATE_HISTORY_INCLUDES_POSTSEASON` on. The scoring baselines
+  (`build_baselines`, `seeded_rate_baselines`) read regular-season or history types
+  only, so a preseason appearance moves none of them; the backend's usual-form baseline
+  whitelists the regular season (plus the postseason behind
+  `BASELINE_INCLUDES_POSTSEASON`) and never reads Pre Season either way.
+- **Scoring.** `config.TRUTH_SEASON_TYPES` is the history types plus Pre Season, and
+  `score_runs.py`'s truth query reads exactly those. A preseason game is matched and
+  graded like any other and shows as the `season_type=Pre Season` cohort. The look
+  report (`--look`) rescores every pre-registered endpoint on regular-season games
+  only (`scoring.ENDPOINT_SEASON_TYPES`, as 13.3 defines them): the falsification
+  table, the row minimum and the paired v3 vs v1 comparison never see a preseason row.
+  The report states how many player-games it excluded and prints the preseason cohort
+  in its own table, reported and never binding. Outside `--look` the ALL cohort still
+  pools every graded game, with the season-type cohorts beside it.
+
+**What it enables.** The preseason runs since September 30 are graded, the first
+realized check on the season-start projections before any frozen look. Part (c) of the
+season-start experiment reads `player_game_logs` rows with `season_type = 'Pre
+Season'`; its query already uses that string, so it finds rows without a code change
+once the October scrapes land (and a backfill fills earlier seasons).
