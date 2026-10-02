@@ -300,6 +300,25 @@ class TestPreseason:
         assert usual.iloc[1] == pytest.approx(30.0)
         assert np.isnan(usual.iloc[2])
 
+    def test_usual_minutes_tolerates_mixed_date_resolutions(self) -> None:
+        # arrange: parquet history arrives as ms, the sql preseason frame as s
+        history = pd.DataFrame({
+            "PLAYER_ID": ["1", "1"],
+            "GAME_DATE": pd.to_datetime(["2024-03-01", "2024-03-03"]).astype("datetime64[ms]"),
+            "PLAYED": [1, 1],
+            "MIN": [30.0, 36.0],
+        })
+        query = pd.DataFrame({
+            "PLAYER_ID": ["1"],
+            "GAME_DATE": pd.to_datetime(["2024-10-10"]).astype("datetime64[s]"),
+        })
+
+        # act
+        usual = usual_minutes_asof(history, query)
+
+        # assert
+        assert usual.iloc[0] == pytest.approx(33.0)
+
     def test_preseason_table_by_hand(self) -> None:
         # arrange: the 0-minute row is a DNP and is excluded
         pre = pd.DataFrame({
