@@ -17,7 +17,10 @@ from backfill import NOT_POSTPONED_PREDICATE
 from config import (
     current_season,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
+    PROPS_DEFAULT_MARKETS,
     PROPS_MARKET_MAP,
+    PROPS_MONTHLY_BUDGET,
+    PROPS_RESERVE_CREDITS,
     ROSTER_SNAPSHOT_SOURCE,
     SEASON,
     SEASON_TYPES_INGESTED,
@@ -3074,11 +3077,11 @@ PROPS_NOW = datetime(2026, 10, 21, 16, 0, tzinfo=timezone.utc)
 
 
 class TestPropsWindow:
-    def test_the_window_runs_to_the_end_of_the_eastern_day_two_days_out(self):
+    def test_the_default_window_ends_with_the_current_eastern_day(self):
         start, end = props.props_window(PROPS_NOW)
 
         assert start == PROPS_NOW
-        assert end.astimezone(odds.EASTERN).date() == date(2026, 10, 23)
+        assert end.astimezone(odds.EASTERN).date() == date(2026, 10, 21)
         assert (end + timedelta(seconds=1)).astimezone(odds.EASTERN).hour == 0
 
     def test_events_already_tipped_or_past_the_window_are_dropped(self):
@@ -3086,13 +3089,13 @@ class TestPropsWindow:
         events = [
             {**PROP_EVENT, "id": "tipped", "commence_time": "2026-10-21T15:00:00Z"},
             {**PROP_EVENT, "id": "tonight"},
-            {**PROP_EVENT, "id": "late", "commence_time": "2026-10-24T02:00:00Z"},
+            {**PROP_EVENT, "id": "tomorrow", "commence_time": "2026-10-23T02:00:00Z"},
             {**PROP_EVENT, "id": "far", "commence_time": "2026-10-25T23:00:00Z"},
         ]
 
         kept = props.events_in_window(events, start, end)
 
-        assert [e["id"] for e in kept] == ["tonight", "late"]
+        assert [e["id"] for e in kept] == ["tonight"]
 
     def test_a_run_is_due_only_after_the_minimum_gap(self):
         assert props.props_run_due(None, PROPS_NOW, 20) is True
@@ -3104,12 +3107,13 @@ class TestPropsWindow:
 class FakePropsProvider:
     name = "the_odds_api"
 
-    def __init__(self, events, payloads, remaining=480, cost=8):
+    def __init__(self, events, payloads, remaining=480, cost=2, actual_cost=None):
         self.events = events
         self.payloads = payloads
         self.requests_remaining = None
         self._remaining = remaining
         self._cost = cost
+        self._actual_cost = cost if actual_cost is None else actual_cost
         self.odds_calls: list[str] = []
 
     def fetch_events(self, start, end):
@@ -3118,7 +3122,7 @@ class FakePropsProvider:
 
     def fetch_event_props(self, event_id):
         self.odds_calls.append(event_id)
-        self._remaining -= self._cost
+        self._remaining -= self._actual_cost
         self.requests_remaining = self._remaining
         return self.payloads.get(event_id, {})
 
@@ -3145,6 +3149,60 @@ class PropsCursor(OddsCursor):
 class PropsConn(OddsConn):
     def __init__(self, last_started=None):
         self.cursor_ = PropsCursor(last_started)
+
+
+
+class TestPropsCredits:
+    def test_credits_are_events_times_markets(self):
+        assert props.credits_for_snapshot(7, 2) == 14
+        assert props.credits_for_snapshot(0, 2) == 0
+        assert props.credits_for_snapshot(-1, 2) == 0
+
+    def test_a_typical_season_fits_the_monthly_budget(self):
+        nightly = props.credits_for_snapshot(7, len(PROPS_DEFAULT_MARKETS))
+
+        assert nightly * 30 <= PROPS_MONTHLY_BUDGET - PROPS_RESERVE_CREDITS
+
+    def test_the_reserve_bounds_what_a_snapshot_may_spend(self):
+        assert props.snapshot_allowed(64, 14) is True
+        assert props.snapshot_allowed(63, 14) is False
+        assert props.snapshot_allowed(None, 14) is True
+
+
+class TestPropsMarkets:
+    def test_no_override_means_the_default_subset(self):
+        assert props.parse_props_markets(None) == ("pts", "pra")
+        assert props.parse_props_markets("  ") == ("pts", "pra")
+
+    def test_an_override_is_parsed_in_order_without_duplicates(self):
+        assert props.parse_props_markets("reb, Pts,reb") == ("reb", "pts")
+
+    def test_an_unknown_market_is_an_error(self):
+        with pytest.raises(ValueError, match="dunks"):
+            props.parse_props_markets("pts,dunks")
+
+    def test_the_default_request_asks_for_exactly_two_market_keys(self):
+        seen: list[dict] = []
+
+        def fake_get(url, params, timeout):
+            seen.append(params)
+            return type("R", (), {
+                "headers": {}, "raise_for_status": lambda self: None,
+                "json": lambda self: {},
+            })()
+
+        provider = props.TheOddsApiProvider("k", get=fake_get)
+        provider.fetch_event_props("evt")
+
+        assert seen[0]["markets"] == "player_points,player_points_rebounds_assists"
+        assert provider.event_props_cost() == 2
+
+    def test_the_env_provider_requests_the_chosen_markets(self, monkeypatch):
+        monkeypatch.setenv("ODDS_API_KEY", "k")
+
+        provider = props.provider_from_env(("reb", "ast", "stl"))
+
+        assert provider.event_props_cost() == 3
 
 
 class TestScrapePropOdds:
@@ -3179,7 +3237,7 @@ class TestScrapePropOdds:
             ("Jalen Brunson", "1628973"), ("Stephen Curry", "201939"),
         }
         assert {row[12:] for row in inserts[0]} == {("the_odds_api", 7)}
-        assert finished == [(7, "succeeded", 4, "requests remaining 472")]
+        assert finished == [(7, "succeeded", 4, "requests remaining 478")]
 
     def test_no_odds_call_for_an_event_outside_the_window(self, written):
         far = {**PROP_EVENT, "id": "far", "commence_time": "2026-10-26T23:00:00Z"}
@@ -3203,11 +3261,38 @@ class TestScrapePropOdds:
 
     def test_a_low_quota_stops_the_odds_calls(self, written):
         second = {**PROP_EVENT, "id": "second"}
-        provider = FakePropsProvider([PROP_EVENT, second], {}, remaining=10, cost=8)
+        provider = FakePropsProvider(
+            [PROP_EVENT, second], {}, remaining=70, cost=2, actual_cost=69
+        )
 
         props.scrape_prop_odds(PropsConn(), dry_run=True, provider=provider, now=PROPS_NOW)
 
         assert provider.odds_calls == [PROP_EVENT["id"]]
+
+    def test_a_snapshot_that_would_dip_into_the_reserve_is_refused(self, monkeypatch, written):
+        second = {**PROP_EVENT, "id": "second"}
+        provider = FakePropsProvider([PROP_EVENT, second], {}, remaining=53, cost=2)
+        finished: list[tuple] = []
+        monkeypatch.setattr(
+            props, "_finish_ingestion_run",
+            lambda conn, run_id, status, rows, notes=None: finished.append((status, rows, notes)),
+        )
+
+        ok = props.scrape_prop_odds(PropsConn(), provider=provider, now=PROPS_NOW)
+
+        assert ok is False
+        assert provider.odds_calls == []
+        assert written == []
+        assert finished[0][0] == "failed"
+        assert "refused" in finished[0][2]
+
+    def test_a_snapshot_that_exactly_leaves_the_reserve_runs(self, written):
+        second = {**PROP_EVENT, "id": "second"}
+        provider = FakePropsProvider([PROP_EVENT, second], {}, remaining=54, cost=2)
+
+        props.scrape_prop_odds(PropsConn(), dry_run=True, provider=provider, now=PROPS_NOW)
+
+        assert provider.odds_calls == [PROP_EVENT["id"], "second"]
 
     def test_dry_run_reads_but_writes_nothing(self, written):
         provider = FakePropsProvider([PROP_EVENT], {PROP_EVENT["id"]: PROP_PAYLOAD})
@@ -3262,7 +3347,9 @@ class TestTheOddsApiProvider:
             calls.append((url, params))
             return _FakeResponse(PROP_PAYLOAD, {"x-requests-remaining": "492"})
 
-        provider = props.TheOddsApiProvider("k", get=get)
+        provider = props.TheOddsApiProvider(
+            "k", markets=tuple(PROPS_MARKET_MAP.values()), get=get
+        )
 
         payload = provider.fetch_event_props("abc")
 
@@ -3289,7 +3376,7 @@ class TestTheOddsApiProvider:
 
         assert events == [PROP_EVENT]
         assert calls[0]["commenceTimeFrom"] == "2026-10-21T16:00:00Z"
-        assert calls[0]["commenceTimeTo"] == "2026-10-24T03:59:59Z"
+        assert calls[0]["commenceTimeTo"] == "2026-10-22T03:59:59Z"
         assert provider.requests_remaining is None
 
     def test_an_env_key_builds_the_provider_and_a_blank_key_builds_none(self, monkeypatch):
@@ -3303,27 +3390,31 @@ class TestPropsCli:
     def test_props_only_is_off_by_default(self):
         assert _parse_args([]).props_only is False
 
+    def test_props_markets_defaults_to_unset_and_takes_an_override(self):
+        assert _parse_args([]).props_markets is None
+        assert _parse_args(["--props-markets", "pts,reb"]).props_markets == "pts,reb"
+
     def test_the_odds_lane_runs_props_after_the_espn_snapshot(self, monkeypatch):
         order: list[str] = []
         monkeypatch.setattr(
             run_scraper, "scrape_odds_snapshots", lambda conn, dry_run: order.append("espn")
         )
         monkeypatch.setattr(
-            run_scraper, "scrape_prop_odds", lambda conn, dry_run: order.append("props")
+            run_scraper, "scrape_prop_odds", lambda conn, dry_run, markets: order.append("props")
         )
 
-        run_scraper._odds_lane(object(), dry_run=True)
+        run_scraper._odds_lane(object(), dry_run=True, markets=("pts",))
 
         assert order == ["espn", "props"]
 
     def test_a_props_failure_does_not_escape_the_odds_lane(self, monkeypatch):
-        def boom(conn, dry_run):
+        def boom(conn, dry_run, markets):
             raise RuntimeError("provider down")
 
         monkeypatch.setattr(run_scraper, "scrape_odds_snapshots", lambda conn, dry_run: True)
         monkeypatch.setattr(run_scraper, "scrape_prop_odds", boom)
 
-        run_scraper._odds_lane(object(), dry_run=True)
+        run_scraper._odds_lane(object(), dry_run=True, markets=("pts",))
 
 
 PLAYOFF_GAME_ID = "0042400101"

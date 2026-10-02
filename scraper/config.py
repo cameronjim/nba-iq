@@ -198,7 +198,7 @@ ODDS_SNAPSHOT_SOURCE = "espn_scoreboard"
 ODDS_INGESTION_KIND = "odds_snapshot"
 
 # player prop odds. the odds api bills an event-odds call per market per
-# region, so eight markets cost eight of the free tier's 500 monthly credits.
+# region, and the free tier is 500 credits a month, so only a few markets fit.
 PROPS_API_KEY_ENV = "ODDS_API_KEY"
 PROPS_PROVIDER_THE_ODDS_API = "the_odds_api"
 PROPS_INGESTION_KIND = "prop_odds_snapshot"
@@ -217,7 +217,12 @@ PROPS_MARKET_MAP = {
     "player_blocks": "blk",
     "player_turnovers": "tov",
 }
-PROPS_WINDOW_DAYS = ODDS_WINDOW_DAYS
+PROPS_DEFAULT_MARKETS = ("pts", "pra")
+# today's games only (eastern): a ~7 game night costs ~14 credits.
+PROPS_WINDOW_DAYS = 0
+PROPS_MONTHLY_BUDGET = 500
+# never let a snapshot take the account below this many credits.
+PROPS_RESERVE_CREDITS = 50
 # the odds lane fires every 30 minutes; without this gap one day of it would
 # spend the whole monthly quota.
 PROPS_MIN_HOURS_BETWEEN_RUNS = 20

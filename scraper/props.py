@@ -10,10 +10,13 @@ import requests
 from config import (
     NAME_TO_ABBR,
     PROPS_API_KEY_ENV,
+    PROPS_DEFAULT_MARKETS,
     PROPS_INGESTION_KIND,
     PROPS_MARKET_MAP,
     PROPS_MIN_HOURS_BETWEEN_RUNS,
+    PROPS_MONTHLY_BUDGET,
     PROPS_PROVIDER_THE_ODDS_API,
+    PROPS_RESERVE_CREDITS,
     PROPS_WINDOW_DAYS,
     THE_ODDS_API_MAX_ATTEMPTS,
     THE_ODDS_API_REGIONS,
@@ -61,12 +64,12 @@ class TheOddsApiProvider:
     def __init__(
         self,
         api_key: str,
-        markets: Sequence[str] = tuple(PROPS_MARKET_MAP),
+        markets: Sequence[str] | None = None,
         regions: str = THE_ODDS_API_REGIONS,
         get: Callable[..., requests.Response] = requests.get,
     ) -> None:
         self._api_key = api_key
-        self._markets = list(markets)
+        self._markets = market_keys(markets or PROPS_DEFAULT_MARKETS)
         self._regions = regions
         self._get = get
         self.requests_remaining: int | None = None
@@ -120,9 +123,42 @@ class TheOddsApiProvider:
         return len(self._markets) * len(self._regions.split(","))
 
 
-def provider_from_env() -> PropsProvider | None:
+def market_keys(markets: Iterable[str]) -> list[str]:
+    # normalized names (pts) to the provider's market keys (player_points).
+    by_name = {name: key for key, name in PROPS_MARKET_MAP.items()}
+    return [by_name[m] for m in markets]
+
+
+def parse_props_markets(spec: str | None) -> tuple[str, ...]:
+    # "pts,reb" to normalized names; None or blank means the default subset.
+    if spec is None or not spec.strip():
+        return PROPS_DEFAULT_MARKETS
+    known = set(PROPS_MARKET_MAP.values())
+    names = list(dict.fromkeys(m.strip().lower() for m in spec.split(",") if m.strip()))
+    unknown = [m for m in names if m not in known]
+    if unknown or not names:
+        raise ValueError(
+            f"unknown props market(s) {', '.join(unknown) or spec!r}; "
+            f"choose from {', '.join(sorted(known))}"
+        )
+    return tuple(names)
+
+
+def credits_for_snapshot(n_events: int, n_markets: int) -> int:
+    # one credit per market per event; the events listing is free.
+    return max(n_events, 0) * max(n_markets, 0)
+
+
+def snapshot_allowed(
+    remaining: int | None, projected: int, reserve: int = PROPS_RESERVE_CREDITS
+) -> bool:
+    # unknown quota is allowed; the per-call stop still applies.
+    return remaining is None or remaining - projected >= reserve
+
+
+def provider_from_env(markets: Sequence[str] = PROPS_DEFAULT_MARKETS) -> PropsProvider | None:
     api_key = (os.environ.get(PROPS_API_KEY_ENV) or "").strip()
-    return TheOddsApiProvider(api_key) if api_key else None
+    return TheOddsApiProvider(api_key, markets=markets) if api_key else None
 
 
 def _iso_z(moment: datetime) -> str:
@@ -325,8 +361,9 @@ def scrape_prop_odds(
     provider: PropsProvider | None = None,
     now: datetime | None = None,
     min_hours_between_runs: float = PROPS_MIN_HOURS_BETWEEN_RUNS,
+    markets: Sequence[str] = PROPS_DEFAULT_MARKETS,
 ) -> bool:
-    provider = provider or provider_from_env()
+    provider = provider or provider_from_env(markets)
     if provider is None:
         logger.info("props provider not configured (%s unset), skipping", PROPS_API_KEY_ENV)
         return True
@@ -357,6 +394,24 @@ def scrape_prop_odds(
             _finish_ingestion_run(conn, run_id, "failed", 0, notes="events fetch failed")
             return False
 
+        cost = provider.event_props_cost()
+        projected = credits_for_snapshot(len(events), cost)
+        logger.info(
+            "props: %d event(s) x %d credit(s) = %d projected, %s of %d monthly credits remaining",
+            len(events), cost, projected, provider.requests_remaining, PROPS_MONTHLY_BUDGET,
+        )
+        if not snapshot_allowed(provider.requests_remaining, projected):
+            logger.error(
+                "props: refusing snapshot, %s remaining minus %d projected is under the %d reserve",
+                provider.requests_remaining, projected, PROPS_RESERVE_CREDITS,
+            )
+            _finish_ingestion_run(
+                conn, run_id, "failed", 0,
+                notes=f"refused: {provider.requests_remaining} credits remaining, "
+                      f"{projected} projected, {PROPS_RESERVE_CREDITS} reserved",
+            )
+            return False
+
         lookup_from = start.astimezone(EASTERN).date() - timedelta(days=1)
         lookup_to = end.astimezone(EASTERN).date() + timedelta(days=1)
         schedule_rows = _read_schedule_rows(cur, lookup_from, lookup_to)
@@ -367,7 +422,6 @@ def scrape_prop_odds(
         unmatched: set[str] = set()
         failed: list[str] = []
         skipped_for_quota = 0
-        cost = provider.event_props_cost()
         for event in events:
             event_id = str(event["id"])
             remaining = provider.requests_remaining

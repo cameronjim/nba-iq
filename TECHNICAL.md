@@ -11,7 +11,7 @@ conventions (style, testing, pre-commit checklist), see [AGENTS.md](AGENTS.md).
 | [`stats.nba.com`](https://stats.nba.com) (via `nba_api`) | Player and team per-game stats | Sits behind Akamai, which **blocks AWS and GitHub Actions IP ranges**. Requests from CI can fail; the scraper tolerates it and the app keeps serving the last good data from Postgres. |
 | ESPN public API (`site.api.espn.com`) | Games, scores, live scoreboard, betting odds | Not IP-blocked from AWS, which is why it backs the scoreboard and odds board instead of `cdn.nba.com`. |
 | [CBS Sports](https://www.cbssports.com/nba/injuries/) | Injury reports and specific positions | Parsed with Beautiful Soup. |
-| [The Odds API](https://the-odds-api.com) | Player prop odds (points, rebounds, assists, threes, PRA, steals, blocks, turnovers) | Optional, keyed by `ODDS_API_KEY`; metered, so the scraper calls it at most once per 20 hours. See "Player prop odds" below. |
+| [The Odds API](https://the-odds-api.com) | Player prop odds (points, rebounds, assists, threes, PRA, steals, blocks, turnovers) | Optional, keyed by `ODDS_API_KEY`; metered (500 credits a month free), so the scraper calls it at most once per 20 hours for today's games and two markets. See "Player prop odds" below. |
 | [`nba2kapi.com`](https://nba2kapi.com) | NBA 2K overall ratings, 35 attributes, badges, and rating history | Data originates from [2kratings.com](https://www.2kratings.com). Not affiliated with or endorsed by 2K Sports, Take-Two, or the NBA. Matching to our players is name-based, since 2K publishes no NBA ids. |
 | `stats.nba.com` &rarr; `scheduleleaguev2` | The season schedule, including games not yet played | Publishes the whole season in advance, which is what lets a prediction be made for tonight's game before any box score exists. When the endpoint is unavailable it falls back to the `nba.com/games?date=` pages (real NBA game ids, reachable from CI), then to reconstructing completed games from `leaguegamelog`. ESPN is deliberately *not* a fallback: it keys on its own event ids, which do not join to any `stats.nba.com` game id. |
 | `nba.com` web pages (`/games?date=`, `/players`) | Schedule fallback and roster fallback for `player_team_stints` | Read from the `__NEXT_DATA__` JSON embedded in each page, with a desktop user agent. The players index gives every current team assignment in one request. |
@@ -319,19 +319,28 @@ another source can replace it without touching the parser or the write path.
   secret of the same name. Unset, the phase logs "props provider not
   configured" and skips; nothing else changes.
 - **Calls.** One free `/v4/sports/basketball_nba/events` listing for now
-  through the end of today+2 (Eastern), then one
-  `/events/{id}/odds` call per game in that window that has not tipped, with
-  `regions=us`, `oddsFormat=american` and the markets `player_points`,
-  `player_rebounds`, `player_assists`, `player_threes`,
-  `player_points_rebounds_assists`, `player_steals`, `player_blocks`,
-  `player_turnovers`.
-- **Quota.** An event-odds call costs one credit per market per region, so 8
-  per game; the free tier is 500 a month. The lane therefore snapshots at most
-  once per 20 hours (the last succeeded `prop_odds_snapshot` run in
-  `ingestion_runs` is the clock), stops calling once `x-requests-remaining`
-  is below one call's cost, and records the remaining count in the run's
-  notes. Even so, a full slate costs far more than the free tier a month;
-  sustained use needs a paid plan or fewer markets in `PROPS_MARKET_MAP`.
+  through the end of today (Eastern), then one `/events/{id}/odds` call per
+  game in that window that has not tipped, with `regions=us`,
+  `oddsFormat=american` and, by default, the markets `player_points` and
+  `player_points_rebounds_assists`. `PROPS_MARKET_MAP` still holds all eight
+  markets (`pts`, `reb`, `ast`, `fg3m`, `pra`, `stl`, `blk`, `tov`) for
+  parsing, but only `PROPS_DEFAULT_MARKETS` are requested. A one-off run can
+  override the subset with `--props-markets pts,reb,ast`; an unknown name is
+  an error.
+- **Quota.** An event-odds call costs one credit per market per region, so 2
+  per game by default; the free tier is 500 a month. A regular season averages
+  about 7 games a night, so one snapshot a day is about 14 credits, about 420
+  a month, leaving margin. The lane snapshots at most once per 20 hours (the
+  last succeeded `prop_odds_snapshot` run in `ingestion_runs` is the clock).
+  Before spending anything it logs the projected cost
+  (`credits_for_snapshot(events, markets)`) against `x-requests-remaining`
+  and refuses the snapshot, recording the run as failed, if the remaining
+  credits minus the projection would fall below `PROPS_RESERVE_CREDITS` (50),
+  so a heavy night cannot zero the account. It also stops calling mid-run once
+  the remaining count is below one call's cost, and records the remaining
+  count in the run's notes. Widening the markets (all eight is 8 credits a
+  game, about 56 a night) or the window exceeds the free tier and means a
+  paid plan.
 - **Lanes.** It runs at the end of the 30-minute odds lane (`--odds-only`),
   after and isolated from the ESPN snapshot, and not in the full scrape.
   `python run_scraper.py --props-only` runs it on demand, ignoring the 20-hour

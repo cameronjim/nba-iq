@@ -25,7 +25,7 @@ from parsing import (
 from fetching import stats_nba_reachable
 from injury_report import scrape_official_injuries
 from odds import scrape_odds_snapshots
-from props import scrape_prop_odds
+from props import parse_props_markets, scrape_prop_odds
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
@@ -184,6 +184,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--props-markets",
+        dest="props_markets",
+        default=None,
+        help=(
+            "comma-separated prop markets for this run (pts,reb,ast,fg3m,pra,stl,"
+            "blk,tov); default pts,pra. each market costs one api credit per game"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
@@ -237,16 +246,24 @@ def _truth_layer_phases(
     return schedule_ok
 
 
-def _odds_lane(conn: psycopg2.extensions.connection, dry_run: bool) -> None:
+def _odds_lane(
+    conn: psycopg2.extensions.connection, dry_run: bool, markets: tuple[str, ...]
+) -> None:
     # props last and isolated: a provider outage must never cost the espn snapshot.
     scrape_odds_snapshots(conn, dry_run=dry_run)
-    _run_phase("prop odds snapshot", lambda: scrape_prop_odds(conn, dry_run=dry_run))
+    _run_phase("prop odds snapshot", lambda: scrape_prop_odds(conn, dry_run=dry_run, markets=markets))
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
 
     truth_from, truth_to = _truth_layer_season_bounds(args)
+
+    try:
+        props_markets = parse_props_markets(args.props_markets)
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(2)
 
     try:
         season_start_year(args.season)
@@ -316,9 +333,12 @@ def main(argv: list[str] | None = None) -> None:
         elif args.official_injuries_only:
             scrape_official_injuries(conn, dry_run=args.dry_run)
         elif args.odds_only:
-            _odds_lane(conn, args.dry_run)
+            _odds_lane(conn, args.dry_run, props_markets)
         elif args.props_only:
-            scrape_prop_odds(conn, dry_run=args.dry_run, min_hours_between_runs=0)
+            scrape_prop_odds(
+                conn, dry_run=args.dry_run, min_hours_between_runs=0,
+                markets=props_markets,
+            )
         else:
             stats_reachable = stats_nba_reachable()
             if not stats_reachable:
