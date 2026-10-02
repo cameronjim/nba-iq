@@ -22,6 +22,7 @@ import { StreamingPickupsCard } from '../components/fantasy/StreamingPickupsCard
 import { TradeCheckCard } from '../components/fantasy/TradeCheckCard';
 import { useRosterResource } from '../hooks/useRosterResource';
 import { useTradeCheck } from '../hooks/useTradeCheck';
+import { InjuryBadge } from '../components/player/InjuryBadge';
 
 const CAT_COLORS: Record<string, string> = {
   strong: 'text-success',
@@ -249,15 +250,6 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
     });
   }, [roster, sortKey, sortDir]);
 
-  const injuryBadge = (status: string | null): JSX.Element | null => {
-    if (!status) return null;
-    const cls = status === 'Out' ? 'text-error'
-      : ['Day-To-Day', 'Day_To_Day', 'Questionable'].includes(status) ? 'text-warning'
-      : status === 'Probable' ? 'text-success'
-      : 'text-error';
-    return <span className={`text-[11px] font-semibold uppercase ml-2 ${cls}`}>{status.replace(/_/g, ' ')}</span>;
-  };
-
   return (
     <div className="max-w-[1400px] mx-auto px-4 py-6 space-y-5">
       {isLoggedIn && <PreferencesPrompt />}
@@ -349,7 +341,7 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                 <tbody>
                   {sortedRoster.map((p) => (
                     <tr key={`player-${p.id}`} className="hover">
-                      <td className="font-medium whitespace-nowrap">
+                      <td className="font-medium">
                         <span className="flex items-center gap-2">
                           <div className="avatar">
                             <div className="w-6 rounded-box">
@@ -360,7 +352,10 @@ export const FantasyPage = ({ isLoggedIn }: FantasyPageProps) => {
                               />
                             </div>
                           </div>
-                          {p.name}{injuryBadge(p.injury_status)}
+                          <span className="flex flex-wrap items-center gap-x-2 min-w-0">
+                            <span className="whitespace-nowrap">{p.name}</span>
+                            <InjuryBadge status={p.injury_status} detail={p.injury_detail} showDetail />
+                          </span>
                         </span>
                       </td>
                       <td>{p.position}</td>

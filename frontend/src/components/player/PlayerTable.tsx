@@ -4,6 +4,7 @@ import { SkeletonLines } from '../Skeleton';
 import type { Player } from '../../types';
 import { getTeamLogoUrl } from '../../utils/teamLogos';
 import { PLAYER_IMAGE_FALLBACK } from '../../utils/playerImage';
+import { InjuryBadge } from './InjuryBadge';
 
 interface PlayerTableProps {
   players: Player[];
@@ -105,13 +106,6 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
   const compareIds = new Set(selectedForCompare.map((p) => p.id));
   const compareMaxed = selectedForCompare.length >= 3;
 
-  const injuryBadgeClass = (status: string): string => {
-    if (status === 'Out') return 'badge badge-error badge-xs';
-    if (['Day-To-Day', 'Day_To_Day', 'Questionable'].includes(status)) return 'badge badge-warning badge-xs';
-    if (status === 'Probable') return 'badge badge-success badge-xs';
-    return 'badge badge-error badge-xs';
-  };
-
   return (
     <div>
       <div className="overflow-x-auto border border-base-300">
@@ -175,11 +169,7 @@ export const PlayerTable = ({ players, onSelect, selectedForCompare = [], onTogg
                             </div>
                           </div>
                           <span className="font-medium truncate" title={player.name}>{player.name}</span>
-                          {player.injury_status && (
-                            <span className={`flex-shrink-0 ${injuryBadgeClass(player.injury_status)}`}>
-                              {player.injury_status.replace(/_/g, ' ')}
-                            </span>
-                          )}
+                          <InjuryBadge status={player.injury_status} detail={player.injury_detail} />
                         </span>
                       ) : col.key === 'team' ? (
                         <span className="flex items-center gap-1.5">

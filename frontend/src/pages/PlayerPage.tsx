@@ -8,17 +8,12 @@ import { RecentGamesTable } from '../components/player/RecentGamesTable';
 import { PlayerPredictionCard } from '../components/player/PlayerPredictionCard';
 import { PlayerUpcomingGames } from '../components/player/PlayerUpcomingGames';
 import { PlayerCareerSection } from '../components/player/PlayerCareerSection';
+import { InjuryBadge } from '../components/player/InjuryBadge';
 import { getPlayerAnalytics, getPlayerPredictions } from '../api/client';
 import { useCachedResource } from '../hooks/useCachedResource';
 import { playerAnalyticsKey, playerPredictionsKey } from '../api/resourceCache';
 import { formatTimestamp } from '../utils/analytics';
 import type { PlayerAnalytics, PlayerPredictionsResponse } from '../types';
-
-const injuryAlertClass = (status: string): string => {
-  if (['Day-To-Day', 'Day_To_Day', 'Questionable'].includes(status)) return 'alert-warning';
-  if (status === 'Probable') return 'alert-success';
-  return 'alert-error';
-};
 
 const BackLink = (): JSX.Element => (
   <Link to="/stats" className="btn btn-ghost btn-xs gap-1 -ml-2 mb-2">
@@ -120,15 +115,8 @@ export const PlayerPage = (): JSX.Element => {
               {[player.team, player.position].filter(Boolean).join(' · ')}
             </p>
             {player.injury_status && (
-              <div
-                className={`alert ${injuryAlertClass(player.injury_status)} mt-2 py-1.5 px-2.5 w-fit`}
-              >
-                <span className="text-[11px] font-bold uppercase">
-                  {player.injury_status.replace(/_/g, ' ')}
-                </span>
-                {player.injury_detail && (
-                  <span className="text-[11px] text-muted">· {player.injury_detail}</span>
-                )}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-2">
+                <InjuryBadge status={player.injury_status} detail={player.injury_detail} showDetail />
               </div>
             )}
           </div>
