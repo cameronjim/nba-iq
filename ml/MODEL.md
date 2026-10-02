@@ -4732,7 +4732,7 @@ to the bundle's `frozen_at`, which is now 2026-10-02.
 - **The UI and the backend readers.** How a served number is displayed, explained or
   ranked (section 19) is not the forecast.
 
-## 22. v6-context candidate (2026-10-02): built, pre-registered, unmeasured
+## 22. v6-context candidate (2026-10-02): built, pre-registered, measured, not promoted
 
 **Verdict first: two new challengers exist, `v6-context` and `residual-rate-v6`, and
 neither has a number.** Everything in this section was written before
@@ -4852,7 +4852,30 @@ result, and a fix is `v7`. As in 18.4, `v6-context` is read first; the rate chal
 fitted on the `v3-honest` pieces, so if `v6-context` passes, the rate verdict describes a
 composition that would no longer ship and is recorded as such.
 
-### 22.5 Open items
+### 22.5 The look (2026-10-02, stem `p3-v6-2026-10-02`, ML Evaluate run 36972281213)
+
+**Verdict: NOT PROMOTED, both candidates.** Same prod dataset build as 22.1's parents,
+170 game dates, identical rows across all four comparisons. Every gated endpoint is a
+real improvement with a 95% CI excluding zero, and none reaches the 1% floor.
+
+| Comparison | Endpoint | Gate | Relative improvement | 95% CI |
+|---|---|---|---|---|
+| `v6-context` vs `v3-honest` | availability Brier | yes | +0.53% | [+0.27%, +0.74%] |
+| `v6-context` vs `v3-honest` | minutes MAE | yes | +0.74% | [+0.61%, +1.04%] |
+| `v6-context` vs `v3-honest` | unconditional PTS MAE | no | +0.23% | [+0.17%, +0.37%] |
+| `residual-rate-v6` vs champion rate | conditional PTS MAE | yes | +0.73% | [+0.66%, +0.96%] |
+| `residual-rate-v6` vs champion rate | unconditional PTS MAE | yes | +0.27% | [+0.20%, +0.39%] |
+| `residual-rate-v6` vs champion rate | unconditional REB MAE | no | -0.08% | [-0.16%, -0.02%] |
+
+Reading. The box-detail start family triples the stakes family's minutes gain (+0.24%
+to +0.74%) and the CI's upper end crosses 1%, so the pooled point estimate is the only
+thing short of the bar. The fringe guard did what it was written to do: the parent's
++0.05% unconditional PTS with a CI spanning zero became +0.27% with a CI excluding it,
+and the fringe cohort no longer regresses. The REB endpoints stay very slightly worse
+under both rates, as under the parent. Per 13.6 this is the result; a fix is `v7`,
+with its own look. Nothing served changes; `prospective_2026_27_v3` stands.
+
+### 22.6 Open items
 
 - **Serving cannot build the v6 teammate columns yet.** `predict.rebuild_context`
   rebuilds the v3 expected columns from override-adjusted p_j; it does not call
