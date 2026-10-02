@@ -1,5 +1,6 @@
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
+from typing import NamedTuple
 
 from config import (
     ABBR_TO_TEAM_ID,
@@ -38,6 +39,8 @@ from parsing import (
 # passed as bare 4s: an off-by-one here silently drops every row.
 PLAYER_LOG_DATE_INDEX = 4
 TEAM_LOG_DATE_INDEX = 4
+
+GAME_LOG_STINT_SOURCE = "playergamelogs"
 
 
 def game_log_fetch_from(
@@ -190,47 +193,57 @@ def split_rows_on_season_boundary(
     return inside, outside
 
 
-def plan_stint_change(
-    open_stint: tuple[str, date] | None,
-    current_team_id: str,
-    current_team_first_game_date: date,
-    open_team_last_game_date: date | None,
-) -> dict | None:
-    # the previous stint ends on the last date he played for that team and the
-    # new one starts on the first date he played for the new one, so the gap
-    # between a trade and his debut belongs to neither.
-    if open_stint is not None and open_stint[0] == current_team_id:
-        return None
-
-    change: dict = {
-        "open_team_id": current_team_id,
-        "open_valid_from": current_team_first_game_date,
-        "close_team_id": None,
-        "close_valid_from": None,
-        "close_valid_to": None,
-    }
-    if open_stint is None:
-        return change
-
-    prev_team_id, prev_valid_from = open_stint
-    close_to = open_team_last_game_date or prev_valid_from
-    # a stint can never end before it began, nor on/after the next one starts
-    close_to = max(close_to, prev_valid_from)
-    close_to = min(close_to, max(prev_valid_from, current_team_first_game_date - timedelta(days=1)))
-    change.update(
-        close_team_id=prev_team_id,
-        close_valid_from=prev_valid_from,
-        close_valid_to=close_to,
-    )
-    return change
+class Stint(NamedTuple):
+    team_id: str
+    valid_from: date
+    valid_to: date | None
+    source: str
 
 
-def stint_is_newer_than_game_log(
-    open_stint: tuple[str, date] | None, latest_game_date: date
-) -> bool:
-    # a roster snapshot observed a move newer than any game we hold; the game
-    # log is stale for him until his debut and must not reopen the old team.
-    return open_stint is not None and open_stint[1] > latest_game_date
+def derive_stints(
+    appearances: Iterable[tuple[date, str, str]],
+    snapshot_stints: Iterable[tuple[str, date, str]] = (),
+) -> list[Stint]:
+    # rebuilt from his whole history, so ingestion order cannot change the answer.
+    segments: list[list] = []
+    for game_date, team_id, season_type in sorted(appearances, key=lambda a: (a[0], a[1])):
+        preseason = season_type == SEASON_TYPE_PRESEASON
+        if segments and segments[-1][0] == team_id:
+            segments[-1][2] = game_date
+            segments[-1][3] = segments[-1][3] and preseason
+        else:
+            segments.append([team_id, game_date, game_date, preseason])
+
+    observations = sorted(snapshot_stints, key=lambda s: (s[1], s[0]))
+    last_game = segments[-1][2] if segments else None
+    # games are better evidence than a roster page, so only a newer one counts
+    newer = [s for s in observations if last_game is None or s[1] > last_game]
+
+    stints: list[Stint] = []
+    for index, (team_id, first, last, preseason_only) in enumerate(segments):
+        if index + 1 < len(segments):
+            # a camp team he never played a real game for ends with camp
+            valid_to = last if preseason_only else segments[index + 1][1] - timedelta(days=1)
+            stints.append(Stint(team_id, first, valid_to, GAME_LOG_STINT_SOURCE))
+        elif not preseason_only:
+            stints.append(Stint(team_id, first, None, GAME_LOG_STINT_SOURCE))
+        elif observations and observations[-1][0] == team_id:
+            # the snapshot source is what keeps a camp stint open on the next rebuild
+            stints.append(Stint(team_id, first, None, observations[-1][2]))
+        else:
+            stints.append(Stint(team_id, first, last, GAME_LOG_STINT_SOURCE))
+
+    for team_id, observed_on, source in newer:
+        current = stints[-1] if stints and stints[-1].valid_to is None else None
+        if current is not None:
+            if current.team_id == team_id:
+                continue
+            # observed on the new roster today, never observed leaving the old one
+            stints[-1] = current._replace(
+                valid_to=max(current.valid_from, observed_on - timedelta(days=1))
+            )
+        stints.append(Stint(team_id, observed_on, None, source))
+    return stints
 
 
 def plan_roster_snapshot(

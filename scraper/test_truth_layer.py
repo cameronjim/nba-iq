@@ -3,6 +3,7 @@ import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import psycopg2.errors
 import pytest
 import requests
 
@@ -56,6 +57,8 @@ from parsing import (
 )
 from rows import (
     BOX_DETAILS_SOURCE,
+    Stint,
+    derive_stints,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
     active_dnp_status_rows,
@@ -73,7 +76,6 @@ from rows import (
     merge_dnp_reason,
     normalize_inactive_rows,
     plan_roster_snapshot,
-    plan_stint_change,
     player_ids_absent_from_box,
     player_rows_from_nba_players_index,
     roster_rows_from_nba_players_index,
@@ -83,7 +85,6 @@ from rows import (
     schedule_rows_from_team_logs,
     season_types_to_fetch,
     split_rows_on_season_boundary,
-    stint_is_newer_than_game_log,
     supplement_player_log_rows,
     web_game_is_final,
     web_inactive_rows,
@@ -313,55 +314,6 @@ class TestGameLogWatermark:
     def test_season_start_bound_cannot_overlap_the_previous_season(self):
         assert season_start_date("2025-26") == date(2025, 7, 1)
         assert season_start_date("2024-25") < season_start_date("2025-26")
-
-
-class TestPlanStintChange:
-    def test_same_team_is_no_change(self):
-        open_stint = ("1610612738", date(2025, 10, 21))
-
-        change = plan_stint_change(
-            open_stint, "1610612738", date(2026, 3, 1), date(2026, 3, 1)
-        )
-
-        assert change is None
-
-    def test_first_ever_stint_opens_without_closing_anything(self):
-        change = plan_stint_change(None, "1610612738", date(2025, 10, 21), None)
-
-        assert change["open_team_id"] == "1610612738"
-        assert change["open_valid_from"] == date(2025, 10, 21)
-        assert change["close_team_id"] is None
-
-    def test_trade_closes_the_old_stint_on_his_last_game_for_it(self):
-        open_stint = ("1610612738", date(2025, 10, 21))
-
-        change = plan_stint_change(
-            open_stint, "1610612747", date(2026, 2, 8), date(2026, 2, 4)
-        )
-
-        assert change["close_team_id"] == "1610612738"
-        assert change["close_valid_from"] == date(2025, 10, 21)
-        assert change["close_valid_to"] == date(2026, 2, 4)
-        assert change["open_team_id"] == "1610612747"
-        assert change["open_valid_from"] == date(2026, 2, 8)
-
-    def test_close_date_never_precedes_the_stint_it_closes(self):
-        open_stint = ("1610612738", date(2026, 2, 1))
-
-        change = plan_stint_change(
-            open_stint, "1610612747", date(2026, 2, 8), date(2026, 1, 3)
-        )
-
-        assert change["close_valid_to"] == date(2026, 2, 1)
-
-    def test_close_date_never_reaches_the_new_stints_start(self):
-        open_stint = ("1610612738", date(2025, 10, 21))
-
-        change = plan_stint_change(
-            open_stint, "1610612747", date(2026, 2, 8), date(2026, 2, 20)
-        )
-
-        assert change["close_valid_to"] == date(2026, 2, 7)
 
 
 class TestBoxScoreViolations:
@@ -1164,28 +1116,6 @@ class TestRunPhase:
 
     def test_a_phase_returning_nothing_counts_as_success(self):
         assert _run_phase("x", lambda: None) is True
-
-
-class TestSnapshotStintVersusGameLog:
-    def test_snapshot_opened_stint_newer_than_the_last_game_is_kept(self):
-        open_stint = ("1610612738", date(2026, 2, 5))
-
-        assert stint_is_newer_than_game_log(open_stint, date(2026, 2, 1)) is True
-
-    def test_a_game_log_change_after_the_stint_began_still_produces_a_change(self):
-        open_stint = ("1610612738", date(2025, 12, 1))
-
-        skipped = stint_is_newer_than_game_log(open_stint, date(2026, 1, 10))
-        change = plan_stint_change(
-            open_stint, "1610612752", date(2026, 1, 10), date(2026, 1, 8)
-        )
-
-        assert skipped is False
-        assert change is not None
-        assert change["open_team_id"] == "1610612752"
-
-    def test_no_open_stint_is_never_skipped(self):
-        assert stint_is_newer_than_game_log(None, date(2026, 1, 10)) is False
 
 
 class FakeCursor:
@@ -4472,3 +4402,367 @@ class TestValidationCoverageGate:
             params for sql, params in queries if "HAVING COUNT(*) <> 2" in sql
         ]
         assert two_sided == [("2024-25", "Pre Season")]
+
+
+CELTICS = "1610612738"
+LAKERS = "1610612747"
+KNICKS = "1610612752"
+SPURS = "1610612759"
+
+
+def _sql(sql):
+    return " ".join(sql.split())
+
+
+class StintDb:
+    # an in-memory player_game_logs + player_team_stints that enforces
+    # idx_player_team_stints_one_open, so a write path that would open a second
+    # stint fails here the way it fails in postgres.
+
+    def __init__(self, logs, stints):
+        self.logs = [dict(row) for row in logs]
+        self.stints = [dict(row) for row in stints]
+        self.writes = 0
+        self.after_stint_read = None
+
+    def rows(self):
+        return sorted(
+            (s["player"], s["team"], s["valid_from"], s["valid_to"]) for s in self.stints
+        )
+
+    def open_count(self, player):
+        return sum(1 for s in self.stints if s["player"] == player and s["valid_to"] is None)
+
+    def insert(self, player, team, valid_from, valid_to, source):
+        if any(
+            (s["player"], s["team"], s["valid_from"]) == (player, team, valid_from)
+            for s in self.stints
+        ):
+            return
+        if valid_to is None and self.open_count(player):
+            raise psycopg2.errors.UniqueViolation(
+                'duplicate key value violates unique constraint "idx_player_team_stints_one_open"'
+            )
+        self.stints.append(
+            {"player": player, "team": team, "valid_from": valid_from,
+             "valid_to": valid_to, "source": source}
+        )
+
+
+class StintCursor:
+    def __init__(self, db):
+        self.db = db
+        self.result = []
+
+    def execute(self, sql, params=None):
+        text = _sql(sql)
+        db = self.db
+        self.result = []
+        if text.startswith("SELECT pg_advisory_xact_lock"):
+            self.result = [(None,)]
+        elif text.startswith("SELECT DISTINCT nba_player_id FROM player_game_logs"):
+            (season,) = params
+            self.result = sorted(
+                {(r["player"],) for r in db.logs if r["season"] == season and r["team"]}
+            )
+        elif text.startswith("SELECT nba_player_id, game_date, team_id, season_type"):
+            (players,) = params
+            self.result = [
+                (r["player"], r["date"], r["team"], r["season_type"])
+                for r in db.logs if r["player"] in players and r["team"]
+            ]
+        elif text.startswith("SELECT nba_player_id, team_id, valid_from, valid_to, source"):
+            (players,) = params
+            self.result = [
+                (s["player"], s["team"], s["valid_from"], s["valid_to"], s["source"])
+                for s in db.stints if s["player"] in players
+            ]
+            self._fire_hook()
+        elif text.startswith("DELETE FROM player_team_stints"):
+            (players,) = params
+            db.stints = [s for s in db.stints if s["player"] not in players]
+            db.writes += 1
+        else:
+            raise AssertionError(f"unexpected sql: {text}")
+
+    def _fire_hook(self):
+        hook, self.db.after_stint_read = self.db.after_stint_read, None
+        if hook is not None:
+            hook()
+
+    def insert_rows(self, rows):
+        for player, team, valid_from, valid_to, source in rows:
+            self.db.insert(player, team, valid_from, valid_to, source)
+        self.db.writes += 1
+        return len(rows)
+
+    def fetchall(self):
+        return list(self.result)
+
+    def close(self):
+        pass
+
+
+class StintConn:
+    def __init__(self, db):
+        self.db = db
+        self.autocommit = True
+
+    def cursor(self):
+        return StintCursor(self.db)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def _appearance(player, game_id, season, season_type, day, team):
+    return {"player": player, "game_id": game_id, "season": season,
+            "season_type": season_type, "date": day, "team": team}
+
+
+# one player: Spurs in 2022-23, Celtics in 2023-24 (preseason first), Lakers in
+# 2024-25. the 2023-24 backfill is what just landed.
+TRAVELLER_LOGS = [
+    _appearance("9", "0022200001", "2022-23", "Regular Season", date(2022, 10, 19), SPURS),
+    _appearance("9", "0022200900", "2022-23", "Regular Season", date(2023, 4, 9), SPURS),
+    _appearance("9", "0012300004", "2023-24", "Pre Season", date(2023, 10, 8), CELTICS),
+    _appearance("9", "0022300010", "2023-24", "Regular Season", date(2023, 10, 25), CELTICS),
+    _appearance("9", "0042300101", "2023-24", "Playoffs", date(2024, 4, 21), CELTICS),
+    _appearance("9", "0022400005", "2024-25", "Regular Season", date(2024, 10, 22), LAKERS),
+    _appearance("9", "0022401200", "2024-25", "Regular Season", date(2025, 4, 13), LAKERS),
+]
+
+TRAVELLER_STINTS = [
+    {"player": "9", "team": SPURS, "valid_from": date(2022, 10, 19),
+     "valid_to": None, "source": "playergamelogs"},
+]
+
+
+def _games(*spans):
+    return [(day, team, season_type) for day, team, season_type in spans]
+
+
+class TestDeriveStints:
+    def test_a_traded_player_has_two_closed_stints_and_one_open(self):
+        # arrange
+        games = _games(
+            (date(2024, 10, 22), CELTICS, "Regular Season"),
+            (date(2024, 12, 1), CELTICS, "Regular Season"),
+            (date(2024, 12, 20), LAKERS, "Regular Season"),
+            (date(2025, 2, 1), LAKERS, "Regular Season"),
+            (date(2025, 2, 10), KNICKS, "Regular Season"),
+            (date(2025, 4, 25), KNICKS, "Playoffs"),
+        )
+
+        # act
+        stints = derive_stints(games)
+
+        # assert
+        assert [s[:3] for s in stints] == [
+            (CELTICS, date(2024, 10, 22), date(2024, 12, 19)),
+            (LAKERS, date(2024, 12, 20), date(2025, 2, 9)),
+            (KNICKS, date(2025, 2, 10), None),
+        ]
+
+    def test_the_answer_does_not_depend_on_the_order_games_arrive(self):
+        # arrange
+        games = _games(
+            (date(2024, 10, 22), LAKERS, "Regular Season"),
+            (date(2023, 10, 8), CELTICS, "Pre Season"),
+            (date(2024, 4, 21), CELTICS, "Playoffs"),
+            (date(2023, 10, 25), CELTICS, "Regular Season"),
+        )
+
+        # act
+        shuffled = derive_stints(games)
+        ordered = derive_stints(sorted(games))
+
+        # assert
+        assert shuffled == ordered
+        assert [s[:3] for s in shuffled] == [
+            (CELTICS, date(2023, 10, 8), date(2024, 10, 21)),
+            (LAKERS, date(2024, 10, 22), None),
+        ]
+
+    def test_a_preseason_only_team_gets_a_closed_stint(self):
+        # arrange: in camp with the spurs, cut, debuted for the knicks
+        games = _games(
+            (date(2023, 10, 8), SPURS, "Pre Season"),
+            (date(2023, 10, 18), SPURS, "Pre Season"),
+            (date(2023, 12, 1), KNICKS, "Regular Season"),
+        )
+
+        # act
+        stints = derive_stints(games)
+
+        # assert
+        assert [s[:3] for s in stints] == [
+            (SPURS, date(2023, 10, 8), date(2023, 10, 18)),
+            (KNICKS, date(2023, 12, 1), None),
+        ]
+
+    def test_a_camp_team_he_never_played_for_is_not_left_open(self):
+        # arrange
+        games = _games(
+            (date(2023, 4, 9), KNICKS, "Regular Season"),
+            (date(2023, 10, 8), SPURS, "Pre Season"),
+        )
+
+        # act
+        stints = derive_stints(games)
+
+        # assert
+        assert [s[:3] for s in stints] == [
+            (KNICKS, date(2023, 4, 9), date(2023, 10, 7)),
+            (SPURS, date(2023, 10, 8), date(2023, 10, 8)),
+        ]
+
+    def test_a_camp_team_on_his_current_roster_page_stays_open(self):
+        # arrange
+        games = _games((date(2026, 10, 5), SPURS, "Pre Season"))
+        snapshots = [(SPURS, date(2026, 9, 28), ROSTER_SNAPSHOT_SOURCE)]
+
+        # act
+        stints = derive_stints(games, snapshots)
+
+        # assert
+        assert stints == [Stint(SPURS, date(2026, 10, 5), None, ROSTER_SNAPSHOT_SOURCE)]
+        assert derive_stints(games, [(s.team_id, s.valid_from, s.source) for s in stints]) \
+            == stints
+
+    def test_a_newer_snapshot_on_another_team_closes_the_last_game_team(self):
+        # arrange
+        games = _games((date(2026, 4, 12), CELTICS, "Regular Season"))
+        snapshots = [(LAKERS, date(2026, 7, 10), ROSTER_SNAPSHOT_SOURCE)]
+
+        # act
+        stints = derive_stints(games, snapshots)
+
+        # assert
+        assert stints == [
+            Stint(CELTICS, date(2026, 4, 12), date(2026, 7, 9), "playergamelogs"),
+            Stint(LAKERS, date(2026, 7, 10), None, ROSTER_SNAPSHOT_SOURCE),
+        ]
+
+    def test_a_snapshot_older_than_his_last_game_is_overruled_by_the_game(self):
+        # arrange
+        games = _games((date(2026, 1, 20), KNICKS, "Regular Season"))
+        snapshots = [(LAKERS, date(2025, 10, 1), ROSTER_SNAPSHOT_SOURCE)]
+
+        # act
+        stints = derive_stints(games, snapshots)
+
+        # assert
+        assert [s[:3] for s in stints] == [(KNICKS, date(2026, 1, 20), None)]
+
+    def test_a_snapshot_agreeing_with_his_last_team_adds_nothing(self):
+        # act + assert
+        assert derive_stints(
+            _games((date(2026, 4, 12), CELTICS, "Regular Season")),
+            [(CELTICS, date(2026, 9, 1), ROSTER_SNAPSHOT_SOURCE)],
+        ) == [Stint(CELTICS, date(2026, 4, 12), None, "playergamelogs")]
+
+    def test_no_history_yields_no_stints(self):
+        # act + assert
+        assert derive_stints([]) == []
+
+
+@pytest.fixture
+def stint_batch_insert(monkeypatch):
+    def batch_upsert(cur, sql, rows):
+        if isinstance(cur, DryRunCursor):
+            return database._batch_upsert(cur, sql, rows)
+        return cur.insert_rows(rows)
+
+    monkeypatch.setattr(truth_layer, "_batch_upsert", batch_upsert)
+
+
+@pytest.mark.usefixtures("stint_batch_insert")
+class TestStintSyncOutOfOrder:
+    def test_a_history_backfill_racing_a_newer_sync_never_opens_a_second_stint(self):
+        # arrange: the 2024-25 sync commits between the 2023-24 sync's read of
+        # the stint table and its writes, as two backfill jobs did in prod.
+        db = StintDb(TRAVELLER_LOGS, TRAVELLER_STINTS)
+        db.after_stint_read = lambda: truth_layer._sync_player_team_stints(
+            StintConn(db), "2024-25"
+        )
+
+        # act
+        truth_layer._sync_player_team_stints(StintConn(db), "2023-24")
+
+        # assert
+        assert db.open_count("9") == 1
+        assert db.rows() == [
+            ("9", CELTICS, date(2023, 10, 8), date(2024, 10, 21)),
+            ("9", LAKERS, date(2024, 10, 22), None),
+            ("9", SPURS, date(2022, 10, 19), date(2023, 10, 7)),
+        ]
+
+    def test_a_2023_preseason_game_arriving_after_2024_25_is_open_adds_history_only(self):
+        # arrange
+        logs = [r for r in TRAVELLER_LOGS if r["season"] == "2024-25"]
+        db = StintDb(logs, [])
+        truth_layer._sync_player_team_stints(StintConn(db), "2024-25")
+        db.logs.append(TRAVELLER_LOGS[2])
+
+        # act
+        truth_layer._sync_player_team_stints(StintConn(db), "2023-24")
+
+        # assert
+        assert db.rows() == [
+            ("9", CELTICS, date(2023, 10, 8), date(2023, 10, 8)),
+            ("9", LAKERS, date(2024, 10, 22), None),
+        ]
+
+    def test_running_the_sync_twice_leaves_the_same_rows_and_writes_nothing(self):
+        # arrange
+        db = StintDb(TRAVELLER_LOGS, TRAVELLER_STINTS)
+        truth_layer._sync_player_team_stints(StintConn(db), "2023-24")
+        first = db.rows()
+        writes = db.writes
+
+        # act
+        truth_layer._sync_player_team_stints(StintConn(db), "2023-24")
+        truth_layer._sync_player_team_stints(StintConn(db), "2024-25")
+
+        # assert
+        assert db.rows() == first
+        assert db.writes == writes
+
+    def test_a_newer_roster_snapshot_stint_survives_a_history_rebuild(self):
+        # arrange
+        snapshot = {"player": "9", "team": KNICKS, "valid_from": date(2025, 9, 1),
+                    "valid_to": None, "source": ROSTER_SNAPSHOT_SOURCE}
+        db = StintDb(TRAVELLER_LOGS, [snapshot])
+
+        # act
+        truth_layer._sync_player_team_stints(StintConn(db), "2023-24")
+
+        # assert
+        assert ("9", KNICKS, date(2025, 9, 1), None) in db.rows()
+        assert ("9", LAKERS, date(2024, 10, 22), date(2025, 8, 31)) in db.rows()
+        assert db.open_count("9") == 1
+
+    def test_a_dry_run_writes_nothing(self):
+        # arrange
+        db = StintDb(TRAVELLER_LOGS, TRAVELLER_STINTS)
+
+        # act
+        truth_layer._sync_player_team_stints(StintConn(db), "2023-24", dry_run=True)
+
+        # assert
+        assert db.rows() == [("9", SPURS, date(2022, 10, 19), None)]
+        assert db.writes == 0
+
+    def test_the_connection_is_returned_in_autocommit(self):
+        # arrange
+        conn = StintConn(StintDb(TRAVELLER_LOGS, []))
+
+        # act
+        truth_layer._sync_player_team_stints(conn, "2023-24")
+
+        # assert
+        assert conn.autocommit is True
