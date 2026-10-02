@@ -48,6 +48,7 @@ from parsing import (
     parse_matchup,
     parse_minutes,
     parse_processed_line,
+    parse_season_types,
     season_end_date,
     season_start_date,
     season_type_from_game_id,
@@ -63,6 +64,9 @@ from rows import (
     build_player_game_log_row,
     build_team_game_log_row,
     derive_game_status_rows,
+    discovered_rows_for_season,
+    discovery_dates,
+    enumerate_game_id_groups,
     game_log_fetch_from,
     game_log_rows_from_web,
     ingested_schedule_rows,
@@ -73,6 +77,7 @@ from rows import (
     player_ids_absent_from_box,
     player_rows_from_nba_players_index,
     roster_rows_from_nba_players_index,
+    schedule_row_from_web_game,
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
@@ -2237,6 +2242,291 @@ class TestBoxDetailsWorkflow:
 
         assert "--backfill-game-logs" in text and "--backfill-box-details" in text
         assert 'default: "600"' in text
+
+
+class TestDiscoveryDates:
+    def test_the_preseason_window_runs_september_15_to_october_31(self):
+        dates = discovery_dates("2025-26", ["Pre Season"], date(2026, 9, 1))
+
+        assert (dates[0], dates[-1], len(dates)) == (date(2025, 9, 15), date(2025, 10, 31), 47)
+
+    def test_the_postseason_window_runs_april_10_to_june_30_of_the_second_year(self):
+        playin = discovery_dates("2025-26", ["PlayIn"], date(2026, 9, 1))
+        playoffs = discovery_dates("2025-26", ["Playoffs"], date(2026, 9, 1))
+        both = discovery_dates("2025-26", ["PlayIn", "Playoffs"], date(2026, 9, 1))
+
+        assert playin == playoffs == both
+        assert (both[0], both[-1], len(both)) == (date(2026, 4, 10), date(2026, 6, 30), 82)
+
+    def test_all_three_types_are_both_windows_oldest_first(self):
+        dates = discovery_dates("2025-26", ["Pre Season", "PlayIn", "Playoffs"], date(2026, 9, 1))
+
+        assert len(dates) == 47 + 82
+        assert dates == sorted(dates)
+
+    def test_dates_after_today_are_skipped(self):
+        preseason = discovery_dates("2026-27", ["Pre Season"], date(2026, 10, 1))
+        playoffs = discovery_dates("2026-27", ["Playoffs"], date(2026, 10, 1))
+
+        assert (preseason[0], preseason[-1], len(preseason)) == (
+            date(2026, 9, 15), date(2026, 10, 1), 17,
+        )
+        assert playoffs == []
+
+    def test_the_regular_season_has_no_discovery_window(self):
+        assert discovery_dates("2025-26", ["Regular Season"], date(2026, 9, 1)) == []
+
+
+class TestEnumerateGameIds:
+    def test_preseason_ids_are_one_group_numbered_1_to_120(self):
+        groups = enumerate_game_id_groups("2025-26", "Pre Season")
+
+        assert len(groups) == 1 and len(groups[0]) == 120
+        assert (groups[0][0], groups[0][-1]) == ("0012500001", "0012500120")
+
+    def test_play_in_ids_match_the_league_numbering(self):
+        groups = enumerate_game_id_groups("2025-26", "PlayIn")
+
+        assert [g[0] for g in groups] == [
+            "0052500101", "0052500111", "0052500121", "0052500131",
+            "0052500201", "0052500211",
+        ]
+        assert all(len(g) == 1 for g in groups)
+
+    def test_playoff_ids_are_one_group_of_seven_per_series(self):
+        groups = enumerate_game_id_groups("2025-26", "Playoffs")
+        ids = [game_id for group in groups for game_id in group]
+
+        assert len(groups) == 8 + 4 + 2 + 1
+        assert all(len(g) == 7 for g in groups)
+        assert len(ids) == len(set(ids)) == 105
+        assert groups[0] == [f"00425001{0}{n}" for n in range(1, 8)]
+        assert groups[7][0] == "0042500171"
+        assert groups[-1][0] == "0042500401"
+
+    def test_ids_carry_the_season_start_year_and_its_type(self):
+        for season_type in ("Pre Season", "PlayIn", "Playoffs"):
+            for group in enumerate_game_id_groups("2099-00", season_type):
+                for game_id in group:
+                    assert len(game_id) == 10 and game_id[3:5] == "99"
+                    assert season_type_from_game_id(game_id) == season_type
+
+    def test_the_regular_season_is_not_enumerated(self):
+        assert enumerate_game_id_groups("2025-26", "Regular Season") == []
+
+
+POSTSEASON_PAGE = _games_page(
+    _card("0022501230", seasonYear="2025-26", gameTimeUtc="2026-04-12T23:30:00Z"),
+    _card("0052500101", seasonYear="2025-26", gameTimeUtc="2026-04-15T23:30:00Z"),
+    _card(
+        "0042500404", home=("1610612752", "NYK"), away=("1610612760", "OKC"),
+        seasonYear="2026", gameTimeUtc="2026-06-11T00:30:00Z",
+        gameStatusText="Final",
+    ),
+    _card("0042400101", seasonYear="2024-25"),
+)
+
+
+class TestDiscoveredRowsForSeason:
+    def _rows(self):
+        raw = schedule_rows_from_nba_web(POSTSEASON_PAGE, date(2026, 6, 10), "2025-26")
+        return discovered_rows_for_season(raw, "2025-26", ["PlayIn", "Playoffs"])
+
+    def test_play_in_and_playoff_rows_carry_their_types(self):
+        rows = self._rows()
+
+        assert [(r["nba_game_id"], r["season_type"]) for r in rows] == [
+            ("0042500404", "Playoffs"), ("0052500101", "PlayIn"),
+        ]
+
+    def test_a_june_game_is_labelled_with_the_season_it_belongs_to(self):
+        finals = next(r for r in self._rows() if r["nba_game_id"] == "0042500404")
+
+        assert finals["season"] == "2025-26"
+        assert finals["game_date"] == date(2026, 6, 10)
+        assert finals["scheduled_at"].isoformat() == "2026-06-11T00:30:00+00:00"
+        assert (finals["home_team_abbr"], finals["away_team_abbr"]) == ("NYK", "OKC")
+
+    def test_other_seasons_types_and_duplicates_are_dropped(self):
+        raw = schedule_rows_from_nba_web(POSTSEASON_PAGE, date(2026, 6, 10), "2025-26")
+
+        rows = discovered_rows_for_season(raw + raw, "2025-26", ["PlayIn", "Playoffs"])
+
+        assert len(rows) == 2
+        assert "0042400101" not in {r["nba_game_id"] for r in rows}
+
+
+class TestScheduleRowFromWebGame:
+    def test_the_box_score_page_gives_the_eastern_date_and_tipoff(self):
+        row = schedule_row_from_web_game(_web_game(), "2025-26")
+
+        assert row["nba_game_id"] == WEB_GAME_ID
+        assert row["season"] == "2025-26"
+        assert row["season_type"] == "Regular Season"
+        assert row["game_date"] == date(2025, 10, 21)
+        assert row["scheduled_at"].isoformat() == "2025-10-21T23:30:00+00:00"
+        assert (row["home_team_id"], row["away_team_id"]) == (OKC, HOU)
+
+    def test_a_game_outside_the_season_is_rejected(self):
+        assert schedule_row_from_web_game(_web_game(), "2024-25") is None
+
+
+class TestParseSeasonTypes:
+    def test_defaults_to_every_discoverable_type(self):
+        assert parse_season_types(None) == ("Pre Season", "PlayIn", "Playoffs")
+
+    def test_matches_case_insensitively_in_canonical_order(self):
+        assert parse_season_types("playoffs, PLAYIN") == ("PlayIn", "Playoffs")
+
+    @pytest.mark.parametrize("raw", ["", "Regular Season", "Playoffs,Finals"])
+    def test_anything_else_is_a_usage_error(self, raw):
+        with pytest.raises(ValueError):
+            parse_season_types(raw)
+
+    def test_the_discover_command_parses(self):
+        args = _parse_args(
+            ["--discover-schedule", "--season", "2025-26", "--season-types", "PlayIn,Playoffs"]
+        )
+
+        assert (args.discover_schedule, args.season, args.season_types) == (
+            True, "2025-26", "PlayIn,Playoffs",
+        )
+
+
+def _final_web_game(game_id, game_et):
+    game = _web_game()
+    game["gameId"] = game_id
+    game["gameEt"] = game_et
+    return game
+
+
+class TestDiscoverScheduleRows:
+    def test_probes_only_ids_no_date_page_listed_and_stops_each_series_at_a_miss(
+        self, monkeypatch
+    ):
+        def games_page(game_date):
+            if game_date == date(2026, 4, 19):
+                return _games_page(_card("0042500101", seasonYear="2025-26"))
+            return _games_page()
+
+        probed = []
+
+        def box_score(game_id):
+            probed.append(game_id)
+            if game_id == "0042500102":
+                return _final_web_game(game_id, "2026-04-21T19:30:00Z")
+            raise requests.HTTPError("503 Server Error")
+
+        monkeypatch.setattr(truth_layer, "_fetch_nba_web_games", games_page)
+        monkeypatch.setattr(truth_layer, "fetch_box_score_web", box_score)
+
+        rows = truth_layer.discover_schedule_rows(
+            "2025-26", ["Playoffs"], today=date(2026, 9, 1), delay_seconds=0
+        )
+
+        assert [(r["nba_game_id"], r["game_date"]) for r in rows] == [
+            ("0042500101", date(2026, 4, 19)), ("0042500102", date(2026, 4, 21)),
+        ]
+        assert "0042500101" not in probed
+        assert probed[:2] == ["0042500102", "0042500103"]
+        assert len(probed) == 2 + 14
+
+    def test_an_unreachable_site_ends_the_crawl_without_probing(self, monkeypatch):
+        calls = []
+
+        def boom(game_date):
+            calls.append(game_date)
+            raise OSError("blocked")
+
+        monkeypatch.setattr(truth_layer, "_fetch_nba_web_games", boom)
+        monkeypatch.setattr(
+            truth_layer, "fetch_box_score_web",
+            lambda game_id: pytest.fail("probed while nba.com was down"),
+        )
+
+        rows = truth_layer.discover_schedule_rows(
+            "2025-26", ["PlayIn"], today=date(2026, 9, 1), delay_seconds=0
+        )
+
+        assert rows == [] and len(calls) == 3
+
+    def test_a_type_with_no_past_dates_fetches_nothing(self, monkeypatch):
+        monkeypatch.setattr(
+            truth_layer, "_fetch_nba_web_games",
+            lambda game_date: pytest.fail("fetched a future date"),
+        )
+
+        rows = truth_layer.discover_schedule_rows(
+            "2026-27", ["PlayIn", "Playoffs"], today=date(2026, 10, 1), delay_seconds=0
+        )
+
+        assert rows == []
+
+
+class ScheduleTypesCursor(FakeCursor):
+    def __init__(self, present):
+        super().__init__()
+        self.present = present
+        self.last = ""
+
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        self.last = sql
+
+    def fetchall(self):
+        if "DISTINCT season_type" in self.last:
+            return [(season_type,) for season_type in self.present]
+        return []
+
+
+class TestWebBackfillDiscovery:
+    def _fake_fetchers(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(
+            truth_layer, "_fetch_nba_web_games",
+            lambda game_date: seen.append(game_date) or _games_page(),
+        )
+        monkeypatch.setattr(
+            truth_layer, "fetch_box_score_web",
+            lambda game_id: (_ for _ in ()).throw(requests.HTTPError("503")),
+        )
+        return seen
+
+    def test_discovers_first_when_the_schedule_lacks_those_types(self, monkeypatch):
+        seen = self._fake_fetchers(monkeypatch)
+        conn = FakeConn()
+        conn.cursor_ = ScheduleTypesCursor(["Regular Season"])
+
+        processed = truth_layer.backfill_game_logs_from_web(
+            conn, "2025-26", dry_run=True, delay_seconds=0, today=date(2026, 9, 1)
+        )
+
+        assert processed == 0
+        assert (seen[0], seen[-1], len(seen)) == (date(2025, 9, 15), date(2026, 6, 30), 129)
+
+    def test_only_the_missing_types_are_discovered(self, monkeypatch):
+        seen = self._fake_fetchers(monkeypatch)
+        conn = FakeConn()
+        conn.cursor_ = ScheduleTypesCursor(["Regular Season", "PlayIn", "Playoffs"])
+
+        truth_layer.backfill_game_logs_from_web(
+            conn, "2025-26", dry_run=True, delay_seconds=0, today=date(2026, 9, 1)
+        )
+
+        assert (seen[0], seen[-1], len(seen)) == (date(2025, 9, 15), date(2025, 10, 31), 47)
+
+    def test_a_schedule_with_every_type_skips_discovery(self, monkeypatch):
+        seen = self._fake_fetchers(monkeypatch)
+        conn = FakeConn()
+        conn.cursor_ = ScheduleTypesCursor(
+            ["Pre Season", "Regular Season", "PlayIn", "Playoffs"]
+        )
+
+        truth_layer.backfill_game_logs_from_web(
+            conn, "2025-26", dry_run=True, delay_seconds=0, today=date(2026, 9, 1)
+        )
+
+        assert seen == []
 
 
 # espn scoreboard shapes, trimmed to the fields the odds parser reads.

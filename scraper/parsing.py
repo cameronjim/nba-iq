@@ -9,6 +9,7 @@ from config import (
     GAME_ID_PREFIX_TO_SEASON_TYPE,
     NAME_TO_ABBR,
     NBA_2K_TEAM_TYPES,
+    SEASON_TYPES_DISCOVERED,
     SEASON_TYPE_UNKNOWN,
     TEAM_ID_TO_ABBR,
     TEAM_META,
@@ -366,6 +367,23 @@ def parse_team_types(raw: str) -> list[str]:
         if part not in ordered:
             ordered.append(part)
     return ordered
+
+
+def parse_season_types(raw: str | None) -> tuple[str, ...]:
+    # discoverable types only, matched case-insensitively, in canonical order.
+    if raw is None:
+        return SEASON_TYPES_DISCOVERED
+    by_key = {season_type.lower(): season_type for season_type in SEASON_TYPES_DISCOVERED}
+    requested = [part.strip().lower() for part in raw.split(",") if part.strip()]
+    valid = ", ".join(SEASON_TYPES_DISCOVERED)
+    if not requested:
+        raise ValueError(f"--season-types needs at least one of: {valid}")
+    unknown = [part for part in requested if part not in by_key]
+    if unknown:
+        raise ValueError(
+            f"unknown season type(s): {', '.join(unknown)} (choose from {valid})"
+        )
+    return tuple(t for t in SEASON_TYPES_DISCOVERED if t.lower() in requested)
 
 
 def extract_next_data(html: str) -> dict:

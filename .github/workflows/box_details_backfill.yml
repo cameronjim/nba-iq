@@ -5,7 +5,9 @@ name: Box Details Backfill
 # re-dispatch until the log reports nothing to do for the season.
 # mode box-details fills started/position/oreb/dreb/pf/dnp_reason on logged
 # games; mode game-logs fills whole games with no logs (preseason, postseason,
-# or any game the league-wide log missed).
+# or any game the league-wide log missed). when the schedule holds no
+# preseason, play-in or playoff game for the season, game-logs mode first
+# discovers them from the nba.com date pages (about 130 pages, 5 minutes).
 on:
   workflow_dispatch:
     inputs:

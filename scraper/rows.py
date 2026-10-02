@@ -5,9 +5,17 @@ from config import (
     ABBR_TO_TEAM_ID,
     TEAM_ID_TO_ABBR,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
+    PLAYIN_GAME_SUFFIXES,
+    PLAYOFF_MAX_GAMES_PER_SERIES,
+    PLAYOFF_SERIES_PER_ROUND,
     POSTSEASON_EARLIEST_MONTH,
+    POSTSEASON_WINDOW_END,
+    POSTSEASON_WINDOW_START,
+    PRESEASON_MAX_GAME_NUMBER,
     PRESEASON_WINDOW_END,
     PRESEASON_WINDOW_START,
+    SEASON_TYPE_PLAYIN,
+    SEASON_TYPE_PLAYOFFS,
     SEASON_TYPE_PRESEASON,
     SEASON_TYPE_REGULAR,
     SEASON_TYPES_INGESTED,
@@ -66,6 +74,98 @@ def season_types_to_fetch(
         return today >= postseason_from
 
     return tuple(season_type for season_type in season_types if wanted(season_type))
+
+
+def discovery_dates(
+    season: str, season_types: Collection[str], today: date
+) -> list[date]:
+    # every date a game of the requested types can fall on, oldest first, up to
+    # today: later pages hold no final games to discover.
+    start_year = season_start_year(season)
+    windows: list[tuple[date, date]] = []
+    if SEASON_TYPE_PRESEASON in season_types:
+        windows.append(
+            (date(start_year, *PRESEASON_WINDOW_START), date(start_year, *PRESEASON_WINDOW_END))
+        )
+    if SEASON_TYPE_PLAYIN in season_types or SEASON_TYPE_PLAYOFFS in season_types:
+        windows.append(
+            (
+                date(start_year + 1, *POSTSEASON_WINDOW_START),
+                date(start_year + 1, *POSTSEASON_WINDOW_END),
+            )
+        )
+    dates: list[date] = []
+    for first, last in windows:
+        day = first
+        while day <= min(last, today):
+            dates.append(day)
+            day += timedelta(days=1)
+    return dates
+
+
+def game_id_season_prefix(season: str) -> str:
+    # characters 4 and 5 of a game id are the season's start year.
+    return f"{season_start_year(season) % 100:02d}"
+
+
+def enumerate_game_id_groups(season: str, season_type: str) -> list[list[str]]:
+    # every id the league could have used for the type, in groups probed in
+    # order: one per playoff series, one per play-in game, one for the preseason.
+    yy = game_id_season_prefix(season)
+    if season_type == SEASON_TYPE_PRESEASON:
+        return [[f"001{yy}{n:05d}" for n in range(1, PRESEASON_MAX_GAME_NUMBER + 1)]]
+    if season_type == SEASON_TYPE_PLAYIN:
+        return [[f"005{yy}{suffix}"] for suffix in PLAYIN_GAME_SUFFIXES]
+    if season_type == SEASON_TYPE_PLAYOFFS:
+        return [
+            [
+                f"004{yy}00{round_number}{series}{game}"
+                for game in range(1, PLAYOFF_MAX_GAMES_PER_SERIES + 1)
+            ]
+            for round_number, series_count in enumerate(PLAYOFF_SERIES_PER_ROUND, start=1)
+            for series in range(series_count)
+        ]
+    return []
+
+
+def discovered_rows_for_season(
+    rows: Sequence[Mapping], season: str, season_types: Collection[str]
+) -> list[dict]:
+    # a date page lists every game that day; keep the requested types of this
+    # season, labelled from the id so a june game always lands in its season.
+    yy = game_id_season_prefix(season)
+    kept: dict[str, dict] = {}
+    for row in rows:
+        game_id = str(row.get("nba_game_id") or "")
+        if game_id[3:5] != yy or row.get("season_type") not in season_types:
+            continue
+        kept.setdefault(game_id, {**row, "season": season})
+    return sorted(kept.values(), key=lambda r: (r["game_date"], r["nba_game_id"]))
+
+
+def schedule_row_from_web_game(game: Mapping, season: str) -> dict | None:
+    # a schedule row from one box-score page, for an id no date page listed.
+    # gameEt carries a misleading Z suffix, but its date part is the eastern date.
+    game_id = str(game.get("gameId") or "").strip()
+    game_date = parse_game_date(game.get("gameEt"))
+    if not game_id or not in_season(game_date, season):
+        return None
+    home = game.get("homeTeam") or {}
+    away = game.get("awayTeam") or {}
+    return {
+        "nba_game_id": game_id,
+        "season": season,
+        "season_type": season_type_from_game_id(game_id),
+        "game_date": game_date,
+        "scheduled_at": _parse_utc(game.get("gameTimeUTC")),
+        "home_team_id": str(home.get("teamId") or "") or None,
+        "away_team_id": str(away.get("teamId") or "") or None,
+        "home_team_abbr": home.get("teamTricode") or None,
+        "away_team_abbr": away.get("teamTricode") or None,
+        "game_status": game.get("gameStatusText") or None,
+        "postponed_status": None,
+        "source": WEB_BOX_SCORE_SOURCE,
+    }
 
 
 def ingested_schedule_rows(

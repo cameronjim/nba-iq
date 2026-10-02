@@ -22,6 +22,7 @@ from config import (
 from database import TARGET_DEV, TARGET_PROD, get_db, resolve_database_url  # noqa: F401
 from parsing import (
     format_processed_line,
+    parse_season_types,
     parse_team_types,
     season_range,
     season_start_year,
@@ -36,6 +37,7 @@ from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_t
 from truth_layer import (
     backfill_box_details,
     backfill_game_logs_from_web,
+    discover_schedule,
     resolve_box_source,
     scrape_game_logs,
     scrape_game_status,
@@ -105,7 +107,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"honours --from/--to (default {BACKFILL_GAME_LOGS_DEFAULT_FROM_SEASON}). "
             "With --source web (or auto while stats.nba.com is down) it instead "
             "fills --season's scheduled games that have no logs, one nba.com "
-            "box-score page per game, honouring --limit"
+            "box-score page per game, honouring --limit; it first runs "
+            "--discover-schedule for any preseason or postseason type the "
+            "schedule has no game of"
+        ),
+    )
+    parser.add_argument(
+        "--discover-schedule",
+        dest="discover_schedule",
+        action="store_true",
+        help=(
+            "find --season's preseason, play-in and playoff games on the "
+            "nba.com date pages (then box-score pages for ids they missed) and "
+            "upsert them into nba_schedule; honours --season-types and --dry-run"
+        ),
+    )
+    parser.add_argument(
+        "--season-types",
+        dest="season_types",
+        default=None,
+        help=(
+            "with --discover-schedule, comma-separated types to find: "
+            "Pre Season, PlayIn, Playoffs (default all three)"
         ),
     )
     parser.add_argument(
@@ -289,6 +312,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         season_start_year(args.season)
+        season_types = parse_season_types(args.season_types)
     except ValueError as e:
         logger.error("%s", e)
         sys.exit(2)
@@ -336,6 +360,8 @@ def main(argv: list[str] | None = None) -> None:
                 print(format_processed_line(processed), flush=True)
             else:
                 backfill_game_logs(conn, truth_from, truth_to, dry_run=args.dry_run)
+        elif args.discover_schedule:
+            discover_schedule(conn, args.season, season_types, dry_run=args.dry_run)
         elif args.validate_game_logs:
             validate_game_logs(conn, truth_from, truth_to)
         elif args.backfill_box_details:
