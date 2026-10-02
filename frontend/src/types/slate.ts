@@ -77,7 +77,7 @@ export interface SlateGame {
   home_team_abbr: string | null;
   away_team_id: string | null;
   away_team_abbr: string | null;
-  // the model is trained on regular-season minutes, so preseason rows run high.
+  // preseason rows take their minutes from a tier prior, not the regular-season model.
   preseason: boolean;
   top_impact: NumericLike | null;
   top_edge: NumericLike | null;

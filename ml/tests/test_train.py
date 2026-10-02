@@ -173,3 +173,45 @@ class TestV1Predict:
         predictions = pd.read_parquet(out)
         assert len(predictions) > 0
         assert set(predictions["MODEL_VERSION"]) == {"testver-v1"}
+
+
+class TestPreseasonPriorPredict:
+    def test_only_preseason_rows_move_and_the_rest_match_the_off_run(
+        self, v1_artifact, tmp_path: Path
+    ) -> None:
+        # arrange
+        frame = pd.read_parquet(v1_artifact["dataset"])
+        upcoming = frame[frame["GAME_DATE"] >= pd.Timestamp(CUTOFF)]
+        preseason_game = upcoming["GAME_ID"].iloc[0]
+        frame["SEASON_TYPE"] = frame["GAME_ID"].eq(preseason_game).map(
+            {True: "Pre Season", False: "Regular Season"}
+        )
+        dataset = tmp_path / "dataset.parquet"
+        frame.to_parquet(dataset, index=False)
+        common = [
+            "--dataset", str(dataset), "--version", "testver-v1",
+            "--models-dir", str(v1_artifact["models_dir"]), "--channel", "shadow",
+            "--statuses-as-of", "2024-12-01T12:00:00Z",
+        ]
+
+        # act
+        off_code = predict.main([*common, "--out", str(tmp_path / "off.parquet")])
+        on_code = predict.main([
+            *common, "--out", str(tmp_path / "on.parquet"), "--preseason-prior", "on",
+        ])
+
+        # assert
+        assert off_code == on_code == 0
+        off = pd.read_parquet(tmp_path / "off.parquet")
+        on = pd.read_parquet(tmp_path / "on.parquet")
+        moved = on["PRESEASON_PRIOR_APPLIED"].to_numpy(dtype=bool)
+        assert moved.any() and not moved.all()
+        assert set(on.loc[moved, "GAME_ID"]) == {preseason_game}
+        pd.testing.assert_frame_equal(
+            on.loc[~moved, off.columns], off.loc[~moved], check_exact=True
+        )
+        expected = on.loc[moved, "PRESEASON_PRIOR_TIER"].map(config.PRESEASON_MINUTES_PRIOR)
+        assert on.loc[moved, "E_MIN_COND"].to_numpy() == pytest.approx(expected.to_numpy())
+        assert on.loc[moved, "E_MIN"].to_numpy() == pytest.approx(
+            (on.loc[moved, "P_PLAY"] * on.loc[moved, "E_MIN_COND"]).to_numpy()
+        )

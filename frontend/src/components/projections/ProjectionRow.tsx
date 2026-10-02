@@ -49,7 +49,7 @@ export const ProjectionRow = ({ row }: { row: ProjectionRowModel }): JSX.Element
         {row.preseason && (
           <span
             className="text-[11px] text-muted"
-            title="The model learned from regular-season games, so preseason minutes run high."
+            title="Preseason minutes use a tier prior from four seasons of preseason box scores; stars play about 22 minutes."
           >
             Preseason
           </span>

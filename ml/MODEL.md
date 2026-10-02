@@ -3547,7 +3547,8 @@ today + 6 Eastern (`--extended-days`, default 7) over both `Pre Season` and
   because games one to seven days out have no honest single bucket.
 - **Preseason predictions are out of distribution.** The model is trained on Regular
   Season games, and starters play far fewer preseason minutes than their rolling form
-  implies. Treat them as informational.
+  implies. Treat them as informational. Run B replaces their minutes with a tier
+  prior (20.6).
 - **Known caveat, unchanged:** the prospective two-day run labels tomorrow's games
   `gameday` although their measured offset is roughly 24-36 hours. The label is part
   of the freeze and is not touched here.
@@ -4477,3 +4478,51 @@ realized check on the season-start projections before any frozen look. Part (c) 
 season-start experiment reads `player_game_logs` rows with `season_type = 'Pre
 Season'`; its query already uses that string, so it finds rows without a code change
 once the October scrapes land (and a backfill fills earlier seasons).
+
+### 20.6 Preseason minutes prior (serving only, not prospective)
+
+**The measurement.** ML Evaluate run 36956136123 (2026-10-02) read four seasons of
+preseason box scores, 8,174 player-games, and grouped realized minutes by each
+player's regular-season tier (`roll10_MIN`, `config.TIER_EDGES`):
+
+| Tier | Realized preseason minutes | Usual regular-season minutes |
+|---|---|---|
+| star (>=30) | 21.65 | 33.55 |
+| starter (20-30) | 18.36 | 25.11 |
+| bench (10-20) | 15.66 | 15.03 |
+| fringe (<10) | 13.99 | 5.96 |
+| unknown (no history) | 16.06 | n/a |
+
+Players who start a preseason game play about 22 minutes whatever their tier. The
+model learned regular-season rotations, so the preseason slate projected stars at
+27.5 minutes: about 6 too many for stars and about 8 too few for the fringe.
+
+**The rule.** `predict.py --preseason-prior on` calls
+`preseason.apply_preseason_minutes_prior` right after `build_predictions` and before
+the status overrides. For rows whose `SEASON_TYPE` is `Pre Season` only, it sets
+`E_MIN_COND = w * PRESEASON_MINUTES_PRIOR[tier] + (1 - w) * model`, with
+`PRESEASON_PRIOR_WEIGHT = 1.0` (a full replacement). Every production stat's
+conditional and unconditional expectation takes the minutes ratio, because the
+composition is rate x minutes (the same carry-through as
+`coherence.renormalise_team_minutes`), quantiles move by the conditional delta,
+`E_MIN` is recomputed and `P_PLAY` is untouched. The overrides then recompute the
+unconditional columns from the adjusted conditional. Each row records
+`PRESEASON_PRIOR_APPLIED` and `PRESEASON_PRIOR_TIER`; the notes gain
+`preseason_prior=on` and the registry entry records the choice and the adjusted row
+count. A player with no history takes the unknown prior. Every other row is left byte
+for byte as the model emitted it. `daily_run.py` attaches `SEASON_TYPE` from the
+schedule to run B's frame and passes `--preseason-prior on` to run B only; run A never
+holds a preseason game and gets neither. `--scenarios` with the prior on is refused,
+because the scenario rescore calls `build_predictions` again.
+
+**Why it needs no re-freeze.** 13.2 binds the frozen prospective run, which is run A:
+Regular Season only, scored without the flag, so every number it emits is unchanged
+and `tests/test_prospective_freeze.py` pins nothing new. Run B is NOT PROSPECTIVE by
+construction (16.7), its notes can never carry the label, and the look reports
+exclude it by that label. The prior is a serving correction to an informational
+slate, not a change to the artifact.
+
+**How it will be graded.** Once the 2026 preseason games are final, `score_runs.py`
+grades run B's preseason rows as the `season_type=Pre Season` cohort (20.5). The test
+is whether minutes MAE on those rows, by tier, beats the model-only preseason runs
+published before this change, and whether the star and fringe gaps above close.

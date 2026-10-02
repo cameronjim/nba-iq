@@ -114,6 +114,7 @@ from fnba_ml.overrides import (  # noqa: E402
     latest_statuses,
     normalise_status,
 )
+from fnba_ml.preseason import PRESEASON_PRIOR_OFF, PRESEASON_PRIOR_ON  # noqa: E402
 from fnba_ml.store import PRODUCTION_CHANNEL, SHADOW_CHANNEL  # noqa: E402
 from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
@@ -548,6 +549,16 @@ def split_prospective(
         dates <= pd.Timestamp(window_end)
     )
     return frame[in_window & frame["GAME_ID"].isin(regular)].copy()
+
+
+def with_season_type(frame: pd.DataFrame, schedule: pd.DataFrame) -> pd.DataFrame:
+    """the frame with each row's SEASON_TYPE looked up from the schedule by GAME_ID."""
+    by_game = dict(zip(
+        schedule["GAME_ID"].astype(str), schedule["SEASON_TYPE"].astype(str)
+    ))
+    out = frame.copy()
+    out["SEASON_TYPE"] = out["GAME_ID"].astype(str).map(by_game)
+    return out
 
 
 def nominal_tip(frame: pd.DataFrame) -> pd.Series:
@@ -1225,11 +1236,13 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
         extended = extended_notes(
             args.extended_days, extended_conditions, stale, rescore
         )
+        # only run B's frame carries the season type: the preseason prior reads it.
+        with_season_type(features, schedule).to_parquet(extended_path, index=False)
         run_b = _publish_run(
             args, "extended", extended_path,
             args.out_dir / "predictions_extended.parquet", extended,
             predict_script.NO_HORIZON, window_start, statuses_as_of,
-            statuses_path, history_through,
+            statuses_path, history_through, preseason_prior=PRESEASON_PRIOR_ON,
         )
         runs.append({**run_b, "notes": extended})
 
@@ -1302,6 +1315,7 @@ def predict_argv(
     version: str = PROSPECTIVE_MODEL_VERSION,
     channel: str = PRODUCTION_CHANNEL,
     trigger: str = predict_script.TRIGGER_SCHEDULE,
+    preseason_prior: str = PRESEASON_PRIOR_OFF,
 ) -> list[str]:
     """the predict.py argv for one daily run; production unless it is a shadow."""
     argv = [
@@ -1322,6 +1336,8 @@ def predict_argv(
         argv += ["--statuses", str(statuses_path)]
     if write_db:
         argv.append("--write-db")
+    if preseason_prior != PRESEASON_PRIOR_OFF:
+        argv += ["--preseason-prior", preseason_prior]
     return argv
 
 
@@ -1344,6 +1360,7 @@ def _publish_run(
     history_through: date | None = None,
     version: str = PROSPECTIVE_MODEL_VERSION,
     channel: str = PRODUCTION_CHANNEL,
+    preseason_prior: str = PRESEASON_PRIOR_OFF,
 ) -> dict[str, object]:
     """score one frame through predict.py and report where it went."""
     log.info("run %s notes : %s", name, notes)
@@ -1355,6 +1372,7 @@ def _publish_run(
         dataset_path, args.models_dir, out_path, notes, horizon, window_start,
         statuses_as_of, statuses_path, history_through, write_db=not args.dry_run,
         version=version, channel=channel, trigger=_trigger(args),
+        preseason_prior=preseason_prior,
     )
     if args.dry_run:
         log.warning("--dry-run: predict.py will NOT be given --write-db")
