@@ -119,6 +119,33 @@ POSTSEASON_EARLIEST_MONTH = 4
 PRESEASON_WINDOW_START = (9, 15)
 PRESEASON_WINDOW_END = (10, 31)
 
+# (month, day) bounds in the season's second year holding every play-in and
+# playoff game; schedule discovery reads one nba.com date page per day in them.
+POSTSEASON_WINDOW_START = (4, 10)
+POSTSEASON_WINDOW_END = (6, 30)
+
+# the regular season comes from the schedule sync; these types are only found
+# by discovery for past seasons.
+SEASON_TYPES_DISCOVERED = (
+    SEASON_TYPE_PRESEASON,
+    SEASON_TYPE_PLAYIN,
+    SEASON_TYPE_PLAYOFFS,
+)
+
+# game id suffixes after 00{yy}: preseason games are numbered 00001 upward,
+# play-in games are 00{round}{slot}1, playoff games 00{round}{series}{game}.
+PRESEASON_MAX_GAME_NUMBER = 120
+PLAYIN_GAME_SUFFIXES = ("00101", "00111", "00121", "00131", "00201", "00211")
+PLAYOFF_SERIES_PER_ROUND = (8, 4, 2, 1)
+PLAYOFF_MAX_GAMES_PER_SERIES = 7
+# misses in a row that end probing one id group: a playoff series stops at its
+# first unplayed game, while preseason numbering may skip a cancelled game.
+ID_PROBE_MISS_LIMIT = {
+    SEASON_TYPE_PRESEASON: 3,
+    SEASON_TYPE_PLAYIN: 1,
+    SEASON_TYPE_PLAYOFFS: 1,
+}
+
 # stats.nba.com revises box scores after the fact, so every incremental run
 # re-reads this many days behind the stored watermark.
 GAME_LOG_CORRECTION_WINDOW_DAYS = 3

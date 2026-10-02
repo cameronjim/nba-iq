@@ -14,10 +14,12 @@ from config import (
     BOX_SOURCES,
     GAME_STATUS_MAX_GAMES_PER_RUN,
     GAME_STATUS_RECENT_WINDOW_DAYS,
+    ID_PROBE_MISS_LIMIT,
     NBA_WEB_PAGE_DELAY_SECONDS,
     NBA_WEB_SCHEDULE_DAYS_AHEAD,
     NBA_WEB_SCHEDULE_DAYS_BACK,
     SEASON,
+    SEASON_TYPES_DISCOVERED,
     SEASON_TYPES_INGESTED,
     WEB_BOX_SCORE_DELAY_SECONDS,
     WEB_BOX_SCORE_SOURCE,
@@ -51,6 +53,9 @@ from rows import (
     build_player_game_log_row,
     build_team_game_log_row,
     derive_game_status_rows,
+    discovered_rows_for_season,
+    discovery_dates,
+    enumerate_game_id_groups,
     game_log_fetch_from,
     game_log_rows_from_web,
     web_game_is_final,
@@ -59,6 +64,7 @@ from rows import (
     player_ids_absent_from_box,
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
+    schedule_row_from_web_game,
     schedule_rows_from_team_logs,
     season_types_to_fetch,
     split_rows_on_season_boundary,
@@ -616,6 +622,29 @@ SELECT s.nba_game_id, s.season_type, s.game_date
 """
 
 
+SCHEDULED_SEASON_TYPES_SQL = """
+SELECT DISTINCT season_type
+  FROM nba_schedule
+ WHERE season = %s
+"""
+
+
+def _unscheduled_season_types(
+    conn: psycopg2.extensions.connection, season: str, season_types: Sequence[str]
+) -> list[str]:
+    # discoverable types the schedule holds no game of, in canonical order.
+    cur = conn.cursor()
+    try:
+        cur.execute(SCHEDULED_SEASON_TYPES_SQL, (season,))
+        present = {str(row[0]) for row in cur.fetchall()}
+    finally:
+        cur.close()
+    return [
+        season_type for season_type in SEASON_TYPES_DISCOVERED
+        if season_type in season_types and season_type not in present
+    ]
+
+
 def _games_needing_web_logs(
     conn: psycopg2.extensions.connection,
     season: str,
@@ -694,6 +723,18 @@ def backfill_game_logs_from_web(
     # one nba.com page per scheduled game the league-wide log never covered,
     # oldest first. resumable: a game drops out once its team logs land.
     today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    undiscovered = _unscheduled_season_types(conn, season, season_types)
+    if undiscovered:
+        logger.info(
+            "web game logs: schedule has no %s game for %s; discovering them first",
+            ", ".join(undiscovered), season,
+        )
+        discover_schedule(
+            conn, season, undiscovered, dry_run=dry_run, today=today,
+            delay_seconds=delay_seconds,
+        )
+        if dry_run:
+            logger.info("web game logs: dry run stored no discovered game to fetch")
     games = _games_needing_web_logs(conn, season, season_types, today, limit)
     if not games:
         logger.info("web game logs: nothing to do for %s", season)
@@ -783,6 +824,155 @@ def fetch_nba_web_schedule_rows(
         if index < len(days) - 1:
             time.sleep(delay_seconds)
     return rows
+
+
+def _crawl_discovery_dates(
+    season: str, season_types: Sequence[str], today: date, delay_seconds: float
+) -> tuple[list[dict], bool]:
+    # (rows of the requested types, whether nba.com stayed reachable).
+    dates = discovery_dates(season, season_types, today)
+    rows: list[dict] = []
+    reachable = True
+    failures = 0
+    for index, game_date in enumerate(dates):
+        if index:
+            time.sleep(delay_seconds)
+        try:
+            page = _fetch_nba_web_games(game_date)
+        except Exception as e:  # noqa: BLE001 - one date must not end the crawl
+            failures += 1
+            logger.warning("discovery: nba.com %s failed (%s)", game_date.isoformat(), e)
+            if failures >= NBA_WEB_MAX_CONSECUTIVE_FAILURES:
+                logger.warning("discovery: nba.com unreachable, giving up")
+                reachable = False
+                break
+            continue
+        failures = 0
+        rows.extend(schedule_rows_from_nba_web(page, game_date, season))
+    logger.info(
+        "discovery: %d date page(s) from %s to %s",
+        len(dates),
+        dates[0].isoformat() if dates else "-",
+        dates[-1].isoformat() if dates else "-",
+    )
+    return discovered_rows_for_season(rows, season, season_types), reachable
+
+
+def _probe_game_id(game_id: str, season: str) -> dict | None:
+    # an id the league never used answers with an error or an unplayed page.
+    try:
+        game = fetch_box_score_web(game_id)
+    except Exception as e:  # noqa: BLE001 - a miss is the expected answer
+        logger.debug("discovery: %s has no page (%s)", game_id, e)
+        return None
+    if not web_game_is_final(game):
+        return None
+    return schedule_row_from_web_game(game, season)
+
+
+def _probe_enumerated_ids(
+    season: str,
+    season_types: Sequence[str],
+    known_ids: set[str],
+    delay_seconds: float,
+) -> list[dict]:
+    groups = [
+        (season_type, group)
+        for season_type in season_types
+        for group in enumerate_game_id_groups(season, season_type)
+    ]
+    unseen = sum(1 for _, group in groups for game_id in group if game_id not in known_ids)
+    logger.info("discovery: %d enumerated id(s) were on no date page", unseen)
+
+    rows: list[dict] = []
+    probes = 0
+    for season_type, group in groups:
+        miss_limit = ID_PROBE_MISS_LIMIT.get(season_type, 1)
+        misses = 0
+        for game_id in group:
+            if game_id in known_ids:
+                misses = 0
+                continue
+            if probes:
+                time.sleep(delay_seconds)
+            probes += 1
+            row = _probe_game_id(game_id, season)
+            if row is None:
+                misses += 1
+                if misses >= miss_limit:
+                    break
+                continue
+            misses = 0
+            rows.append(row)
+    logger.info("discovery: %d id probe(s) found %d more game(s)", probes, len(rows))
+    return rows
+
+
+def discover_schedule_rows(
+    season: str,
+    season_types: Sequence[str] = SEASON_TYPES_DISCOVERED,
+    today: date | None = None,
+    delay_seconds: float = WEB_BOX_SCORE_DELAY_SECONDS,
+) -> list[dict]:
+    # date pages first, then box-score probes for enumerated ids they missed;
+    # a type with no past dates yet has nothing to find.
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    season_types = [
+        season_type for season_type in season_types
+        if discovery_dates(season, [season_type], today)
+    ]
+    if not season_types:
+        logger.info("discovery: no requested season type has started for %s", season)
+        return []
+
+    rows, reachable = _crawl_discovery_dates(season, season_types, today, delay_seconds)
+    if reachable:
+        known_ids = {row["nba_game_id"] for row in rows}
+        rows = discovered_rows_for_season(
+            rows + _probe_enumerated_ids(season, season_types, known_ids, delay_seconds),
+            season,
+            season_types,
+        )
+    for season_type in season_types:
+        typed = [row for row in rows if row["season_type"] == season_type]
+        logger.info(
+            "discovery: %s %s: %d game(s)%s",
+            season, season_type, len(typed),
+            f" from {typed[0]['game_date']} to {typed[-1]['game_date']}" if typed else "",
+        )
+    return rows
+
+
+def discover_schedule(
+    conn: psycopg2.extensions.connection,
+    season: str,
+    season_types: Sequence[str] = SEASON_TYPES_DISCOVERED,
+    dry_run: bool = False,
+    today: date | None = None,
+    delay_seconds: float = WEB_BOX_SCORE_DELAY_SECONDS,
+) -> int:
+    run_id = _start_ingestion_run(
+        conn, "schedule_discovery", watermark_from=season, watermark_to=season,
+        dry_run=dry_run,
+    )
+    try:
+        rows = discover_schedule_rows(season, season_types, today, delay_seconds)
+        cur = maybe_write_cursor(conn.cursor(), dry_run)
+        try:
+            written = _upsert_schedule_rows(cur, rows)
+        finally:
+            cur.close()
+    except Exception as e:
+        _finish_ingestion_run(conn, run_id, "failed", 0, notes=str(e)[:500])
+        raise
+
+    notes = f"{len(rows)} game(s) for {', '.join(season_types)}"
+    _finish_ingestion_run(conn, run_id, "succeeded", written, notes=notes)
+    logger.info(
+        "discovery: %d schedule row(s) upserted%s",
+        written, " (dry run: nothing written)" if dry_run else "",
+    )
+    return written
 
 
 def fetch_all_season_type_team_logs(
