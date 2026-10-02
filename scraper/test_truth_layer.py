@@ -11,6 +11,7 @@ import backfill
 import database
 import fetching
 import injury_report
+import roster_snapshot
 import run_scraper
 import odds
 import props
@@ -29,6 +30,7 @@ from config import (
     SEASON_TYPES_INGESTED,
     STATS_HEADERS,
     STATS_PROBE_TIMEOUT_SECONDS,
+    TEAM_ID_TO_ABBR,
     V2_INACTIVE_UNRELIABLE_FROM,
 )
 from database import DryRunCursor, is_write_statement
@@ -61,6 +63,7 @@ from rows import (
     derive_stints,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
+    absence_closure,
     active_dnp_status_rows,
     box_detail_rows_from_traditional,
     box_detail_rows_from_web,
@@ -79,6 +82,7 @@ from rows import (
     player_ids_absent_from_box,
     player_rows_from_nba_players_index,
     roster_rows_from_nba_players_index,
+    roster_snapshot_is_complete,
     schedule_row_from_web_game,
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
@@ -885,12 +889,51 @@ class TestPlanRosterSnapshot:
         assert changes[0]["close_valid_to"] is None
         assert changes[0]["open_team_id"] == BOS
 
-    def test_a_player_missing_from_every_roster_is_left_open(self):
+    def test_a_player_missing_from_an_unconfirmed_snapshot_is_left_open(self):
+        # complete defaults to False: absence may be one team's fetch failing
         changes = plan_roster_snapshot(
             {}, {"201939": (GSW, date(2025, 10, 21))}, SNAPSHOT_DAY
         )
 
         assert changes == []
+
+    def test_a_complete_snapshot_closes_an_absent_player_the_day_before(self):
+        changes = plan_roster_snapshot(
+            {"1": LAL},
+            {"1": (LAL, date(2025, 10, 21)), "202685": (GSW, date(2024, 10, 22))},
+            SNAPSHOT_DAY,
+            complete=True,
+        )
+
+        assert changes == [{
+            "player_id": "202685",
+            "open_team_id": None,
+            "open_valid_from": None,
+            "close_team_id": GSW,
+            "close_valid_from": date(2024, 10, 22),
+            "close_valid_to": SNAPSHOT_DAY - timedelta(days=1),
+        }]
+
+    def test_an_absence_closure_never_closes_before_the_stint_opened(self):
+        changes = plan_roster_snapshot(
+            {}, {"202685": (GSW, SNAPSHOT_DAY)}, SNAPSHOT_DAY, complete=True
+        )
+
+        assert changes[0]["close_valid_to"] == SNAPSHOT_DAY
+
+    def test_a_complete_snapshot_still_plans_moves_alongside_closures(self):
+        changes = plan_roster_snapshot(
+            {"1": BOS},
+            {"1": (LAL, date(2025, 10, 21)), "2": (GSW, date(2025, 10, 21))},
+            SNAPSHOT_DAY,
+            complete=True,
+        )
+
+        by_player = {c["player_id"]: c for c in changes}
+        assert by_player["1"]["open_team_id"] == BOS
+        assert by_player["1"]["close_team_id"] == LAL
+        assert by_player["2"]["open_team_id"] is None
+        assert by_player["2"]["close_team_id"] == GSW
 
     def test_several_players_are_planned_independently(self):
         changes = plan_roster_snapshot(
@@ -915,6 +958,122 @@ class TestPlanRosterSnapshot:
     def test_the_source_label_is_distinct_from_the_game_log_one(self):
         assert ROSTER_SNAPSHOT_SOURCE == "roster_snapshot"
         assert ROSTER_SNAPSHOT_SOURCE != "playergamelogs"
+
+
+def _full_rosters(team_ids, per_team=13):
+    return {
+        f"{team_id}-{n}": team_id for team_id in team_ids for n in range(per_team)
+    }
+
+
+ALL_TEAM_IDS = sorted(TEAM_ID_TO_ABBR)
+
+
+class TestRosterSnapshotIsComplete:
+    def test_every_team_with_a_full_roster_is_complete(self):
+        assert roster_snapshot_is_complete(_full_rosters(ALL_TEAM_IDS), ALL_TEAM_IDS)
+
+    def test_a_missing_team_is_incomplete(self):
+        snapshot = _full_rosters(ALL_TEAM_IDS[1:])
+
+        assert not roster_snapshot_is_complete(snapshot, ALL_TEAM_IDS)
+
+    def test_a_team_under_the_minimum_is_incomplete(self):
+        snapshot = _full_rosters(ALL_TEAM_IDS)
+        del snapshot[f"{ALL_TEAM_IDS[0]}-0"]
+
+        assert not roster_snapshot_is_complete(snapshot, ALL_TEAM_IDS)
+
+    def test_the_minimum_can_be_lowered(self):
+        snapshot = _full_rosters(ALL_TEAM_IDS, per_team=5)
+
+        assert roster_snapshot_is_complete(snapshot, ALL_TEAM_IDS, min_players=5)
+
+    def test_an_empty_snapshot_is_incomplete(self):
+        assert not roster_snapshot_is_complete({}, ALL_TEAM_IDS)
+
+
+class RosterCursor:
+    def __init__(self, open_stints):
+        self.open_stints = open_stints
+        self.writes = []
+        self.result = []
+
+    def execute(self, sql, params=None):
+        text = " ".join(sql.split())
+        self.result = []
+        if "WHERE valid_to IS NULL" in text and text.startswith("SELECT"):
+            self.result = list(self.open_stints)
+        elif text.startswith(("UPDATE", "INSERT")):
+            self.writes.append((text.split()[0], params))
+
+    def fetchall(self):
+        return list(self.result)
+
+    def close(self):
+        pass
+
+
+class RosterConn:
+    def __init__(self, open_stints):
+        self.cursor_ = RosterCursor(open_stints)
+
+    def cursor(self):
+        return self.cursor_
+
+
+class TestScrapeRosterSnapshotAbsence:
+    def _run(self, monkeypatch, web_snapshot, open_stints, dry_run=False):
+        recorded = []
+        monkeypatch.setattr(roster_snapshot, "_start_ingestion_run", lambda *a, **k: 1)
+        monkeypatch.setattr(
+            roster_snapshot, "_finish_ingestion_run",
+            lambda conn, run_id, status, rows, notes=None: recorded.append(notes),
+        )
+        monkeypatch.setattr(roster_snapshot, "fetch_web_roster_snapshot", lambda: web_snapshot)
+        conn = RosterConn(open_stints)
+        roster_snapshot.scrape_roster_snapshot(
+            conn, season=SEASON, dry_run=dry_run, snapshot_date=SNAPSHOT_DAY,
+            stats_reachable=False,
+        )
+        return conn.cursor_.writes, recorded
+
+    def test_a_complete_web_snapshot_closes_a_player_on_no_roster(self, monkeypatch):
+        # arrange
+        web = _full_rosters(ALL_TEAM_IDS)
+        open_stints = [("202685", GSW, date(2024, 10, 22))]
+
+        # act
+        writes, notes = self._run(monkeypatch, web, open_stints)
+
+        # assert
+        assert ("UPDATE", (SNAPSHOT_DAY - timedelta(days=1), "202685", GSW,
+                           date(2024, 10, 22))) in writes
+        assert not any(kind == "INSERT" and params[0] == "202685" for kind, params in writes)
+        assert "1 closed for absence" in notes[0]
+
+    def test_an_incomplete_web_snapshot_closes_nobody(self, monkeypatch):
+        # arrange
+        web = _full_rosters(ALL_TEAM_IDS[1:])
+        open_stints = [("202685", GSW, date(2024, 10, 22))]
+
+        # act
+        writes, notes = self._run(monkeypatch, web, open_stints)
+
+        # assert
+        assert not any(kind == "UPDATE" for kind, _ in writes)
+        assert "0 closed for absence" in notes[0]
+
+    def test_a_dry_run_writes_no_absence_closure(self, monkeypatch):
+        # arrange
+        web = _full_rosters(ALL_TEAM_IDS)
+        open_stints = [("202685", GSW, date(2024, 10, 22))]
+
+        # act
+        writes, _ = self._run(monkeypatch, web, open_stints, dry_run=True)
+
+        # assert
+        assert writes == []
 
 
 class TestSeasonCli:
@@ -4669,6 +4828,90 @@ class TestDeriveStints:
         # act + assert
         assert derive_stints([]) == []
 
+    def test_an_absence_closure_keeps_the_trailing_stint_closed(self):
+        # arrange
+        games = _games(
+            (date(2025, 1, 5), KNICKS, "Regular Season"),
+            (date(2025, 4, 13), KNICKS, "Regular Season"),
+        )
+
+        # act
+        stints = derive_stints(games, closed_through=date(2026, 9, 14))
+
+        # assert
+        assert stints == [
+            Stint(KNICKS, date(2025, 1, 5), date(2026, 9, 14), "playergamelogs"),
+        ]
+
+    def test_a_game_after_the_closure_opens_a_new_segment(self):
+        # arrange: closed for absence, then signed and played for the lakers
+        games = _games(
+            (date(2025, 4, 13), KNICKS, "Regular Season"),
+            (date(2026, 10, 22), LAKERS, "Regular Season"),
+        )
+
+        # act
+        stints = derive_stints(games, closed_through=date(2026, 9, 14))
+
+        # assert
+        assert [s[:3] for s in stints] == [
+            (KNICKS, date(2025, 4, 13), date(2026, 10, 21)),
+            (LAKERS, date(2026, 10, 22), None),
+        ]
+
+    def test_a_closure_earlier_than_his_last_game_is_ignored(self):
+        # arrange
+        games = _games(
+            (date(2025, 4, 13), KNICKS, "Regular Season"),
+            (date(2026, 10, 22), KNICKS, "Regular Season"),
+        )
+
+        # act
+        stints = derive_stints(games, closed_through=date(2026, 9, 14))
+
+        # assert
+        assert [s[:3] for s in stints] == [(KNICKS, date(2025, 4, 13), None)]
+
+    def test_an_absence_closure_also_holds_for_a_snapshot_stint(self):
+        # arrange: moved to the lakers by a roster page, later on no roster
+        games = _games((date(2026, 4, 12), CELTICS, "Regular Season"))
+        snapshots = [(LAKERS, date(2026, 7, 10), ROSTER_SNAPSHOT_SOURCE)]
+
+        # act
+        stints = derive_stints(games, snapshots, closed_through=date(2026, 9, 14))
+
+        # assert
+        assert stints == [
+            Stint(CELTICS, date(2026, 4, 12), date(2026, 7, 9), "playergamelogs"),
+            Stint(LAKERS, date(2026, 7, 10), date(2026, 9, 14), ROSTER_SNAPSHOT_SOURCE),
+        ]
+
+
+class TestAbsenceClosure:
+    def test_a_closed_latest_stint_with_nothing_open_is_an_absence_closure(self):
+        # arrange
+        existing = [
+            Stint(SPURS, date(2023, 10, 1), date(2024, 6, 30), "playergamelogs"),
+            Stint(KNICKS, date(2024, 7, 1), date(2026, 9, 14), "playergamelogs"),
+        ]
+
+        # act + assert
+        assert absence_closure(existing) == date(2026, 9, 14)
+
+    def test_any_open_stint_means_no_closure(self):
+        # arrange
+        existing = [
+            Stint(SPURS, date(2023, 10, 1), date(2024, 6, 30), "playergamelogs"),
+            Stint(KNICKS, date(2024, 7, 1), None, "playergamelogs"),
+        ]
+
+        # act + assert
+        assert absence_closure(existing) is None
+
+    def test_no_stints_means_no_closure(self):
+        # act + assert
+        assert absence_closure([]) is None
+
 
 @pytest.fixture
 def stint_batch_insert(monkeypatch):
@@ -4745,6 +4988,20 @@ class TestStintSyncOutOfOrder:
         assert ("9", KNICKS, date(2025, 9, 1), None) in db.rows()
         assert ("9", LAKERS, date(2024, 10, 22), date(2025, 8, 31)) in db.rows()
         assert db.open_count("9") == 1
+
+    def test_an_absence_closed_stint_is_not_reopened_by_a_rebuild(self):
+        # arrange
+        logs = [r for r in TRAVELLER_LOGS if r["season"] == "2024-25"]
+        closed = {"player": "9", "team": LAKERS, "valid_from": date(2024, 10, 22),
+                  "valid_to": date(2026, 9, 14), "source": "playergamelogs"}
+        db = StintDb(logs, [closed])
+
+        # act
+        truth_layer._sync_player_team_stints(StintConn(db), "2024-25")
+
+        # assert
+        assert db.rows() == [("9", LAKERS, date(2024, 10, 22), date(2026, 9, 14))]
+        assert db.writes == 0
 
     def test_a_dry_run_writes_nothing(self):
         # arrange

@@ -20,7 +20,11 @@ from database import (
 )
 from fetching import _fetch_nba_web_players, _fetch_team_roster
 from parsing import season_label, season_start_year
-from rows import plan_roster_snapshot, roster_rows_from_nba_players_index
+from rows import (
+    plan_roster_snapshot,
+    roster_rows_from_nba_players_index,
+    roster_snapshot_is_complete,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +36,9 @@ ROSTER_FETCH_TIMEOUT_SECONDS = 30
 def fetch_roster_snapshot(
     season: str, delay_seconds: float = ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS
 ) -> tuple[dict[str, str], list[str]]:
-    # a per-team failure is reported rather than raised: plan_roster_snapshot
-    # never closes a stint on absence, so a missing team costs coverage and
-    # cannot cost correctness.
+    # a per-team failure is reported rather than raised: this path never closes
+    # a stint on absence, so a missing team costs coverage and cannot cost
+    # correctness.
     snapshot: dict[str, str] = {}
     failed: list[str] = []
     consecutive_failures = 0
@@ -201,8 +205,20 @@ def scrape_roster_snapshot(
         )
         logger.info("roster snapshot: %d row(s) -> %s", written_csv, snapshot_out)
 
+    # only the one-page web index makes absence evidence of being unrostered
+    complete = source == ROSTER_WEB_SOURCE and roster_snapshot_is_complete(
+        snapshot, TEAM_ID_TO_ABBR.keys()
+    )
+    if source == ROSTER_WEB_SOURCE and not complete:
+        logger.warning(
+            "roster snapshot: nba.com players index is incomplete; "
+            "no absence closures written"
+        )
     open_stints = _open_stints(conn)
-    changes = plan_roster_snapshot(snapshot, open_stints, snapshot_date)
+    changes = plan_roster_snapshot(
+        snapshot, open_stints, snapshot_date, complete=complete
+    )
+    absence_closed = sum(1 for c in changes if c["open_team_id"] is None)
 
     # movement is measured against the end-of-season game-log team rather than
     # the stint table, which can be empty in a fresh environment.
@@ -230,6 +246,8 @@ def scrape_roster_snapshot(
                         change["close_valid_from"],
                     ),
                 )
+            if change["open_team_id"] is None:
+                continue
             write_cur.execute(
                 """
                 INSERT INTO player_team_stints (nba_player_id, team_id, valid_from, source)
@@ -246,7 +264,7 @@ def scrape_roster_snapshot(
     finally:
         write_cur.close()
 
-    notes = f"{len(changes)} stint change(s)"
+    notes = f"{len(changes)} stint change(s); {absence_closed} closed for absence"
     if failed:
         notes += f"; {len(failed)} team(s) failed: {','.join(failed)}"
     _finish_ingestion_run(
@@ -259,9 +277,11 @@ def scrape_roster_snapshot(
         f" ({len(failed)} failed: {', '.join(failed)})" if failed else "",
     )
     logger.info(
-        "roster snapshot: %d stint change(s) to write (%d closing an open stint)%s",
+        "roster snapshot: %d stint change(s) to write (%d closing an open stint, "
+        "%d closed for absence from every roster)%s",
         len(changes),
         sum(1 for c in changes if c["close_team_id"] is not None),
+        absence_closed,
         " (dry run: nothing written)" if dry_run else "",
     )
     logger.info(
