@@ -3,6 +3,7 @@ import type { Player } from '../../types';
 import { IconClose } from '../icons';
 import { PlayerCareerSection } from './PlayerCareerSection';
 import { Rating2kBadge } from '../ratings2k/Rating2kBadge';
+import { InjuryBadge } from './InjuryBadge';
 
 interface PlayerModalProps {
   player: Player | null;
@@ -11,13 +12,6 @@ interface PlayerModalProps {
 
 export const PlayerModal = ({ player, onClose }: PlayerModalProps) => {
   if (!player) return null;
-
-  const injuryAlertClass = (status: string): string => {
-    if (status === 'Out') return 'alert alert-error';
-    if (['Day-To-Day', 'Day_To_Day', 'Questionable'].includes(status)) return 'alert alert-warning';
-    if (status === 'Probable') return 'alert alert-success';
-    return 'alert alert-error';
-  };
 
   const n = (v: unknown): number => Number(v) || 0;
 
@@ -94,11 +88,8 @@ export const PlayerModal = ({ player, onClose }: PlayerModalProps) => {
         </div>
 
         {player.injury_status && (
-          <div className={`${injuryAlertClass(player.injury_status)} mb-4 py-2`}>
-            <span className="text-xs font-bold uppercase">{player.injury_status.replace(/_/g, ' ')}</span>
-            {player.injury_detail && (
-              <span className="text-xs ml-2 text-muted">· {player.injury_detail}</span>
-            )}
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mb-4">
+            <InjuryBadge status={player.injury_status} detail={player.injury_detail} showDetail />
           </div>
         )}
 

@@ -85,4 +85,24 @@ describe('FantasyPage', () => {
     expect(screen.getByText('strong')).toHaveClass('text-success');
     expect(screen.getByText('weak')).toHaveClass('text-error');
   });
+
+  it('shows a long injury phrase as a short badge with the phrase on its own line', async () => {
+    // arrange
+    const phrase = 'Expected to be out until at least Dec 1';
+    vi.mocked(client.getMyRoster).mockResolvedValue([{ ...guard, injury_status: phrase, injury_detail: null }]);
+    vi.mocked(client.getTeamAnalysis).mockReturnValue(new Promise(() => {}));
+
+    // act
+    render(
+      <MemoryRouter>
+        <FantasyPage isLoggedIn />
+      </MemoryRouter>
+    );
+
+    // assert
+    const badge = await screen.findByTestId('injury-badge');
+    expect(badge).toHaveTextContent(/^OUT$/);
+    expect(badge).toHaveAttribute('title', phrase);
+    expect(screen.getByTestId('injury-detail')).toHaveTextContent(phrase);
+  });
 });

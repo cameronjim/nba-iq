@@ -99,8 +99,8 @@ describe('PlayerModal', () => {
 
     renderModal(injured);
 
-    expect(screen.getByText(/Day To Day/i)).toBeInTheDocument();
-    expect(screen.getByText(/ankle/i)).toBeInTheDocument();
+    expect(screen.getByTestId('injury-badge')).toHaveTextContent('GTD');
+    expect(screen.getByTestId('injury-detail')).toHaveTextContent('ankle');
   });
 
   it('calls onClose when the close button is clicked', async () => {
