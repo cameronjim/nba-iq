@@ -178,6 +178,15 @@ NBA_WEB_TIMEOUT_SECONDS = 30
 NBA_WEB_PAGE_DELAY_SECONDS = 1.5
 NBA_WEB_SCHEDULE_DAYS_BACK = 3
 NBA_WEB_SCHEDULE_DAYS_AHEAD = 21
+# one box-score page per game; the pages carry the full line plus the
+# rebound split, fouls and dnp comments, and answer from ci and home alike.
+NBA_WEB_BOX_SCORE_URL = "https://www.nba.com/game/{game_id}/box-score"
+WEB_BOX_SCORE_DELAY_SECONDS = 2.0
+WEB_BOX_SCORE_SOURCE = "nba_web_boxscore"
+BOX_SOURCE_AUTO = "auto"
+BOX_SOURCE_STATS = "stats"
+BOX_SOURCE_WEB = "web"
+BOX_SOURCES = (BOX_SOURCE_AUTO, BOX_SOURCE_STATS, BOX_SOURCE_WEB)
 ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS = BACKFILL_REQUEST_DELAY_SECONDS
 
 # the league's official injury report. a slot with no report returns 403, not 404.

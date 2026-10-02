@@ -9,6 +9,10 @@ from backfill import backfill_game_logs, backfill_history, validate_game_logs
 from config import (
     BACKFILL_DEFAULT_FROM_SEASON,
     BACKFILL_GAME_LOGS_DEFAULT_FROM_SEASON,
+    BOX_SOURCE_AUTO,
+    BOX_SOURCE_STATS,
+    BOX_SOURCE_WEB,
+    BOX_SOURCES,
     NBA_2K_DEFAULT_TEAM_TYPES,
     NBA_2K_TEAM_TYPES,
     SEASON,
@@ -31,6 +35,8 @@ from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
 from truth_layer import (
     backfill_box_details,
+    backfill_game_logs_from_web,
+    resolve_box_source,
     scrape_game_logs,
     scrape_game_status,
     scrape_schedule,
@@ -96,7 +102,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "run the one-time truth-layer backfill instead of the normal scrape, "
             "regular season, play-in and playoffs; "
-            f"honours --from/--to (default {BACKFILL_GAME_LOGS_DEFAULT_FROM_SEASON})"
+            f"honours --from/--to (default {BACKFILL_GAME_LOGS_DEFAULT_FROM_SEASON}). "
+            "With --source web (or auto while stats.nba.com is down) it instead "
+            "fills --season's scheduled games that have no logs, one nba.com "
+            "box-score page per game, honouring --limit"
+        ),
+    )
+    parser.add_argument(
+        "--source",
+        dest="source",
+        choices=BOX_SOURCES,
+        default=BOX_SOURCE_AUTO,
+        help=(
+            "box-score source for --backfill-box-details and --backfill-game-logs: "
+            "stats (stats.nba.com), web (www.nba.com box-score pages) or auto, "
+            "which probes stats.nba.com once and uses web when it fails "
+            f"(default {BOX_SOURCE_AUTO})"
         ),
     )
     parser.add_argument(
@@ -138,8 +159,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "fill started, position, oreb/dreb/pf and dnp_reason from one "
-            "boxscoretraditionalv3 call per game for --season, oldest first; "
-            "resumable, honours --limit and --dry-run"
+            "box score per game for --season, oldest first; resumable, honours "
+            "--source, --limit and --dry-run"
         ),
     )
     parser.add_argument(
@@ -148,9 +169,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "with --backfill-box-details, stop after this many games "
-            "(default: all remaining). At the 5s request delay about 300 games "
-            "fit in a 30-minute GitHub Actions job"
+            "with --backfill-box-details or a web --backfill-game-logs, stop "
+            "after this many games (default: all remaining). About 300 games "
+            "take 30 minutes from stats.nba.com at its 5s delay, about 600 from "
+            "the nba.com pages at their 2s delay"
         ),
     )
     parser.add_argument(
@@ -289,17 +311,25 @@ def main(argv: list[str] | None = None) -> None:
         if args.backfill_history:
             backfill_history(conn, args.from_season, args.to_season)
         elif args.backfill_game_logs:
-            backfill_game_logs(conn, truth_from, truth_to, dry_run=args.dry_run)
+            source = resolve_box_source(args.source)
+            if source == BOX_SOURCE_WEB:
+                processed = backfill_game_logs_from_web(
+                    conn, args.season, dry_run=args.dry_run, limit=args.limit
+                )
+                print(format_processed_line(processed), flush=True)
+            else:
+                backfill_game_logs(conn, truth_from, truth_to, dry_run=args.dry_run)
         elif args.validate_game_logs:
             validate_game_logs(conn, truth_from, truth_to)
         elif args.backfill_box_details:
-            # datacenter ips are often tarpitted; failing fast beats burning the
-            # whole job on per-game retries.
-            if not stats_nba_reachable():
+            # an explicit --source stats still fails fast on a tarpitted ip
+            # rather than burning the whole job on per-game retries.
+            if args.source == BOX_SOURCE_STATS and not stats_nba_reachable():
                 logger.error("stats.nba.com is unreachable: box-detail backfill skipped")
                 sys.exit(1)
             processed = backfill_box_details(
-                conn, args.season, dry_run=args.dry_run, limit=args.limit
+                conn, args.season, dry_run=args.dry_run, limit=args.limit,
+                source=args.source,
             )
             print(format_processed_line(processed), flush=True)
         elif args.sync_2k:
@@ -356,7 +386,11 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 _run_phase(
                     "game status",
-                    lambda: scrape_game_status(conn, args.season, dry_run=args.dry_run),
+                    # the probe above already resolved auto for this run.
+                    lambda: scrape_game_status(
+                        conn, args.season, dry_run=args.dry_run,
+                        box_source=BOX_SOURCE_STATS,
+                    ),
                 )
             # after the schedule sync, so new games map to an nba game id.
             _run_phase(
