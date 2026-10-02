@@ -189,4 +189,17 @@ describe('fetchBaselines', () => {
     expect(sql).toContain('g.nba_player_id = ANY($6)');
     expect(params?.[5]).toEqual(['1628369']);
   });
+
+  it('never reads preseason logs, whatever the postseason flag says', async () => {
+    // act
+    await fetchBaselines('2026-10-10', null, false);
+    await fetchBaselines('2026-10-10', null, true);
+
+    // assert
+    for (const [, params] of queryMock.mock.calls) {
+      expect(params?.[4]).not.toContain('Pre Season');
+    }
+    expect(baselineDescriptor(true).season_types).not.toContain('Pre Season');
+    expect(baselineDescriptor(false).season_types).not.toContain('Pre Season');
+  });
 });

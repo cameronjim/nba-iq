@@ -3328,6 +3328,7 @@ class TestPropsCli:
 
 PLAYOFF_GAME_ID = "0042400101"
 PLAYIN_GAME_ID = "0052400111"
+PRESEASON_GAME_ID = "0012400005"
 
 
 def _log_row(game_id, game_date, player_id=1628369):
@@ -3346,11 +3347,12 @@ def _team_rows(game_id, game_date):
 class TestSeasonTypesIngested:
     def test_every_competition_a_player_logs_minutes_in_is_ingested(self):
         # act + assert
-        assert SEASON_TYPES_INGESTED == ("Regular Season", "PlayIn", "Playoffs")
+        assert SEASON_TYPES_INGESTED == ("Pre Season", "Regular Season", "PlayIn", "Playoffs")
 
     def test_the_stored_labels_match_what_the_game_id_says(self):
         # arrange
         derived = {
+            season_type_from_game_id(PRESEASON_GAME_ID),
             season_type_from_game_id("0022400061"),
             season_type_from_game_id(PLAYIN_GAME_ID),
             season_type_from_game_id(PLAYOFF_GAME_ID),
@@ -3361,9 +3363,39 @@ class TestSeasonTypesIngested:
 
 
 class TestSeasonTypesToFetch:
-    def test_an_october_run_fetches_the_regular_season_only(self):
+    def test_an_october_run_fetches_the_preseason_and_regular_season(self):
         # act
         result = season_types_to_fetch("2026-27", date(2026, 10, 25))
+
+        # assert
+        assert result == ("Pre Season", "Regular Season")
+
+    def test_a_november_run_fetches_the_regular_season_only(self):
+        # act
+        result = season_types_to_fetch("2026-27", date(2026, 11, 1))
+
+        # assert
+        assert result == ("Regular Season",)
+
+    def test_the_preseason_window_opens_on_september_fifteenth(self):
+        # act
+        before = season_types_to_fetch("2026-27", date(2026, 9, 14))
+        opening = season_types_to_fetch("2026-27", date(2026, 9, 15))
+
+        # assert
+        assert "Pre Season" not in before
+        assert "Pre Season" in opening
+
+    def test_the_preseason_window_closes_after_october_thirty_first(self):
+        # act
+        closing = season_types_to_fetch("2026-27", date(2026, 10, 31))
+
+        # assert
+        assert closing == ("Pre Season", "Regular Season")
+
+    def test_a_july_run_fetches_no_preseason(self):
+        # act
+        result = season_types_to_fetch("2026-27", date(2026, 7, 20))
 
         # assert
         assert result == ("Regular Season",)
@@ -3423,7 +3455,7 @@ class TestPostseasonRowsAreLabelledFaithfully:
 
 
 class TestIngestedScheduleRows:
-    def test_preseason_and_all_star_rows_are_dropped(self):
+    def test_all_star_rows_are_dropped_and_preseason_rows_kept(self):
         # arrange
         rows = [
             {"nba_game_id": "0012400002", "season_type": "Pre Season"},
@@ -3438,7 +3470,7 @@ class TestIngestedScheduleRows:
 
         # assert
         assert [r["nba_game_id"] for r in kept] == [
-            "0022400061", PLAYIN_GAME_ID, PLAYOFF_GAME_ID,
+            "0012400002", "0022400061", PLAYIN_GAME_ID, PLAYOFF_GAME_ID,
         ]
 
 
@@ -3459,8 +3491,14 @@ class TestScrapeGameLogsSeasonTypeLoop:
         calls = []
         upserts = []
         finished = []
-        watermarks = {"Regular Season": date(2025, 4, 13), "PlayIn": None, "Playoffs": None}
+        watermarks = {
+            "Pre Season": None,
+            "Regular Season": date(2025, 4, 13),
+            "PlayIn": None,
+            "Playoffs": None,
+        }
         games = {
+            "Pre Season": (PRESEASON_GAME_ID, "2024-10-10"),
             "Regular Season": ("0022401200", "2025-04-13"),
             "PlayIn": (PLAYIN_GAME_ID, "2025-04-15"),
             "Playoffs": (PLAYOFF_GAME_ID, "2025-04-20"),
@@ -3512,7 +3550,9 @@ class TestScrapeGameLogsSeasonTypeLoop:
             ("player", "PlayIn", season_start_date("2024-25")),
             ("player", "Playoffs", season_start_date("2024-25")),
         ]
-        assert {t for kind, t, _ in calls if kind == "team"} == set(SEASON_TYPES_INGESTED)
+        assert {t for kind, t, _ in calls if kind == "team"} == {
+            "Regular Season", "PlayIn", "Playoffs",
+        }
 
     def test_postseason_rows_are_written_with_their_season_type(self, monkeypatch):
         # arrange
@@ -3560,7 +3600,31 @@ class TestScrapeGameLogsSeasonTypeLoop:
         truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2024, 10, 30))
 
         # assert
-        assert {t for _, t, _ in calls} == {"Regular Season"}
+        assert {t for _, t, _ in calls} == {"Pre Season", "Regular Season"}
+
+    def test_an_october_run_writes_preseason_rows_labelled_pre_season(self, monkeypatch):
+        # arrange
+        calls, upserts, finished = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2024, 10, 12))
+
+        # assert
+        stored = {(row[1], row[3]) for row in upserts}
+        assert (PRESEASON_GAME_ID, "Pre Season") in stored
+        preseason_calls = [d for kind, t, d in calls if kind == "player" and t == "Pre Season"]
+        assert preseason_calls == [season_start_date("2024-25")]
+        assert finished[-1]["status"] == "succeeded"
+
+    def test_a_december_run_makes_no_preseason_request(self, monkeypatch):
+        # arrange
+        calls, _, _ = self._wire(monkeypatch)
+
+        # act
+        truth_layer.scrape_game_logs(FakeConn(), "2024-25", today=date(2024, 12, 1))
+
+        # assert
+        assert "Pre Season" not in {t for _, t, _ in calls}
 
 
 class TestScheduleTeamLogFallback:
@@ -3591,6 +3655,7 @@ class TestBackfillGameLogsSeasonTypeLoop:
         schedules = []
         finished = []
         games = {
+            "Pre Season": (PRESEASON_GAME_ID, "2024-10-10"),
             "Regular Season": ("0022401200", "2025-04-13"),
             "PlayIn": (PLAYIN_GAME_ID, "2025-04-15"),
             "Playoffs": (PLAYOFF_GAME_ID, "2025-04-20"),
@@ -3632,7 +3697,7 @@ class TestBackfillGameLogsSeasonTypeLoop:
         # assert
         assert [t for kind, t in fetched if kind == "player"] == list(SEASON_TYPES_INGESTED)
         assert {row[3] for row in upserts} == set(SEASON_TYPES_INGESTED)
-        assert [r["season_type"] for r in schedules] == ["Playoffs"]
+        assert [r["season_type"] for r in schedules] == ["Pre Season", "Playoffs"]
 
 
 class TestValidationCoverageGate:
@@ -3654,3 +3719,21 @@ class TestValidationCoverageGate:
             if "FROM nba_schedule s" in sql and "NOT EXISTS" in sql
         ]
         assert coverage == [("2024-25", "Regular Season")]
+
+    def test_the_two_team_rows_check_skips_preseason_games(self, monkeypatch):
+        # arrange
+        queries = []
+        monkeypatch.setattr(backfill, "_scalar", lambda conn, sql, params=(): 1)
+        monkeypatch.setattr(
+            backfill, "_rows",
+            lambda conn, sql, params=(): queries.append((sql, params)) or [],
+        )
+
+        # act
+        backfill.validate_game_logs(FakeConn(), "2024-25", "2024-25")
+
+        # assert
+        two_sided = [
+            params for sql, params in queries if "HAVING COUNT(*) <> 2" in sql
+        ]
+        assert two_sided == [("2024-25", "Pre Season")]

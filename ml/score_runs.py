@@ -37,6 +37,7 @@ from fnba_ml.config import (
     PROSPECTIVE_LOOKS,
     PROSPECTIVE_MODEL_VERSION,
     REPORTS_DIR,
+    TRUTH_SEASON_TYPES,
 )
 from fnba_ml.scoring import (
     E5_STATS,
@@ -48,6 +49,7 @@ from fnba_ml.scoring import (
     channel_of,
     compare_served_shadow,
     comparison_results,
+    excluded_season_type_rows,
     falsification_observations,
     falsification_table,
     look_date,
@@ -57,6 +59,7 @@ from fnba_ml.scoring import (
     score_runs,
     seeded_rate_baselines,
     snapshot_missing_families,
+    split_endpoint_rows,
     summarise,
 )
 from fnba_ml.store import UNCOND_SUFFIX
@@ -142,7 +145,8 @@ LEFT JOIN player_game_status pgs
     ON pgs.nba_player_id = pr.nba_player_id AND pgs.nba_game_id = pr.nba_game_id
 LEFT JOIN player_game_logs pgl
     ON pgl.nba_player_id = pr.nba_player_id AND pgl.nba_game_id = pr.nba_game_id
-WHERE {COMPLETED_GAME_CONDITION}
+WHERE s.season_type = ANY(%(season_types)s)
+  AND {COMPLETED_GAME_CONDITION}
 """
 
 
@@ -354,7 +358,8 @@ def main(argv: list[str] | None = None) -> int:
     predictions = _read_sql(PREDICTIONS_SQL, {"run_ids": run_ids, "stats": scored_stat_names()})
     if predictions.empty:
         return _nothing(f"{len(run_ids)} run(s) selected, but none of their games is complete yet")
-    truth = _read_sql(TRUTH_SQL, {"run_ids": run_ids})
+    # preseason games are graded too (MODEL.md 20.5), so truth reads every type.
+    truth = _read_sql(TRUTH_SQL, {"run_ids": run_ids, "season_types": list(TRUTH_SEASON_TYPES)})
     log.info("prediction rows: %d, truth rows: %d", len(predictions), len(truth))
 
     if args.look:
@@ -365,14 +370,23 @@ def main(argv: list[str] | None = None) -> int:
 
     baselines, unavailable = load_baselines(predictions, args)
     results = score_runs(predictions, runs, truth, baselines)
-    pairs, comparison = compare_served_shadow(predictions, runs, truth)
+    graded, excluded, split = predictions, {}, None
+    if args.look:
+        # 13.3 is regular season only: every endpoint is rescored without the
+        # other season types, whose cohort rows ride along as a separate split.
+        graded, excluded = split_endpoint_rows(predictions, truth)
+        split = excluded_season_type_rows(results)
+        results = pd.concat([score_runs(graded, runs, truth, baselines), split], ignore_index=True)
+    pairs, comparison = compare_served_shadow(graded, runs, truth)
     results = pd.concat([results, comparison_results(comparison)], ignore_index=True)
     markdown = report_header(args, runs) + summarise(results)
     if args.look:
         rows = scheduled_rows(results)
         observations = falsification_observations(results, comparison, unavailable=unavailable)
         table = falsification_table(observations, args.look, rows)
-        markdown += "\n" + render_look_report(args.look, table, comparison, pairs, rows)
+        markdown += "\n" + render_look_report(
+            args.look, table, comparison, pairs, rows, excluded=excluded, split=split
+        )
 
     args.md.parent.mkdir(parents=True, exist_ok=True)
     args.csv.parent.mkdir(parents=True, exist_ok=True)

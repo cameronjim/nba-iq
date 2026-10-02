@@ -40,6 +40,7 @@ from .config import (
     OPP_FORM_WINDOW,
     P_CONTEXT,
     P_CONTEXT_CUTOFF,
+    POSTSEASON_COMPETITIONS,
     RATE_HISTORY_INCLUDES_POSTSEASON,
     RATE_MINUTES_FLOOR,
     RATE_TARGETS,
@@ -224,7 +225,11 @@ def career_history(
     """
     if not include_postseason or postseason is None or postseason.empty:
         return universe
-    extra = postseason[postseason["PLAYED"] == 1].copy()
+    extra = postseason[postseason["PLAYED"] == 1]
+    # the switch admits play-in and playoff games only, never a preseason one.
+    if COMPETITION_COL in extra.columns:
+        extra = extra[extra[COMPETITION_COL].isin(POSTSEASON_COMPETITIONS)]
+    extra = extra.copy()
     extra["GAME_DATE"] = pd.to_datetime(extra["GAME_DATE"])
     extra["PLAYED"] = extra["PLAYED"].astype(int)
     combined = pd.concat([universe, extra], ignore_index=True)

@@ -59,6 +59,7 @@ TRAINING_SEASON_TYPES: tuple[str, ...] = ("Regular Season",)
 # the COMPETITION column carried through the frames, one label per season type.
 COMPETITION_COL = "COMPETITION"
 COMPETITION_BY_SEASON_TYPE: dict[str, str] = {
+    "Pre Season": "preseason",
     "Regular Season": "regular",
     "PlayIn": "playin",
     "Playoffs": "playoffs",
@@ -67,6 +68,11 @@ TRAINING_COMPETITIONS: tuple[str, ...] = tuple(
     COMPETITION_BY_SEASON_TYPE[t] for t in TRAINING_SEASON_TYPES
 )
 POSTSEASON_COMPETITIONS: tuple[str, ...] = ("playin", "playoffs")
+
+# preseason is truth only (MODEL.md 20.5): graded by score_runs.py, never a
+# training row and never in a rate history, whatever the postseason switch says.
+PRESEASON_SEASON_TYPE = "Pre Season"
+TRUTH_SEASON_TYPES: tuple[str, ...] = (PRESEASON_SEASON_TYPE, *HISTORY_SEASON_TYPES)
 
 # off until the v3 re-freeze: on, postseason appearances enter the career-scoped
 # rate history while season-to-date and availability columns stay regular only.

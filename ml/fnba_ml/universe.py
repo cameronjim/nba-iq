@@ -227,15 +227,16 @@ def universe_from_status(
     ``config.TARGET_COLS`` because for the row's own player it is the availability
     answer, not a feature (see :mod:`fnba_ml.teammates`).
     """
-    # training rows only: a playoff game must never become a modelled row.
-    postseason_games = set(postseason_rows(normalise_ids(schedule))["GAME_ID"])
+    # training rows only: a playoff or preseason game must never become a modelled row.
+    all_games = set(normalise_ids(schedule)["GAME_ID"])
     schedule, team_logs, player_logs = (
         training_rows(schedule), training_rows(team_logs), training_rows(player_logs)
     )
+    excluded_games = all_games - set(normalise_ids(schedule)["GAME_ID"])
     tg = team_game_frame(schedule, team_logs)
     st = normalise_ids(status)
-    if postseason_games:
-        st = st[~st["GAME_ID"].isin(postseason_games)]
+    if excluded_games:
+        st = st[~st["GAME_ID"].isin(excluded_games)]
 
     rostered = st["ROSTERED"].astype("boolean").fillna(True)
     keep = ["PLAYER_ID", "GAME_ID", "TEAM_ID", "PLAYED"]

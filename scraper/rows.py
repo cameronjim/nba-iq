@@ -6,6 +6,9 @@ from config import (
     TEAM_ID_TO_ABBR,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
     POSTSEASON_EARLIEST_MONTH,
+    PRESEASON_WINDOW_END,
+    PRESEASON_WINDOW_START,
+    SEASON_TYPE_PRESEASON,
     SEASON_TYPE_REGULAR,
     SEASON_TYPES_INGESTED,
 )
@@ -47,20 +50,28 @@ def season_types_to_fetch(
     season_types: Sequence[str] = SEASON_TYPES_INGESTED,
 ) -> tuple[str, ...]:
     # the regular season is always fetched; a postseason type only once its
-    # games can exist, so an october run does not spend two empty requests each.
-    postseason_from = date(season_start_year(season) + 1, POSTSEASON_EARLIEST_MONTH, 1)
-    return tuple(
-        season_type
-        for season_type in season_types
-        if season_type == SEASON_TYPE_REGULAR or today >= postseason_from
-    )
+    # games can exist, and the preseason only inside its window, so no run
+    # spends a request on a type that cannot have new games.
+    start_year = season_start_year(season)
+    postseason_from = date(start_year + 1, POSTSEASON_EARLIEST_MONTH, 1)
+    preseason_from = date(start_year, *PRESEASON_WINDOW_START)
+    preseason_to = date(start_year, *PRESEASON_WINDOW_END)
+
+    def wanted(season_type: str) -> bool:
+        if season_type == SEASON_TYPE_REGULAR:
+            return True
+        if season_type == SEASON_TYPE_PRESEASON:
+            return preseason_from <= today <= preseason_to
+        return today >= postseason_from
+
+    return tuple(season_type for season_type in season_types if wanted(season_type))
 
 
 def ingested_schedule_rows(
     rows: Sequence[Mapping], season_types: Collection[str] = SEASON_TYPES_INGESTED
 ) -> list[Mapping]:
-    # preseason and all-star rows have no logs or status rows behind them, so
-    # storing them from a backfill would only light up the validation report.
+    # all-star rows have no logs or status rows behind them, so storing them
+    # from a backfill would only light up the validation report.
     return [row for row in rows if row["season_type"] in season_types]
 
 
