@@ -243,6 +243,25 @@ ESPN_LONG_TERM_PATTERNS = (
 )
 # a long-term note older than this is stale: espn leaves summer notes up for months.
 ESPN_LONG_TERM_MAX_REPORT_AGE_DAYS = 30
+CBS_INJURIES_SOURCE = "cbssports"
+# players.injury_status is a display label derived from every report source.
+INJURY_SOURCE_PRECEDENCE = (NBA_INJURY_REPORT_SOURCE, ESPN_INJURIES_SOURCE, CBS_INJURIES_SOURCE)
+INJURY_DISPLAY_MAX_AGE_HOURS = 72
+INJURY_RECONCILE_LOOKBACK_DAYS = 7
+# out-class rows never expire on age, matching the ml override layer.
+INJURY_OUT_CLASS_STATUSES = ("out", "suspended", "g_league")
+INJURY_DISPLAY_LABELS = {
+    "out": "Out",
+    "doubtful": "Doubtful",
+    "questionable": "Questionable",
+    "probable": "Probable",
+    "suspended": "Suspended",
+    "g_league": "G League",
+    "day_to_day": "Day-To-Day",
+}
+# a full-league feed that drops a player has cleared him; cbs writes its own
+# clearances and the official report is game-scoped.
+INJURY_ABSENCE_CLEARS_SOURCES = (ESPN_INJURIES_SOURCE,)
 # matches the backend odds board window: today through today+2, eastern.
 ODDS_WINDOW_DAYS = 2
 ODDS_SNAPSHOT_SOURCE = "espn_scoreboard"

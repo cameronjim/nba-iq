@@ -11,6 +11,7 @@ import backfill
 import database
 import espn_injuries
 import fetching
+import injury_reconcile
 import injury_report
 import roster_snapshot
 import run_scraper
@@ -5431,3 +5432,248 @@ class TestStintSyncOutOfOrder:
 
         # assert
         assert conn.autocommit is True
+
+
+NOW_UTC = datetime(2026, 10, 2, 16, 0, tzinfo=timezone.utc)
+TODAY_ET = date(2026, 10, 2)
+PORZINGIS = "204001"
+
+
+def _report(source, status, hours_ago, reason=None, game_id=None, game_date=None,
+            player=PORZINGIS):
+    return injury_reconcile.InjuryReportRow(
+        player, game_id, NOW_UTC - timedelta(hours=hours_ago), status, reason, source,
+        game_date,
+    )
+
+
+class TestPlanPlayerInjuryColumns:
+    def test_espn_out_beats_an_older_cbs_game_time_decision(self):
+        # arrange
+        expected_return = "Undisclosed; expected return 2026-10-13"
+        reports = [
+            _report("cbssports", "questionable", 10, reason="Knee"),
+            _report("espn_injuries", "out", 2, reason="Undisclosed"),
+            _report("espn_injuries", "out", 2, reason=expected_return,
+                    game_id="0012600001", game_date=TODAY_ET),
+            _report("espn_injuries", "out", 2, reason=expected_return,
+                    game_id="0012600009", game_date=TODAY_ET + timedelta(days=3)),
+        ]
+        cbs_rows = {PORZINGIS: ("Game Time Decision", "Knee")}
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, cbs_rows, NOW_UTC)
+
+        # assert
+        assert plan == {PORZINGIS: ("Out", "Undisclosed, expected return Oct 13")}
+
+    def test_official_beats_espn_for_the_same_game(self):
+        # arrange
+        game = {"game_id": "0012600001", "game_date": TODAY_ET}
+        reports = [
+            _report("nba_official", "doubtful", 3,
+                    reason="Injury/Illness - Left Ankle; Sprain", **game),
+            _report("espn_injuries", "out", 1,
+                    reason="Ankle; expected return 2026-10-03", **game),
+        ]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
+
+        # assert
+        assert plan == {PORZINGIS: ("Doubtful", "Injury/Illness - Left Ankle; Sprain")}
+
+    def test_a_stale_cbs_questionable_with_nothing_newer_is_healthy(self):
+        # arrange
+        reports = [_report("cbssports", "questionable", 80, reason="Knee")]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(
+            reports, {PORZINGIS: ("Game Time Decision", "Knee")}, NOW_UTC
+        )
+
+        # assert
+        assert plan == {}
+
+    def test_an_out_row_older_than_the_expiry_still_stands(self):
+        # arrange
+        reports = [_report("cbssports", "out", 120, reason="Achilles")]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(
+            reports, {PORZINGIS: ("Out", "Achilles")}, NOW_UTC
+        )
+
+        # assert
+        assert plan == {PORZINGIS: ("Out", "Achilles")}
+
+    def test_a_long_cbs_phrase_moves_into_the_detail(self):
+        # arrange
+        phrase = "Expected to be out until at least Dec 1"
+        reports = [_report("cbssports", normalize_injury_status(phrase), 1, reason="Knee")]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(
+            reports, {PORZINGIS: (phrase, "Knee")}, NOW_UTC
+        )
+
+        # assert
+        assert plan == {PORZINGIS: ("Out", f"Knee, {phrase}")}
+
+    def test_a_newer_cbs_clearance_beats_an_older_espn_questionable(self):
+        # arrange
+        reports = [
+            _report("espn_injuries", "questionable", 20, reason="Back"),
+            _report("cbssports", "cleared", 2),
+        ]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
+
+        # assert
+        assert plan == {}
+
+    def test_a_newer_cbs_clearance_does_not_beat_an_older_espn_out(self):
+        # arrange
+        reports = [
+            _report("espn_injuries", "out", 20, reason="Undisclosed"),
+            _report("cbssports", "cleared", 2),
+        ]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
+
+        # assert
+        assert plan == {PORZINGIS: ("Out", "Undisclosed")}
+
+    def test_a_player_dropped_from_a_newer_espn_feed_is_cleared_by_espn(self):
+        # arrange
+        reports = [
+            _report("espn_injuries", "out", 20, reason="Undisclosed"),
+            _report("espn_injuries", "questionable", 2, reason="Hand", player="1"),
+        ]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
+
+        # assert
+        assert plan == {"1": ("Questionable", "Hand")}
+
+    def test_game_rows_count_only_for_games_today_or_later(self):
+        # arrange
+        reports = [
+            _report("nba_official", "out", 30, reason="Rest", game_id="0012600000",
+                    game_date=TODAY_ET - timedelta(days=1)),
+            _report("nba_official", "probable", 3, reason="Rest", game_id="0012600001",
+                    game_date=TODAY_ET),
+        ]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
+
+        # assert
+        assert plan == {PORZINGIS: ("Probable", "Rest")}
+
+    def test_a_game_row_with_no_upcoming_schedule_date_is_ignored(self):
+        # arrange
+        reports = [_report("nba_official", "out", 3, reason="Rest", game_id="0012600000")]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
+
+        # assert
+        assert plan == {}
+
+    def test_a_passthrough_status_leaves_the_player_healthy(self):
+        # arrange
+        reports = [_report("cbssports", "available", 1, reason="Wrist")]
+
+        # act
+        plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
+
+        # assert
+        assert plan == {}
+
+
+class ReconcileCursor:
+    def __init__(self, reports, players):
+        self.reports = reports
+        self.players = players
+        self.writes = []
+        self.result = []
+
+    def execute(self, sql, params=None):
+        text = " ".join(sql.split())
+        self.result = []
+        if text.startswith("SELECT r.nba_player_id"):
+            self.result = list(self.reports)
+        elif text.startswith("SELECT nba_id, injury_status"):
+            self.result = list(self.players)
+        elif text.startswith("UPDATE"):
+            self.writes.append(params)
+
+    def fetchall(self):
+        return list(self.result)
+
+    def close(self):
+        pass
+
+
+class ReconcileConn:
+    def __init__(self, reports, players):
+        self.cursor_ = ReconcileCursor(reports, players)
+
+    def cursor(self):
+        return self.cursor_
+
+
+class TestReconcilePlayerInjuryColumns:
+    REPORTS = [
+        (PORZINGIS, None, NOW_UTC - timedelta(hours=10), "questionable", "Knee",
+         "cbssports", "Game Time Decision", None),
+        (PORZINGIS, None, NOW_UTC - timedelta(hours=2), "out", "Undisclosed",
+         "espn_injuries", "Out", None),
+    ]
+    PLAYERS = [
+        (PORZINGIS, "Game Time Decision", "Knee"),
+        ("2", "Out", "Ankle"),
+        ("3", None, None),
+    ]
+
+    def test_writes_changed_labels_and_clears_players_with_no_report(self):
+        # arrange
+        conn = ReconcileConn(self.REPORTS, self.PLAYERS)
+
+        # act
+        changed = injury_reconcile.reconcile_player_injury_columns(conn, now=NOW_UTC)
+
+        # assert
+        assert conn.cursor_.writes == [("Out", "Undisclosed", PORZINGIS), ("2",)]
+        assert changed == 2
+
+    def test_an_unchanged_label_is_not_rewritten(self):
+        # arrange
+        conn = ReconcileConn(self.REPORTS, [(PORZINGIS, "Out", "Undisclosed")])
+
+        # act
+        changed = injury_reconcile.reconcile_player_injury_columns(conn, now=NOW_UTC)
+
+        # assert
+        assert conn.cursor_.writes == []
+        assert changed == 0
+
+    def test_a_dry_run_writes_nothing(self):
+        # arrange
+        conn = ReconcileConn(self.REPORTS, self.PLAYERS)
+
+        # act
+        injury_reconcile.reconcile_player_injury_columns(conn, dry_run=True, now=NOW_UTC)
+
+        # assert
+        assert conn.cursor_.writes == []
+
+
+class TestReconcileInjuriesCli:
+    def test_the_reconcile_only_flag_parses(self):
+        assert _parse_args(["--reconcile-injuries-only"]).reconcile_injuries_only is True
+        assert _parse_args([]).reconcile_injuries_only is False
