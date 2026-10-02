@@ -29,6 +29,7 @@ from config import (
     NBA_2K_PAGE_LIMIT,
     NBA_2K_REQUEST_DELAY_SECONDS,
     NBA_2K_RETRY_DELAY_SECONDS,
+    NBA_WEB_BOX_SCORE_URL,
     NBA_WEB_GAMES_URL,
     NBA_WEB_PLAYERS_URL,
     NBA_WEB_TIMEOUT_SECONDS,
@@ -531,6 +532,30 @@ def _fetch_nba_web_games(game_date: date) -> dict:
         NBA_WEB_GAMES_URL,
         {"date": game_date.isoformat()},
     )
+
+
+def box_score_game_from_next_data(next_data: dict, game_id: str) -> dict:
+    # the game object lives at props.pageProps.game; a missing one means the
+    # page layout changed, which must fail loudly rather than write nothing.
+    page_props = (next_data.get("props") or {}).get("pageProps") or {}
+    game = page_props.get("game")
+    if not isinstance(game, dict) or not all(
+        isinstance(game.get(side), dict) for side in ("homeTeam", "awayTeam")
+    ):
+        raise ValueError(f"{game_id}: box-score page has no props.pageProps.game")
+    if str(game.get("gameId") or "") != game_id:
+        raise ValueError(
+            f"{game_id}: box-score page describes game {game.get('gameId')!r}"
+        )
+    return game
+
+
+def fetch_box_score_web(game_id: str) -> dict:
+    # the caller owns the delay between games; this only retries one game.
+    next_data = _fetch_nba_web_page(
+        f"nba.com box score {game_id}", NBA_WEB_BOX_SCORE_URL.format(game_id=game_id)
+    )
+    return box_score_game_from_next_data(next_data, game_id)
 
 
 @lru_cache(maxsize=1)

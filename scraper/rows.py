@@ -11,6 +11,7 @@ from config import (
     SEASON_TYPE_PRESEASON,
     SEASON_TYPE_REGULAR,
     SEASON_TYPES_INGESTED,
+    WEB_BOX_SCORE_SOURCE,
 )
 from parsing import (
     _opt_int,
@@ -573,6 +574,166 @@ def box_detail_rows_from_traditional(
     return player_rows, team_rows
 
 
+def _web_sides(game: Mapping) -> list[tuple[Mapping, bool, Mapping]]:
+    # (team, is_home, opponent) per side. neutral-site games keep the page's
+    # own home designation, as the schedule does.
+    home = game.get("homeTeam") or {}
+    away = game.get("awayTeam") or {}
+    return [(home, True, away), (away, False, home)]
+
+
+def _web_team_id(team: Mapping) -> str | None:
+    return str(team.get("teamId") or "").strip() or None
+
+
+def _web_minutes(stats: Mapping, comment: str | None) -> float | None:
+    # a dnp arrives as "" today, but a zeroed duration with a comment is the
+    # same player and must not count as an appearance.
+    minutes = parse_minutes(stats.get("minutes"))
+    if comment is not None and not minutes:
+        return None
+    return minutes
+
+
+def _web_has_totals(stats: Mapping) -> bool:
+    # an unplayed game carries a placeholder object instead of team totals.
+    return "points" in stats and "minutes" in stats
+
+
+def _web_player_as_traditional(raw: Mapping, team_id: str | None) -> dict:
+    stats = raw.get("statistics") or {}
+    comment = _text_or_none(raw.get("comment"))
+    return {
+        "personId": raw.get("personId"),
+        "teamId": team_id,
+        "position": raw.get("position"),
+        "comment": comment,
+        "minutes": _web_minutes(stats, comment),
+        "reboundsOffensive": stats.get("reboundsOffensive"),
+        "reboundsDefensive": stats.get("reboundsDefensive"),
+        "foulsPersonal": stats.get("foulsPersonal"),
+    }
+
+
+def box_detail_rows_from_web(
+    game: Mapping, game_id: str
+) -> tuple[list[dict], list[dict]]:
+    # the box-score page uses v3's camelCase names with the line nested under
+    # statistics, so it is flattened into v3's shape and shares its rules.
+    player_stats: list[dict] = []
+    team_stats: list[dict] = []
+    for team, _, _ in _web_sides(game):
+        team_id = _web_team_id(team)
+        for raw in team.get("players") or []:
+            player_stats.append(_web_player_as_traditional(raw, team_id))
+        totals = team.get("statistics") or {}
+        if team_id and _web_has_totals(totals):
+            team_stats.append(
+                {
+                    "teamId": team_id,
+                    "reboundsOffensive": totals.get("reboundsOffensive"),
+                    "reboundsDefensive": totals.get("reboundsDefensive"),
+                    "foulsPersonal": totals.get("foulsPersonal"),
+                }
+            )
+    return box_detail_rows_from_traditional(
+        {"player_stats": player_stats, "team_stats": team_stats}, game_id
+    )
+
+
+WEB_GAME_STATUS_FINAL = 3
+
+
+def web_game_is_final(game: Mapping) -> bool:
+    # gameStatus is 1 scheduled, 2 live, 3 final; a live page has partial lines.
+    try:
+        return int(game.get("gameStatus") or 0) == WEB_GAME_STATUS_FINAL
+    except (TypeError, ValueError):
+        return False
+
+
+def web_inactive_rows(game: Mapping) -> list[dict]:
+    # the page's per-team inactive list, in the boxscoresummaryv3 shape that
+    # normalize_inactive_rows reads.
+    rows: list[dict] = []
+    for team, _, _ in _web_sides(game):
+        team_id = _web_team_id(team)
+        for raw in team.get("inactives") or []:
+            rows.append({"personId": raw.get("personId"), "teamId": team_id})
+    return rows
+
+
+def _web_line(stats: Mapping) -> tuple:
+    # pts through plus_minus, in the order both log upserts expect.
+    return (
+        _opt_int(stats.get("points")),
+        _opt_int(stats.get("reboundsTotal")),
+        _opt_int(stats.get("assists")),
+        _opt_int(stats.get("steals")),
+        _opt_int(stats.get("blocks")),
+        _opt_int(stats.get("turnovers")),
+        _opt_int(stats.get("fieldGoalsMade")),
+        _opt_int(stats.get("fieldGoalsAttempted")),
+        _opt_int(stats.get("threePointersMade")),
+        _opt_int(stats.get("threePointersAttempted")),
+        _opt_int(stats.get("freeThrowsMade")),
+        _opt_int(stats.get("freeThrowsAttempted")),
+        _opt_int(stats.get("plusMinusPoints")),
+    )
+
+
+def game_log_rows_from_web(
+    game: Mapping,
+    game_id: str,
+    season: str,
+    season_type: str,
+    game_date: date,
+    run_id: int | None = None,
+) -> tuple[list[tuple], list[tuple]]:
+    # tuples in the build_player_game_log_row / build_team_game_log_row order.
+    # only appearances get a player row, as with playergamelogs; dressed
+    # non-appearances are the active-dnp status rows' job.
+    player_rows: list[tuple] = []
+    team_rows: list[tuple] = []
+    for team, is_home, opponent in _web_sides(game):
+        team_id = _web_team_id(team)
+        if team_id is None:
+            continue
+        team_abbr = team.get("teamTricode") or None
+        opponent_id = _web_team_id(opponent)
+
+        for raw in team.get("players") or []:
+            player_id = str(raw.get("personId") or "").strip()
+            stats = raw.get("statistics") or {}
+            minutes = _web_minutes(stats, _text_or_none(raw.get("comment")))
+            if not player_id or minutes is None:
+                continue
+            player_rows.append(
+                (
+                    player_id, game_id, season, season_type, game_date,
+                    team_id, team_abbr, opponent_id, is_home,
+                    _text_or_none(raw.get("position")) is not None,
+                    minutes,
+                )
+                + _web_line(stats)
+                + (None, WEB_BOX_SCORE_SOURCE, run_id)
+            )
+
+        totals = team.get("statistics") or {}
+        if not _web_has_totals(totals):
+            continue
+        team_rows.append(
+            (
+                team_id, game_id, season, season_type, game_date,
+                team_abbr, opponent_id, is_home,
+                parse_minutes(totals.get("minutes")),
+            )
+            + _web_line(totals)
+            + (WEB_BOX_SCORE_SOURCE, run_id)
+        )
+    return player_rows, team_rows
+
+
 # DND and NWT are injury and not-with-team designations, which the inactive
 # list owns; the box score alone cannot say whether he was listed inactive.
 INACTIVE_LIST_OWNED_PREFIXES = ("DND", "NWT")
@@ -582,6 +743,7 @@ def active_dnp_status_rows(
     box_player_rows: Sequence[Mapping],
     existing_status_keys: Collection[tuple[str, str]],
     game_id: str,
+    source: str = BOX_DETAILS_SOURCE,
 ) -> list[dict]:
     # a player who dressed and never entered has no game-log row and is not on
     # the inactive list, so without this he has no status row at all.
@@ -609,7 +771,7 @@ def active_dnp_status_rows(
                 "played": False,
                 "dnp_reason": reason,
                 "minutes": None,
-                "source": BOX_DETAILS_SOURCE,
+                "source": source,
             }
         )
     return rows

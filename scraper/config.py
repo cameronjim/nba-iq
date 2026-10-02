@@ -178,6 +178,15 @@ NBA_WEB_TIMEOUT_SECONDS = 30
 NBA_WEB_PAGE_DELAY_SECONDS = 1.5
 NBA_WEB_SCHEDULE_DAYS_BACK = 3
 NBA_WEB_SCHEDULE_DAYS_AHEAD = 21
+# one box-score page per game; the pages carry the full line plus the
+# rebound split, fouls and dnp comments, and answer from ci and home alike.
+NBA_WEB_BOX_SCORE_URL = "https://www.nba.com/game/{game_id}/box-score"
+WEB_BOX_SCORE_DELAY_SECONDS = 2.0
+WEB_BOX_SCORE_SOURCE = "nba_web_boxscore"
+BOX_SOURCE_AUTO = "auto"
+BOX_SOURCE_STATS = "stats"
+BOX_SOURCE_WEB = "web"
+BOX_SOURCES = (BOX_SOURCE_AUTO, BOX_SOURCE_STATS, BOX_SOURCE_WEB)
 ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS = BACKFILL_REQUEST_DELAY_SECONDS
 
 # the league's official injury report. a slot with no report returns 403, not 404.
@@ -198,7 +207,7 @@ ODDS_SNAPSHOT_SOURCE = "espn_scoreboard"
 ODDS_INGESTION_KIND = "odds_snapshot"
 
 # player prop odds. the odds api bills an event-odds call per market per
-# region, so eight markets cost eight of the free tier's 500 monthly credits.
+# region, and the free tier is 500 credits a month, so only a few markets fit.
 PROPS_API_KEY_ENV = "ODDS_API_KEY"
 PROPS_PROVIDER_THE_ODDS_API = "the_odds_api"
 PROPS_INGESTION_KIND = "prop_odds_snapshot"
@@ -217,7 +226,12 @@ PROPS_MARKET_MAP = {
     "player_blocks": "blk",
     "player_turnovers": "tov",
 }
-PROPS_WINDOW_DAYS = ODDS_WINDOW_DAYS
+PROPS_DEFAULT_MARKETS = ("pts", "pra")
+# today's games only (eastern): a ~7 game night costs ~14 credits.
+PROPS_WINDOW_DAYS = 0
+PROPS_MONTHLY_BUDGET = 500
+# never let a snapshot take the account below this many credits.
+PROPS_RESERVE_CREDITS = 50
 # the odds lane fires every 30 minutes; without this gap one day of it would
 # spend the whole monthly quota.
 PROPS_MIN_HOURS_BETWEEN_RUNS = 20

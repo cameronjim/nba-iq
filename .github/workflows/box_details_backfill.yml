@@ -1,7 +1,11 @@
 name: Box Details Backfill
 
-# manual only: one bounded, resumable slice per run. re-dispatch until the
-# log reports nothing to do for the season.
+# manual only: one bounded, resumable slice per run, read from the www.nba.com
+# box-score pages, which answer from runners where stats.nba.com does not.
+# re-dispatch until the log reports nothing to do for the season.
+# mode box-details fills started/position/oreb/dreb/pf/dnp_reason on logged
+# games; mode game-logs fills whole games with no logs (preseason, postseason,
+# or any game the league-wide log missed).
 on:
   workflow_dispatch:
     inputs:
@@ -9,16 +13,24 @@ on:
         description: "season to backfill, e.g. 2024-25"
         required: true
         type: string
+      mode:
+        description: "box-details or game-logs"
+        required: true
+        default: box-details
+        type: choice
+        options:
+          - box-details
+          - game-logs
       limit:
-        description: "max games this run (about 300 fit in 30 minutes at a 5s delay)"
+        description: "max games this run (about 600 fit in 35 minutes at a 2s delay)"
         required: false
-        default: "300"
+        default: "600"
         type: string
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -31,10 +43,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r scraper/requirements.txt
 
-      - name: Backfill box score details
+      - name: Backfill from nba.com box-score pages
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SEASON: ${{ inputs.season }}
+          MODE: ${{ inputs.mode }}
           LIMIT: ${{ inputs.limit }}
         run: |
-          python scraper/run_scraper.py --backfill-box-details --season "$SEASON" --limit "$LIMIT"
+          if [ "$MODE" = "game-logs" ]; then
+            task="--backfill-game-logs"
+          else
+            task="--backfill-box-details"
+          fi
+          python scraper/run_scraper.py "$task" --source web --season "$SEASON" --limit "$LIMIT"

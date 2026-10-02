@@ -1,11 +1,13 @@
 # one-click full scrape from this PC. stats.nba.com blocks cloud ips, so this is
-# the only way the players, game-log and box-score phases get fresh data.
+# the only way the players and league-wide game-log phases get fresh data.
+# box-details tries stats.nba.com and falls back to the nba.com box-score pages;
+# game-logs-web fills games with no logs from those pages alone.
 # launched by the "NBA IQ Scrape" and "NBA IQ box-details backfill" shortcuts
 # that install_shortcut.ps1 creates.
 # -Season empty means run_scraper.py uses its own current-season default.
 
 param(
-    [ValidateSet('scrape', 'box-details', 'game-logs')]
+    [ValidateSet('scrape', 'box-details', 'game-logs', 'game-logs-web')]
     [string]$Task = 'scrape',
     [string]$Season = '',
     [int]$Limit = 300,
@@ -81,11 +83,17 @@ try {
     $script = Join-Path $scraper 'run_scraper.py'
     $seasonArgs = if ($Season) { @('--season', $Season) } else { @() }
 
-    if ($Task -eq 'box-details') {
+    $batchArgs = switch ($Task) {
+        'box-details' { @('--backfill-box-details', '--source', 'auto') }
+        'game-logs-web' { @('--backfill-game-logs', '--source', 'web') }
+        default { $null }
+    }
+
+    if ($batchArgs) {
         $code = 0
         for ($batch = 1; $batch -le $MaxBatches; $batch++) {
             Write-Host "Batch $batch of $MaxBatches (up to $Limit games)" -ForegroundColor Cyan
-            $lines = @(& $python $script --backfill-box-details @seasonArgs --limit $Limit 2>&1 |
+            $lines = @(& $python $script @batchArgs @seasonArgs --limit $Limit 2>&1 |
                 ForEach-Object { "$_" } | Tee-Object -FilePath $log -Append |
                 ForEach-Object { Write-Host $_; $_ })
             $code = $LASTEXITCODE
