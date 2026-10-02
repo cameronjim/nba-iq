@@ -58,6 +58,14 @@ on:
         description: "Build the switch-on dataset (--postseason-history) and run run_postseason_bracket.py against the baseline build (MODEL.md 20.1)"
         type: boolean
         default: false
+      postseason_origins:
+        description: "Origin set for the postseason bracket: dev (the five ORIGINS), season-start (Oct-Nov 2024 and 2025), or both; one look per set"
+        type: choice
+        options:
+          - dev
+          - season-start
+          - both
+        default: dev
 
 concurrency:
   group: ml-evaluate
@@ -199,13 +207,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
-      # the baseline dataset is the plain build above; the candidate is the same
-      # universe with playoff and play-in appearances in the career-scoped history.
+      # the baseline dataset is the plain build above; the candidate takes its
+      # modelled rows from that file (--universe-from), so a backfill landing
+      # between the two builds cannot make them differ, and adds playoff and
+      # play-in appearances to the career-scoped history.
       - name: Postseason history bracket
         if: inputs.postseason_bracket && !cancelled()
+        env:
+          ORIGINS: ${{ inputs.postseason_origins }}
         run: |
-          python ml/build_dataset.py --source postgres --postseason-history --out ml/data/dataset_postseason.parquet
-          python ml/run_postseason_bracket.py --baseline ml/data/dataset.parquet --candidate ml/data/dataset_postseason.parquet --version "postseason-$(date -u +%Y-%m-%d)" --reports-dir ml/reports/challengers
+          python ml/build_dataset.py --source postgres --postseason-history --universe-from ml/data/dataset.parquet --out ml/data/dataset_postseason.parquet
+          python ml/run_postseason_bracket.py --baseline ml/data/dataset.parquet --candidate ml/data/dataset_postseason.parquet --origins "$ORIGINS" --version "postseason-$(date -u +%Y-%m-%d)" --reports-dir ml/reports/challengers
 
       - name: Upload postseason bracket reports
         if: always() && inputs.postseason_bracket
