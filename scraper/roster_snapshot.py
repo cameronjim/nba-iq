@@ -36,8 +36,8 @@ ROSTER_FETCH_TIMEOUT_SECONDS = 30
 def fetch_roster_snapshot(
     season: str, delay_seconds: float = ROSTER_SNAPSHOT_REQUEST_DELAY_SECONDS
 ) -> tuple[dict[str, str], list[str]]:
-    # a per-team failure is reported rather than raised: this path never closes
-    # a stint on absence, so a missing team costs coverage and cannot cost
+    # a per-team failure is reported rather than raised: a snapshot with a
+    # missing team closes nobody on absence, so it costs coverage, not
     # correctness.
     snapshot: dict[str, str] = {}
     failed: list[str] = []
@@ -205,14 +205,13 @@ def scrape_roster_snapshot(
         )
         logger.info("roster snapshot: %d row(s) -> %s", written_csv, snapshot_out)
 
-    # only the one-page web index makes absence evidence of being unrostered
-    complete = source == ROSTER_WEB_SOURCE and roster_snapshot_is_complete(
+    # absence is evidence of being unrostered only when every team was seen
+    complete = not failed and roster_snapshot_is_complete(
         snapshot, TEAM_ID_TO_ABBR.keys()
     )
-    if source == ROSTER_WEB_SOURCE and not complete:
+    if not complete:
         logger.warning(
-            "roster snapshot: nba.com players index is incomplete; "
-            "no absence closures written"
+            "roster snapshot: %s is incomplete; no absence closures written", source
         )
     open_stints = _open_stints(conn)
     changes = plan_roster_snapshot(

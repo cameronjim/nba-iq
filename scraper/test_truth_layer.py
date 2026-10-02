@@ -1075,6 +1075,47 @@ class TestScrapeRosterSnapshotAbsence:
         # assert
         assert writes == []
 
+    def _run_per_team(self, monkeypatch, snapshot, failed, open_stints):
+        recorded = []
+        monkeypatch.setattr(roster_snapshot, "_start_ingestion_run", lambda *a, **k: 1)
+        monkeypatch.setattr(
+            roster_snapshot, "_finish_ingestion_run",
+            lambda conn, run_id, status, rows, notes=None: recorded.append(notes),
+        )
+        monkeypatch.setattr(
+            roster_snapshot, "fetch_roster_snapshot", lambda season, delay: (snapshot, failed)
+        )
+        monkeypatch.setattr(roster_snapshot, "fetch_web_roster_snapshot", lambda: {})
+        conn = RosterConn(open_stints)
+        roster_snapshot.scrape_roster_snapshot(
+            conn, season=SEASON, snapshot_date=SNAPSHOT_DAY, stats_reachable=True,
+        )
+        return conn.cursor_.writes, recorded
+
+    def test_thirty_successful_team_pages_also_close_an_absent_player(self, monkeypatch):
+        # arrange
+        snapshot = _full_rosters(ALL_TEAM_IDS)
+        open_stints = [("202685", GSW, date(2024, 10, 22))]
+
+        # act
+        writes, notes = self._run_per_team(monkeypatch, snapshot, [], open_stints)
+
+        # assert
+        assert any(kind == "UPDATE" and params[1] == "202685" for kind, params in writes)
+        assert "1 closed for absence" in notes[0]
+
+    def test_a_failed_team_page_closes_nobody(self, monkeypatch):
+        # arrange: every team parsed but one page failed, so absence is ambiguous
+        snapshot = _full_rosters(ALL_TEAM_IDS)
+        open_stints = [("202685", GSW, date(2024, 10, 22))]
+
+        # act
+        writes, notes = self._run_per_team(monkeypatch, snapshot, ["GSW"], open_stints)
+
+        # assert
+        assert not any(kind == "UPDATE" for kind, _ in writes)
+        assert "0 closed for absence" in notes[0]
+
 
 class TestSeasonCli:
     def test_season_defaults_to_the_module_constant(self):
