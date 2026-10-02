@@ -257,6 +257,7 @@ INJURY_DISPLAY_LABELS = {
     "probable": "Probable",
     "suspended": "Suspended",
     "g_league": "G League",
+    "day_to_day": "Day-To-Day",
 }
 # a full-league feed that drops a player has cleared him; cbs writes its own
 # clearances and the official report is game-scoped.

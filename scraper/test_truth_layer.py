@@ -5586,7 +5586,7 @@ class TestPlanPlayerInjuryColumns:
 
     def test_a_passthrough_status_leaves_the_player_healthy(self):
         # arrange
-        reports = [_report("cbssports", "day_to_day", 1, reason="Wrist")]
+        reports = [_report("cbssports", "available", 1, reason="Wrist")]
 
         # act
         plan = injury_reconcile.plan_player_injury_columns(reports, {}, NOW_UTC)
