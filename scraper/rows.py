@@ -200,9 +200,19 @@ class Stint(NamedTuple):
     source: str
 
 
+def absence_closure(existing: Iterable[Stint]) -> date | None:
+    # only an absence closure leaves his latest stint closed with nothing open,
+    # so the rebuild must keep that date rather than reopen the stint.
+    stints = list(existing)
+    if not stints or any(s.valid_to is None for s in stints):
+        return None
+    return max(stints, key=lambda s: (s.valid_from, s.valid_to)).valid_to
+
+
 def derive_stints(
     appearances: Iterable[tuple[date, str, str]],
     snapshot_stints: Iterable[tuple[str, date, str]] = (),
+    closed_through: date | None = None,
 ) -> list[Stint]:
     # rebuilt from his whole history, so ingestion order cannot change the answer.
     segments: list[list] = []
@@ -243,20 +253,37 @@ def derive_stints(
                 valid_to=max(current.valid_from, observed_on - timedelta(days=1))
             )
         stints.append(Stint(team_id, observed_on, None, source))
+
+    if stints and stints[-1].valid_to is None and closed_through is not None:
+        # a game after the closure means he re-signed, so the closure is stale
+        evidence = max(stints[-1].valid_from, last_game or stints[-1].valid_from)
+        if closed_through >= evidence:
+            stints[-1] = stints[-1]._replace(valid_to=closed_through)
     return stints
+
+
+def roster_snapshot_is_complete(
+    snapshot: Mapping[str, str], team_ids: Collection[str], min_players: int = 13
+) -> bool:
+    counts: dict[str, int] = {}
+    for team_id in snapshot.values():
+        counts[team_id] = counts.get(team_id, 0) + 1
+    return bool(team_ids) and all(counts.get(t, 0) >= min_players for t in team_ids)
 
 
 def plan_roster_snapshot(
     snapshot: Mapping[str, str],
     open_stints: Mapping[str, tuple[str, date]],
     snapshot_date: date,
+    *,
+    complete: bool = False,
 ) -> list[dict]:
     # the old stint closes the day before the snapshot, not on his last game for
     # that team: we observed that he is on the new roster today and never
     # observed when he left the old one.
     #
-    # a player absent from every roster is NOT closed. Absence means unsigned or
-    # one team's fetch failed, and those are indistinguishable here.
+    # absence closes a stint only when the snapshot is complete; otherwise it
+    # cannot be told apart from one team's fetch failing.
     changes: list[dict] = []
     for player_id in sorted(snapshot):
         team_id = snapshot[player_id]
@@ -281,6 +308,18 @@ def plan_roster_snapshot(
                 close_valid_to=close_to,
             )
         changes.append(change)
+
+    if complete:
+        for player_id in sorted(set(open_stints) - set(snapshot)):
+            prev_team_id, prev_valid_from = open_stints[player_id]
+            changes.append({
+                "player_id": player_id,
+                "open_team_id": None,
+                "open_valid_from": None,
+                "close_team_id": prev_team_id,
+                "close_valid_from": prev_valid_from,
+                "close_valid_to": max(prev_valid_from, snapshot_date - timedelta(days=1)),
+            })
     return changes
 
 

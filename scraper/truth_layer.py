@@ -48,6 +48,7 @@ from parsing import season_end_date, season_start_date
 from rows import (
     BOX_DETAILS_SOURCE,
     Stint,
+    absence_closure,
     derive_stints,
     PLAYER_LOG_DATE_INDEX,
     TEAM_LOG_DATE_INDEX,
@@ -1385,7 +1386,9 @@ def _sync_player_team_stints(
                 (s.team_id, s.valid_from, s.source)
                 for s in current if s.source in STINT_SNAPSHOT_SOURCES
             ]
-            derived = derive_stints(appearances.get(player_id, []), snapshots)
+            derived = derive_stints(
+                appearances.get(player_id, []), snapshots, absence_closure(current)
+            )
             if set(derived) != current:
                 rewrites[player_id] = derived
 
