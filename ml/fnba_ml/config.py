@@ -644,6 +644,14 @@ ORIGINS: list[tuple[str, str, str]] = [
 # on this superset.
 DEV_ORIGINS: list[tuple[str, str, str]] = [*ORIGINS, LATE_SEASON_ORIGIN]
 
+# season-start questions only (MODEL.md 20.1), never in ORIGINS or DEV_ORIGINS.
+# the start is a regular-season opener and is clamped to the opener found in the
+# data at runtime, so a mistyped date cannot pull last season's games in.
+SEASON_START_ORIGINS: list[tuple[str, str, str]] = [
+    ("S1 valid=2024-10/11", "2024-10-22", "2024-11-30"),
+    ("S2 valid=2025-10/11", "2025-10-21", "2025-11-30"),
+]
+
 RANDOM_STATE = 17
 
 LGBM_PARAMS: dict[str, object] = {
