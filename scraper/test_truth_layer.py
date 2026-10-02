@@ -1,5 +1,7 @@
+import json
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 import requests
@@ -29,6 +31,7 @@ from config import (
     V2_INACTIVE_UNRELIABLE_FROM,
 )
 from database import DryRunCursor, is_write_statement
+from fetching import box_score_game_from_next_data
 from odds import map_event_to_nba_game, parse_event_odds, plan_odds_snapshot
 from props import map_prop_event, match_prop_player, parse_event_props
 from parsing import (
@@ -56,10 +59,12 @@ from rows import (
     TEAM_LOG_DATE_INDEX,
     active_dnp_status_rows,
     box_detail_rows_from_traditional,
+    box_detail_rows_from_web,
     build_player_game_log_row,
     build_team_game_log_row,
     derive_game_status_rows,
     game_log_fetch_from,
+    game_log_rows_from_web,
     ingested_schedule_rows,
     merge_dnp_reason,
     normalize_inactive_rows,
@@ -75,6 +80,8 @@ from rows import (
     split_rows_on_season_boundary,
     stint_is_newer_than_game_log,
     supplement_player_log_rows,
+    web_game_is_final,
+    web_inactive_rows,
 )
 from run_scraper import _parse_args, _run_phase
 from truth_layer import fetch_nba_web_schedule_rows
@@ -1883,6 +1890,353 @@ class TestBoxDetailsCli:
 
     def test_limit_defaults_to_unbounded(self):
         assert _parse_args(["--backfill-box-details"]).limit is None
+
+
+# a trimmed capture of www.nba.com/game/0022500001/box-score's __NEXT_DATA__:
+# three players per team (starter, bench, dnp) plus the real team totals.
+WEB_BOX_FIXTURE = Path(__file__).parent / "fixtures" / "nba_web_box_score_0022500001.json"
+WEB_GAME_ID = "0022500001"
+OKC = "1610612760"
+HOU = "1610612745"
+
+
+def _web_next_data():
+    return json.loads(WEB_BOX_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _web_game():
+    return box_score_game_from_next_data(_web_next_data(), WEB_GAME_ID)
+
+
+def _unplayed_web_game():
+    # what the page serves before tip-off: no players, a placeholder for totals.
+    game = _web_game()
+    game["gameStatus"] = 1
+    for side in ("homeTeam", "awayTeam"):
+        game[side]["players"] = []
+        game[side]["statistics"] = {"dummyKey": "dummyValue"}
+    return game
+
+
+class TestBoxScoreWebPage:
+    def test_the_game_object_is_read_from_page_props(self):
+        game = _web_game()
+
+        assert game["homeTeam"]["teamTricode"] == "OKC"
+        assert game["awayTeam"]["teamTricode"] == "HOU"
+
+    @pytest.mark.parametrize(
+        "next_data",
+        [{}, {"props": {"pageProps": {}}}, {"props": {"pageProps": {"game": {"gameId": WEB_GAME_ID}}}}],
+    )
+    def test_a_missing_game_object_fails_loudly(self, next_data):
+        with pytest.raises(ValueError, match="props.pageProps.game"):
+            box_score_game_from_next_data(next_data, WEB_GAME_ID)
+
+    def test_a_page_for_another_game_is_rejected(self):
+        with pytest.raises(ValueError, match="describes game"):
+            box_score_game_from_next_data(_web_next_data(), "0022500002")
+
+    def test_the_fetch_requests_the_game_box_score_page(self, monkeypatch):
+        seen = {}
+
+        def fake_page(label, url, params=None):
+            seen["url"] = url
+            return _web_next_data()
+
+        monkeypatch.setattr(fetching, "_fetch_nba_web_page", fake_page)
+
+        game = fetching.fetch_box_score_web(WEB_GAME_ID)
+
+        assert seen["url"] == "https://www.nba.com/game/0022500001/box-score"
+        assert game["gameId"] == WEB_GAME_ID
+
+    def test_only_status_3_is_final(self):
+        assert web_game_is_final(_web_game()) is True
+        assert web_game_is_final(_unplayed_web_game()) is False
+        assert web_game_is_final({"gameStatus": "x"}) is False
+
+
+class TestBoxDetailRowsFromWeb:
+    def _players(self, game=None):
+        players, _ = box_detail_rows_from_web(game or _web_game(), WEB_GAME_ID)
+        return {row["nba_player_id"]: row for row in players}
+
+    def test_every_listed_player_gets_a_row_with_his_team(self):
+        players = self._players()
+
+        assert len(players) == 6
+        assert players["1628983"]["team_id"] == OKC
+        assert players["1631095"]["team_id"] == HOU
+
+    def test_a_starter_is_the_player_with_a_position(self):
+        players = self._players()
+
+        assert players["1628983"]["started"] is True
+        assert players["1628983"]["position"] == "G"
+        assert players["1631119"]["started"] is False
+        assert players["1631119"]["position"] is None
+
+    def test_an_appearance_carries_minutes_and_the_rebound_split(self):
+        row = self._players()["1631095"]
+
+        assert row["minutes"] == round(41 + 45 / 60, 2)
+        assert (row["oreb"], row["dreb"], row["pf"]) == (3, 2, 4)
+        assert row["dnp_reason"] is None
+
+    @pytest.mark.parametrize(
+        ("player_id", "reason"),
+        [("1631172", "DNP - Coach's Decision"), ("1627827", "DND - Injury/Illness")],
+    )
+    def test_a_dnp_has_its_comment_and_no_minutes_or_stats(self, player_id, reason):
+        row = self._players()[player_id]
+
+        assert row["minutes"] is None
+        assert (row["oreb"], row["dreb"], row["pf"]) == (None, None, None)
+        assert row["started"] is False
+        assert row["dnp_reason"] == reason
+
+    def test_team_totals_carry_the_rebound_split_and_fouls(self):
+        _, teams = box_detail_rows_from_web(_web_game(), WEB_GAME_ID)
+
+        by_team = {row["team_id"]: row for row in teams}
+        assert by_team[HOU] == {
+            "team_id": HOU, "nba_game_id": WEB_GAME_ID, "oreb": 16, "dreb": 36, "pf": 26,
+        }
+        assert by_team[OKC]["oreb"] == 11
+
+    def test_the_web_rows_match_the_v3_rows_for_the_same_players(self):
+        web = self._players()
+        v3, _ = box_detail_rows_from_traditional(BOX_SCORE_V3, WEB_GAME_ID)
+
+        for row in v3:
+            if row["nba_player_id"] in web:
+                assert web[row["nba_player_id"]]["started"] == row["started"]
+                assert web[row["nba_player_id"]]["oreb"] == row["oreb"]
+
+    def test_an_unplayed_game_yields_nothing(self):
+        players, teams = box_detail_rows_from_web(_unplayed_web_game(), WEB_GAME_ID)
+
+        assert players == []
+        assert teams == []
+
+    @pytest.mark.parametrize(
+        ("minutes", "comment", "expected"),
+        [
+            ("34:12", "", 34.2),
+            ("PT34M12.00S", "", 34.2),
+            ("0:06", "", 0.1),
+            ("PT00M00.00S", "DNP - Coach's Decision", None),
+            ("", "DNP - Coach's Decision", None),
+            (None, "", None),
+        ],
+    )
+    def test_minutes_arrive_as_clock_or_iso_duration(self, minutes, comment, expected):
+        game = _web_game()
+        player = game["homeTeam"]["players"][0]
+        player["statistics"]["minutes"] = minutes
+        player["comment"] = comment
+
+        row = self._players(game)[str(player["personId"])]
+
+        assert row["minutes"] == expected
+
+    def test_the_active_dnp_rows_carry_the_web_source(self):
+        players, _ = box_detail_rows_from_web(_web_game(), WEB_GAME_ID)
+
+        rows = active_dnp_status_rows(players, set(), WEB_GAME_ID, source="nba_web_boxscore")
+
+        assert {row["nba_player_id"] for row in rows} == {"1631172", "1627827"}
+        assert {row["source"] for row in rows} == {"nba_web_boxscore"}
+        by_id = {row["nba_player_id"]: row for row in rows}
+        assert by_id["1627827"]["listed_inactive"] is None
+        assert by_id["1631172"]["listed_inactive"] is False
+
+    def test_the_inactive_list_is_read_per_team(self):
+        rows = normalize_inactive_rows(web_inactive_rows(_web_game()))
+
+        assert rows == [
+            {"nba_player_id": "1642850", "team_id": OKC},
+            {"nba_player_id": "1627832", "team_id": HOU},
+        ]
+
+
+class TestGameLogRowsFromWeb:
+    def _rows(self, game=None, season_type="Regular Season"):
+        return game_log_rows_from_web(
+            game or _web_game(), WEB_GAME_ID, "2025-26", season_type,
+            date(2025, 10, 21), run_id=7,
+        )
+
+    def test_only_appearances_get_a_player_row(self):
+        players, _ = self._rows()
+
+        assert sorted(row[0] for row in players) == ["1628983", "1631095", "1631106", "1631119"]
+
+    def test_rows_have_the_shape_the_log_builders_produce(self):
+        players, teams = self._rows()
+        built_player = build_player_game_log_row(PLAYER_GAME_LOG_ROW, "2025-26", 7)
+        built_team = build_team_game_log_row(TEAM_GAME_LOG_ROWS[0], "2025-26", 7)
+
+        assert {len(row) for row in players} == {len(built_player)}
+        assert {len(row) for row in teams} == {len(built_team)}
+        assert players[0][PLAYER_LOG_DATE_INDEX] == date(2025, 10, 21)
+        assert teams[0][TEAM_LOG_DATE_INDEX] == date(2025, 10, 21)
+
+    def test_a_player_row_maps_every_web_field(self):
+        players, _ = self._rows()
+
+        sga = next(row for row in players if row[0] == "1628983")
+        assert sga == (
+            "1628983", WEB_GAME_ID, "2025-26", "Regular Season", date(2025, 10, 21),
+            OKC, "OKC", HOU, True, True, round(47 + 13 / 60, 2),
+            35, 5, 5, 2, 2, 3, 12, 26, 1, 9, 10, 14, 3,
+            None, "nba_web_boxscore", 7,
+        )
+
+    def test_the_away_side_is_not_home_and_faces_the_home_team(self):
+        players, _ = self._rows()
+
+        bench = next(row for row in players if row[0] == "1631106")
+        assert (bench[5], bench[6], bench[7], bench[8], bench[9]) == (HOU, "HOU", OKC, False, False)
+
+    def test_team_rows_carry_the_totals(self):
+        _, teams = self._rows()
+
+        by_team = {row[0]: row for row in teams}
+        assert by_team[OKC] == (
+            OKC, WEB_GAME_ID, "2025-26", "Regular Season", date(2025, 10, 21),
+            "OKC", HOU, True, 290.0,
+            125, 38, 29, 12, 4, 11, 46, 104, 13, 52, 20, 25, 1,
+            "nba_web_boxscore", 7,
+        )
+        assert by_team[HOU][9] == 124
+        assert by_team[HOU][21] == -1
+
+    def test_the_season_type_is_the_callers(self):
+        players, teams = self._rows(season_type="Pre Season")
+
+        assert {row[3] for row in players + teams} == {"Pre Season"}
+
+    def test_an_unplayed_game_yields_nothing(self):
+        assert self._rows(_unplayed_web_game()) == ([], [])
+
+
+class TestBoxSourceResolution:
+    def test_auto_picks_web_when_the_probe_fails(self):
+        assert truth_layer.resolve_box_source("auto", probe=lambda: False) == "web"
+
+    def test_auto_picks_stats_when_the_probe_answers(self):
+        assert truth_layer.resolve_box_source("auto", probe=lambda: True) == "stats"
+
+    @pytest.mark.parametrize("source", ["web", "stats"])
+    def test_an_explicit_source_never_probes(self, source):
+        def probe():
+            raise AssertionError("probed")
+
+        assert truth_layer.resolve_box_source(source, probe=probe) == source
+
+    def test_auto_defaults_to_the_stats_probe(self, monkeypatch):
+        monkeypatch.setattr(truth_layer, "stats_nba_reachable", lambda: False)
+
+        assert truth_layer.resolve_box_source("auto") == "web"
+
+    def test_an_unknown_source_is_rejected(self):
+        with pytest.raises(ValueError):
+            truth_layer.resolve_box_source("espn")
+
+    def test_the_web_pages_pace_faster_than_stats(self):
+        assert truth_layer.box_delay_seconds("web") == 2.0
+        assert truth_layer.box_delay_seconds("stats") == 5.0
+
+    def test_the_web_source_feeds_the_box_detail_writes(self, monkeypatch):
+        monkeypatch.setattr(truth_layer, "fetch_box_score_web", lambda game_id: _web_game())
+        monkeypatch.setattr(
+            truth_layer, "fetch_box_score_traditional",
+            lambda game_id: pytest.fail("stats.nba.com was called"),
+        )
+
+        counts = truth_layer._apply_box_details(
+            DryRunCursor(FakeCursor()), WEB_GAME_ID, ["1628983"], source="web"
+        )
+
+        assert counts == {"players": 6, "teams": 2, "status": 6, "absent": 0, "active_dnp": 2}
+
+    def test_an_unfinished_web_game_is_not_applied(self, monkeypatch):
+        monkeypatch.setattr(truth_layer, "fetch_box_score_web", lambda game_id: _unplayed_web_game())
+
+        with pytest.raises(ValueError, match="final"):
+            truth_layer._apply_box_details(
+                DryRunCursor(FakeCursor()), WEB_GAME_ID, [], source="web"
+            )
+
+
+class TestApplyWebGame:
+    def test_one_page_fills_logs_status_and_details_in_a_dry_run(self, monkeypatch):
+        monkeypatch.setattr(truth_layer, "fetch_box_score_web", lambda game_id: _web_game())
+        inner = FakeCursor()
+        cur = DryRunCursor(inner)
+
+        counts = truth_layer._apply_web_game(
+            cur, WEB_GAME_ID, "2025-26", "Regular Season", date(2025, 10, 21), None
+        )
+
+        # 4 appearances plus 2 inactive-list entries are derived status rows;
+        # the 2 dressed dnps are on neither list, so they are active-dnp inserts.
+        assert counts == {
+            "player_logs": 4, "team_logs": 2, "status": 6, "details": 6, "active_dnp": 2,
+        }
+        assert all(not is_write_statement(sql) for sql in inner.statements)
+
+    def test_an_unfinished_game_is_left_for_the_next_run(self, monkeypatch):
+        monkeypatch.setattr(truth_layer, "fetch_box_score_web", lambda game_id: _unplayed_web_game())
+
+        with pytest.raises(ValueError, match="final"):
+            truth_layer._apply_web_game(
+                DryRunCursor(FakeCursor()), WEB_GAME_ID, "2025-26",
+                "Regular Season", date(2025, 10, 21), None,
+            )
+
+    def test_the_selection_skips_logged_and_postponed_games(self):
+        sql = " ".join(truth_layer.WEB_GAME_LOGS_NEEDED_SQL.split())
+
+        assert "NOT EXISTS (SELECT 1 FROM team_game_logs t" in sql
+        assert "s.postponed_status IS NULL OR s.postponed_status = 'N'" in sql
+        assert "ORDER BY s.game_date, s.nba_game_id" in sql
+
+
+class TestWebBackfillCli:
+    def test_source_defaults_to_auto(self):
+        assert _parse_args(["--backfill-game-logs"]).source == "auto"
+
+    def test_web_game_logs_parse_with_season_and_limit(self):
+        args = _parse_args(
+            ["--backfill-game-logs", "--source", "web", "--season", "2026-27", "--limit", "50"]
+        )
+
+        assert (args.backfill_game_logs, args.source, args.season, args.limit) == (
+            True, "web", "2026-27", 50,
+        )
+
+    def test_an_unknown_source_is_a_usage_error(self):
+        with pytest.raises(SystemExit):
+            _parse_args(["--backfill-box-details", "--source", "espn"])
+
+
+class TestBoxDetailsWorkflow:
+    WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "box_details_backfill.yml"
+
+    def test_the_workflow_reads_the_web_pages(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        assert "--source web" in text
+        assert "stats_nba_reachable" not in text and "unreachable" not in text
+
+    def test_the_workflow_can_run_either_mode_with_a_600_game_default(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        assert "--backfill-game-logs" in text and "--backfill-box-details" in text
+        assert 'default: "600"' in text
 
 
 # espn scoreboard shapes, trimmed to the fields the odds parser reads.

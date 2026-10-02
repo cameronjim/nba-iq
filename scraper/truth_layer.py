@@ -1,6 +1,6 @@
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -8,6 +8,10 @@ import psycopg2
 
 from config import (
     BACKFILL_REQUEST_DELAY_SECONDS,
+    BOX_SOURCE_AUTO,
+    BOX_SOURCE_STATS,
+    BOX_SOURCE_WEB,
+    BOX_SOURCES,
     GAME_STATUS_MAX_GAMES_PER_RUN,
     GAME_STATUS_RECENT_WINDOW_DAYS,
     NBA_WEB_PAGE_DELAY_SECONDS,
@@ -15,6 +19,8 @@ from config import (
     NBA_WEB_SCHEDULE_DAYS_BACK,
     SEASON,
     SEASON_TYPES_INGESTED,
+    WEB_BOX_SCORE_DELAY_SECONDS,
+    WEB_BOX_SCORE_SOURCE,
 )
 from database import (
     _batch_update,
@@ -31,6 +37,8 @@ from fetching import (
     _fetch_player_game_logs,
     _fetch_team_game_logs,
     fetch_box_score_traditional,
+    fetch_box_score_web,
+    stats_nba_reachable,
 )
 from parsing import season_end_date, season_start_date
 from rows import (
@@ -39,10 +47,14 @@ from rows import (
     TEAM_LOG_DATE_INDEX,
     active_dnp_status_rows,
     box_detail_rows_from_traditional,
+    box_detail_rows_from_web,
     build_player_game_log_row,
     build_team_game_log_row,
     derive_game_status_rows,
     game_log_fetch_from,
+    game_log_rows_from_web,
+    web_game_is_final,
+    web_inactive_rows,
     plan_stint_change,
     player_ids_absent_from_box,
     schedule_rows_from_league_schedule,
@@ -395,24 +407,75 @@ def _existing_status_keys(
     return {(pid, game_id) for pid in ids}
 
 
+def resolve_box_source(
+    requested: str, probe: Callable[[], bool] | None = None
+) -> str:
+    # auto spends one probe per run: stats.nba.com when it answers, else the
+    # nba.com box-score pages, which answer from ci and a throttled home ip.
+    if requested not in BOX_SOURCES:
+        raise ValueError(f"unknown box-score source {requested!r}")
+    if requested != BOX_SOURCE_AUTO:
+        return requested
+    if (probe or stats_nba_reachable)():
+        return BOX_SOURCE_STATS
+    logger.warning("box scores: stats.nba.com unreachable, using nba.com box-score pages")
+    return BOX_SOURCE_WEB
+
+
+def box_delay_seconds(source: str) -> float:
+    if source == BOX_SOURCE_WEB:
+        return WEB_BOX_SCORE_DELAY_SECONDS
+    return BACKFILL_REQUEST_DELAY_SECONDS
+
+
+def _fetch_box_detail_rows(
+    game_id: str, source: str
+) -> tuple[list[dict], list[dict], str]:
+    if source == BOX_SOURCE_WEB:
+        game = fetch_box_score_web(game_id)
+        if not web_game_is_final(game):
+            raise ValueError(f"{game_id}: nba.com does not report the game final")
+        player_rows, team_rows = box_detail_rows_from_web(game, game_id)
+        return player_rows, team_rows, WEB_BOX_SCORE_SOURCE
+    payload = fetch_box_score_traditional(game_id)
+    player_rows, team_rows = box_detail_rows_from_traditional(payload, game_id)
+    return player_rows, team_rows, BOX_DETAILS_SOURCE
+
+
 def _apply_box_details(
     cur: object,
     game_id: str,
     logged_player_ids: Sequence[str],
     run_id: int | None = None,
     pending_status_ids: Sequence[str] = (),
+    source: str = BOX_SOURCE_STATS,
 ) -> dict[str, int]:
     # raises on a fetch failure or an empty box score, so the caller can count
     # the game as failed and leave it unstamped for the next run.
-    payload = fetch_box_score_traditional(game_id)
-    player_rows, team_rows = box_detail_rows_from_traditional(payload, game_id)
+    player_rows, team_rows, details_source = _fetch_box_detail_rows(game_id, source)
+    return _write_box_details(
+        cur, game_id, player_rows, team_rows, logged_player_ids,
+        run_id, pending_status_ids, details_source,
+    )
+
+
+def _write_box_details(
+    cur: object,
+    game_id: str,
+    player_rows: Sequence[Mapping],
+    team_rows: Sequence[Mapping],
+    logged_player_ids: Sequence[str],
+    run_id: int | None,
+    pending_status_ids: Sequence[str],
+    details_source: str,
+) -> dict[str, int]:
     if not player_rows:
         raise ValueError(f"{game_id}: box score has no player rows")
 
     player_tuples = [
         (
             r["nba_player_id"], r["nba_game_id"], r["started"], r["position"],
-            r["oreb"], r["dreb"], r["pf"], r["dnp_reason"], BOX_DETAILS_SOURCE,
+            r["oreb"], r["dreb"], r["pf"], r["dnp_reason"], details_source,
         )
         for r in player_rows
     ]
@@ -425,7 +488,10 @@ def _apply_box_details(
     ]
     absent = player_ids_absent_from_box(logged_player_ids, player_rows)
     active_dnp = active_dnp_status_rows(
-        player_rows, _existing_status_keys(cur, game_id, pending_status_ids), game_id
+        player_rows,
+        _existing_status_keys(cur, game_id, pending_status_ids),
+        game_id,
+        source=details_source,
     )
     active_dnp_tuples = [
         (
@@ -451,7 +517,7 @@ def _apply_box_details(
         )
         cur.execute(
             BOX_DETAIL_ABSENT_STAMP_SQL,
-            (f"{BOX_DETAILS_SOURCE}:absent", game_id, absent),
+            (f"{details_source}:absent", game_id, absent),
         )
     return counts
 
@@ -461,7 +527,8 @@ def backfill_box_details(
     season: str,
     dry_run: bool = False,
     limit: int | None = None,
-    delay_seconds: float = BACKFILL_REQUEST_DELAY_SECONDS,
+    delay_seconds: float | None = None,
+    source: str = BOX_SOURCE_AUTO,
 ) -> int:
     # one request per game, oldest first. resumable: a game is selected only
     # while some player row still has details_fetched_at NULL, so a killed or
@@ -471,7 +538,12 @@ def backfill_box_details(
         logger.info("box details: nothing to do for %s", season)
         return 0
 
-    logger.info("box details: %d game(s) to fetch for %s", len(games), season)
+    source = resolve_box_source(source)
+    if delay_seconds is None:
+        delay_seconds = box_delay_seconds(source)
+    logger.info(
+        "box details: %d game(s) to fetch for %s from %s", len(games), season, source
+    )
     run_id = _start_ingestion_run(
         conn,
         "box_details_backfill",
@@ -486,7 +558,9 @@ def backfill_box_details(
     try:
         for index, (game_id, logged_ids) in enumerate(games):
             try:
-                counts = _apply_box_details(cur, game_id, logged_ids, run_id)
+                counts = _apply_box_details(
+                    cur, game_id, logged_ids, run_id, source=source
+                )
             except Exception as e:  # noqa: BLE001 - one game must not end the run
                 failed += 1
                 logger.warning("box details: %s failed (%s)", game_id, e)
@@ -513,7 +587,8 @@ def backfill_box_details(
     notes = (
         f"{len(games) - failed} game(s), {failed} failed; {totals['players']} player, "
         f"{totals['teams']} team, {totals['status']} status row(s); "
-        f"{totals['absent']} logged player(s) absent from v3; "
+        f"{totals['absent']} logged player(s) absent from the box score; "
+        f"source={source}; "
         f"active_dnp_rows={totals['active_dnp']}"
     )
     _finish_ingestion_run(
@@ -523,6 +598,159 @@ def backfill_box_details(
         "box details: %s%s", notes, " (dry run: nothing written)" if dry_run else ""
     )
     return len(games) - failed
+
+
+# a game with no team log that finished, or whose date has passed. postponed
+# games are excluded the way the validation report excludes them.
+WEB_GAME_LOGS_NEEDED_SQL = """
+SELECT s.nba_game_id, s.season_type, s.game_date
+  FROM nba_schedule s
+ WHERE s.season = %s
+   AND s.season_type = ANY(%s)
+   AND (s.postponed_status IS NULL OR s.postponed_status = 'N')
+   AND NOT EXISTS (SELECT 1
+                     FROM team_game_logs t
+                    WHERE t.nba_game_id = s.nba_game_id)
+   AND (s.game_status ILIKE 'final%%' OR s.game_date < %s)
+ ORDER BY s.game_date, s.nba_game_id
+"""
+
+
+def _games_needing_web_logs(
+    conn: psycopg2.extensions.connection,
+    season: str,
+    season_types: Sequence[str],
+    today: date,
+    limit: int | None,
+) -> list[tuple[str, str, date]]:
+    sql = WEB_GAME_LOGS_NEEDED_SQL
+    params: list[object] = [season, list(season_types), today]
+    if limit is not None:
+        sql += " LIMIT %s"
+        params.append(limit)
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, tuple(params))
+        return [
+            (str(game_id), str(season_type), game_date)
+            for game_id, season_type, game_date in cur.fetchall()
+        ]
+    finally:
+        cur.close()
+
+
+def _apply_web_game(
+    cur: object,
+    game_id: str,
+    season: str,
+    season_type: str,
+    game_date: date,
+    run_id: int | None,
+) -> dict[str, int]:
+    # one page fills the logs, the status rows and the box details, so a game
+    # stats.nba.com never served lands complete. raises so the caller can leave
+    # the game unlogged for the next run.
+    game = fetch_box_score_web(game_id)
+    if not web_game_is_final(game):
+        raise ValueError(f"{game_id}: nba.com does not report the game final")
+    player_logs, team_logs = game_log_rows_from_web(
+        game, game_id, season, season_type, game_date, run_id
+    )
+    if len(team_logs) != 2 or not player_logs:
+        raise ValueError(
+            f"{game_id}: page has {len(team_logs)} team line(s) and "
+            f"{len(player_logs)} player line(s)"
+        )
+    box_players, box_teams = box_detail_rows_from_web(game, game_id)
+    played = [row for row in box_players if row["minutes"] is not None]
+    status_rows = derive_game_status_rows(
+        game_id, played, web_inactive_rows(game), WEB_BOX_SCORE_SOURCE
+    )
+
+    counts = {
+        "player_logs": _batch_upsert(cur, PLAYER_GAME_LOG_UPSERT_SQL, player_logs),
+        "team_logs": _batch_upsert(cur, TEAM_GAME_LOG_UPSERT_SQL, team_logs),
+        "status": _upsert_game_status_rows(cur, status_rows, run_id),
+    }
+    box_counts = _write_box_details(
+        cur, game_id, box_players, box_teams,
+        [row[0] for row in player_logs], run_id,
+        [row["nba_player_id"] for row in status_rows], WEB_BOX_SCORE_SOURCE,
+    )
+    counts["details"] = box_counts["players"]
+    counts["active_dnp"] = box_counts["active_dnp"]
+    return counts
+
+
+def backfill_game_logs_from_web(
+    conn: psycopg2.extensions.connection,
+    season: str,
+    season_types: Sequence[str] = SEASON_TYPES_INGESTED,
+    dry_run: bool = False,
+    limit: int | None = None,
+    delay_seconds: float = WEB_BOX_SCORE_DELAY_SECONDS,
+    today: date | None = None,
+) -> int:
+    # one nba.com page per scheduled game the league-wide log never covered,
+    # oldest first. resumable: a game drops out once its team logs land.
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    games = _games_needing_web_logs(conn, season, season_types, today, limit)
+    if not games:
+        logger.info("web game logs: nothing to do for %s", season)
+        return 0
+
+    logger.info("web game logs: %d game(s) to fetch for %s", len(games), season)
+    run_id = _start_ingestion_run(
+        conn,
+        "game_logs_web_backfill",
+        watermark_from=games[0][2].isoformat(),
+        watermark_to=games[-1][2].isoformat(),
+        dry_run=dry_run,
+    )
+
+    totals = {"player_logs": 0, "team_logs": 0, "status": 0, "details": 0, "active_dnp": 0}
+    failed = 0
+    cur = maybe_write_cursor(conn.cursor(), dry_run)
+    try:
+        for index, (game_id, season_type, game_date) in enumerate(games):
+            try:
+                counts = _apply_web_game(cur, game_id, season, season_type, game_date, run_id)
+            except Exception as e:  # noqa: BLE001 - one game must not end the run
+                failed += 1
+                logger.warning("web game logs: %s failed (%s)", game_id, e)
+                time.sleep(delay_seconds * 2)
+                continue
+            for key, value in counts.items():
+                totals[key] += value
+
+            done = index + 1
+            if done % 25 == 0 or done == len(games):
+                logger.info(
+                    "web game logs: %d/%d games (%d failed, ~%.0f min left)",
+                    done, len(games), failed,
+                    (len(games) - done) * delay_seconds / 60,
+                )
+            if done < len(games):
+                time.sleep(delay_seconds)
+    finally:
+        cur.close()
+
+    processed = len(games) - failed
+    notes = (
+        f"{processed} game(s), {failed} failed; {totals['player_logs']} player and "
+        f"{totals['team_logs']} team log row(s), {totals['status']} status row(s), "
+        f"{totals['details']} detail row(s); active_dnp_rows={totals['active_dnp']}"
+    )
+    written = sum(totals.values())
+    _finish_ingestion_run(
+        conn, run_id, "succeeded" if failed == 0 else "partial", written, notes=notes
+    )
+    logger.info(
+        "web game logs: %s%s", notes, " (dry run: nothing written)" if dry_run else ""
+    )
+    if processed:
+        _sync_player_team_stints(conn, season, dry_run=dry_run)
+    return processed
 
 
 NBA_WEB_MAX_CONSECUTIVE_FAILURES = 3
@@ -782,6 +1010,7 @@ def scrape_game_status(
     limit: int | None = GAME_STATUS_MAX_GAMES_PER_RUN,
     delay_seconds: float = BACKFILL_REQUEST_DELAY_SECONDS,
     run_kind: str = "game_status_incremental",
+    box_source: str = BOX_SOURCE_AUTO,
 ) -> int:
     # one request per game, so the incremental path is bounded twice: to the
     # recent window and to a ceiling per run. A game is selected only if it has
@@ -795,6 +1024,7 @@ def scrape_game_status(
         return 0
 
     logger.info("truth layer: deriving status for %d game(s)", len(games))
+    box_source = resolve_box_source(box_source)
     run_id = _start_ingestion_run(
         conn,
         run_kind,
@@ -847,6 +1077,7 @@ def scrape_game_status(
                     [r["nba_player_id"] for r in played_by_game.get(game_id, [])],
                     run_id,
                     [r["nba_player_id"] for r in rows],
+                    source=box_source,
                 )
                 active_dnp += box_counts["active_dnp"]
                 written += box_counts["active_dnp"]

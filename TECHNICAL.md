@@ -17,6 +17,7 @@ conventions (style, testing, pre-commit checklist), see [AGENTS.md](AGENTS.md).
 | `nba.com` web pages (`/games?date=`, `/players`) | Schedule fallback and roster fallback for `player_team_stints` | Read from the `__NEXT_DATA__` JSON embedded in each page, with a desktop user agent. The players index gives every current team assignment in one request. |
 | `stats.nba.com` &rarr; `playergamelogs`, `leaguegamelog` | Per-game player and team box scores | One request each covers a whole season, or any date window within it, so the incremental sync costs two requests per run rather than one per game. |
 | `stats.nba.com` &rarr; `boxscoresummaryv3` (fallback `boxscoresummaryv2`) | Official per-game inactive lists, from the `InactivePlayers` result set | The only phase that costs a request **per game**, which is why the truth-layer backfill is slow and opt-in. `v3` is tried first because `nba_api` documents `v2` as having no data for games on or after 2025-04-10. |
+| `www.nba.com/game/<id>/box-score` pages | The resilient source for box details (`started`, `position`, `oreb`/`dreb`/`pf`, `dnp_reason`) and for whole player and team game logs, inactive lists included | One page per game, read from `props.pageProps.game` in the embedded `__NEXT_DATA__` JSON (each of `homeTeam`/`awayTeam` holds `players[]` with a nested `statistics` line, `inactives[]` and team `statistics`). Answers from GitHub Actions and from the home PC while `stats.nba.com` tarpits both, so `--source auto` falls back to it after one failed probe. Rows it writes carry source `nba_web_boxscore`. A game that is not final on the page (`gameStatus` 3) is skipped and retried next run. |
 
 ## Configuration
 
@@ -240,28 +241,50 @@ since it costs one request per game.
    `boxscoretraditionalv3` request per game, oldest first. A game is selected
    while any of its player rows has `details_fetched_at` NULL, so it resumes
    the same way; `--limit` bounds a slice (about 300 games per 30 minutes at
-   the 5s delay). The manual `Box Details Backfill` workflow runs that slice,
-   but exits immediately if `stats.nba.com` is unreachable from the runner.
-   The normal cron fills the same columns for newly completed games beside the
-   inactive-list fetch.
+   the 5s delay). `--source` picks where the box score comes from: `stats`
+   (`boxscoretraditionalv3`), `web` (the `www.nba.com` box-score page, 2s
+   delay, about 600 games per 35 minutes) or `auto` (the default), which
+   probes `stats.nba.com` once per run and uses `web` when the probe fails. The
+   manual `Box Details Backfill` workflow runs a `--source web` slice (default
+   600 games), so it works from Actions. The normal cron fills the same columns
+   for newly completed games beside the inactive-list fetch, with the same
+   source resolution.
+
+   Games whose league-wide log never arrived (preseason, postseason, or any
+   game played while `stats.nba.com` is down) fill from the same pages with
+   `--backfill-game-logs --source web`: every `nba_schedule` game of `--season`
+   with no `team_game_logs` rows whose status is final or whose date has
+   passed, oldest first, one page each, bounded by `--limit`. One page writes
+   the player and team logs, the status rows (appearances plus the page's
+   inactive list), the box details and the active-DNP rows, so the game is
+   complete and drops out of the selection. `--source auto` on
+   `--backfill-game-logs` runs the stats.nba.com season backfill when the probe
+   answers and this web pass otherwise. The workflow's `mode: game-logs` input
+   runs it from Actions.
 
    ```bash
    python run_scraper.py --backfill-box-details --season 2024-25 --limit 300
+   python run_scraper.py --backfill-box-details --source web --season 2024-25 --limit 600
+   python run_scraper.py --backfill-game-logs --source web --season 2026-27 --limit 600
    ```
 
    **Local backfills.** `scraper/run_local.ps1 -Task <task>` runs these from
    the home PC with the same pull, venv and log handling as the scrape
    (`-Task scrape` is the default). `-Task game-logs` runs
    `--backfill-game-logs`. `-Task box-details` loops
-   `--backfill-box-details --season <Season> --limit <Limit>` (`-Limit` default
-   300, `-MaxBatches` default 20, 60 seconds between batches) until a batch
-   reports `box_details_processed=0` or any batch exits non-zero; `-Season`
-   defaults to the scraper's current season. At the 5s delay a batch of 300
-   games takes about 30 minutes, and a regular season is 1,230 games, so a full
-   season is about 4 batches. It is resumable: rerun it and it continues from
-   the first game with unfetched details. `install_shortcut.ps1` creates an
-   "NBA IQ box-details backfill" shortcut for it. Playoff ingestion will extend
-   the same path.
+   `--backfill-box-details --source auto --season <Season> --limit <Limit>`, so
+   a home IP that `stats.nba.com` is throttling falls back to the `www.nba.com`
+   pages. `-Task game-logs-web` loops
+   `--backfill-game-logs --source web --season <Season> --limit <Limit>` the
+   same way, which is how preseason and postseason games land without
+   `stats.nba.com`. Both loop (`-Limit` default 300, `-MaxBatches` default 20,
+   60 seconds between batches) until a batch reports
+   `box_details_processed=0` or any batch exits non-zero; `-Season` defaults to
+   the scraper's current season. At the 5s stats delay a batch of 300 games
+   takes about 30 minutes; at the 2s web delay about 15. A regular season is
+   1,230 games. Both are resumable: rerun and they continue from the first
+   game still missing details or logs. `install_shortcut.ps1` creates an
+   "NBA IQ box-details backfill" shortcut for the first.
 
 3. **Validate.** Read-only, takes no locks, safe against prod mid-scrape:
 
