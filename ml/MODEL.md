@@ -2136,6 +2136,7 @@ could drift.
 ## 13. `prospective_2026_27_v1` (FROZEN)
 
 *Re-frozen as `prospective_2026_27_v2` on 2026-10-01; see section 17 for what moved.*
+*Re-frozen as `prospective_2026_27_v3` on 2026-10-02; see section 21 for what moved.*
 
 **Frozen 2026-08-17, 64 days before opening night. Append-only. Nothing in this
 section may be edited after 2026-10-20; before that date a change requires bumping to
@@ -4555,3 +4556,178 @@ slate, not a change to the artifact.
 grades run B's preseason rows as the `season_type=Pre Season` cohort (20.5). The test
 is whether minutes MAE on those rows, by tier, beats the model-only preseason runs
 published before this change, and whether the star and fringe gaps above close.
+
+## 21. The `prospective_2026_27_v3` re-freeze (2026-10-02)
+
+**Sections 13, 17, 18, 19 and 20 are not edited.** Section 13 is the `v1`
+pre-registration, 17 is the `v2` re-freeze, and 20 is the candidate record the two
+looks below were run against. This section is the 13.2 re-freeze that 20's preamble
+promised: it names what moved, what did not, and why. Everything in 13 and 17 that
+this section does not amend binds `v3` exactly as it bound `v2`.
+
+### 21.1 The verdict first
+
+**Two switches flip, one stays off.**
+
+- `config.EXPIRE_UNAVAILABLE_STATUSES` is now **False**. Out-class designations
+  (`out`, `suspended`, `g_league`) no longer expire at 72 hours; a clearance row or a
+  newer designation is what ends them.
+- `config.GAME_SCOPED_STATUS_RESOLUTION` is now **True**. Each scored row resolves per
+  (player, game), and an official report beats a disagreeing CBS one unless the CBS
+  report is more than `OFFICIAL_PRECEDENCE_HOURS = 6.0` newer.
+- `config.RATE_HISTORY_INCLUDES_POSTSEASON` **stays False**. Two pre-registered looks
+  (21.2) did not clear the bar, and the season-start look leaned the wrong way on the
+  rate-driven stats.
+
+**Why a re-freeze, and why now.** The two injury switches change the override rule,
+which is 13.2 item 5, and they change `prob_active` and every downstream expectation
+for the players they touch, which 13.2's last paragraph classes as a change to what
+is served. Either alone requires the bump. It lands on 2026-10-02, 18 days before
+opening night. As with `v2` (17.1), **no Regular Season slate has been scored under
+`v2` either**: run A only exists when its window holds a Regular Season game, the
+first is 2026-10-20, and every run published so far is a run B whose notes start
+`NOT PROSPECTIVE`. So `v3` is again a clean start, with no `v2` rows to splice or
+discard. The decision was made on 2026-10-02 by the project owner's delegate after
+both postseason looks had been read.
+
+### 21.2 The postseason history switch: two looks, retained and off
+
+**First look, the five mid-season `ORIGINS`** (ML Evaluate run 36956925799, prod;
+20.1). Every endpoint moved by under 0.2% and every gated CI spans zero:
+
+| Endpoint | Relative change (switch on vs off) | 95% CI |
+|---|---|---|
+| `minutes_mae` | -0.00% | [-0.24%, +0.09%] |
+| `uncond_pts_mae` | +0.04% | [-0.06%, +0.13%] |
+| `cond_pts_mae` | +0.01% | [-0.06%, +0.06%] |
+
+That is the null 20.1 predicted for December-onward origins: a 5-game halflife has
+forgotten the previous April by then.
+
+**Season-start look, `config.SEASON_START_ORIGINS`** (ML Evaluate run 36958920471;
+S1 Oct-Nov 2024 and S2 Oct-Nov 2025, pre-registered in 20.1). A positive number is
+an improvement with the switch on:
+
+| Endpoint | Relative change | 95% CI |
+|---|---|---|
+| `minutes_mae` | +0.60% | [-0.14%, +1.36%] |
+| `uncond_pts_mae` | -0.06% | spans zero |
+| `cond_pts_mae` | -0.08% | spans zero |
+
+Minutes by window: S1 (2024) 1.27% better, and 3.2% better over its first two weeks;
+S2 (2025) 0.08% worse. Nine rate-driven endpoints were slightly **worse** with CIs
+excluding zero: unconditional REB -0.29%, TOV -0.37%, FGA -0.30%, FTM -0.27%, FTA
+-0.29%, STL -0.17% and AST -0.15%; conditional AST -0.20% and FGA -0.41%. No gated
+endpoint reached the 1% bar with a CI excluding zero.
+
+**The reading.** Playoff per-minute rates are a different regime (shortened
+rotations, heavier starter minutes, one opponent for a whole series), and mixing them
+into the career rate history costs more on the rate-driven stats than it buys. The
+one positive signal, first-two-weeks minutes in S1, is one season, did not replicate
+in S2, and is not enough to serve on.
+
+**The switch is retained in code, off.** The ingestion, the `COMPETITION` column, the
+`build_features(postseason=...)` path, the scoring-tool scoping and the backend
+`BASELINE_INCLUDES_POSTSEASON` all stay, and
+`frozen.PROSPECTIVE_RATE_HISTORY_INCLUDES_POSTSEASON = False` pins the default, so it
+cannot be flipped during the season without turning `test_prospective_freeze.py` red.
+Postseason history may be re-proposed only as a **new candidate with a different
+construction**, for example a separate playoff-context feature (last postseason's
+minutes share or rate ratio as its own column, which a refit can weight or ignore)
+rather than playoff games mixed into the regular-season EWMA. Re-running this
+candidate on another origin set is not a new candidate; the one-look rule (20.1) has
+been spent on both sets.
+
+### 21.3 The injury switches, and what they change for a served number
+
+Both rules are as specified in 20.2 (a) and (b); this section records what flipping
+them does to an emitted number.
+
+**`EXPIRE_UNAVAILABLE_STATUSES = False`.** Under `v2` a long-term OUT with no new
+scrape for three days fell back to the history-only model, about 0.90 to play. Under
+`v3` it stays at `OUT_PROBABILITY = 0.02` until a `cleared` row (17.2 fix 1) or a
+newer designation replaces it, bounded only by the 7-day window of
+`LATEST_INJURY_STATUS_SQL`. `questionable`, `doubtful` and `probable`
+(`overrides.FAST_DECAY_STATUSES`) still expire at `REPORT_MAX_AGE_HOURS = 72.0`, and
+an expired questionable does not let an older out resurface. **Moves:** for a player
+whose newest report is an out-class designation more than 72 hours old, his
+`prob_active` and unconditional expectations, and, because the layer also runs on the
+base probabilities before the teammate sums (13.1), his teammates' expected-context
+features and `prob_active_model`.
+
+**`GAME_SCOPED_STATUS_RESOLUTION = True`.** Under `v2` an official OUT for tonight
+also zeroed the same player's game two days later in a multi-day window, and the
+newest report won whatever its source. Under `v3` a report for a different game is
+ignored for the row, a report for this game beats a general one, and within or across
+scopes a disagreeing CBS report must be more than 6 hours newer to beat an official
+one. **Moves:** on run A, tomorrow's half of the two-day window for any player with a
+game-scoped official report for today; on run B, most of its seven days; and on any
+slate where CBS and the official report disagree within 6 hours, the official
+designation is served where `v2` served the newer CBS one. The same teammate and
+unconditional carry-through applies.
+
+**The per-player view follows the same rule.** `overrides.latest_statuses` reads the
+expiry switch through `resolve_statuses`, so the horizon facts (`report_count`), the
+scenario layer's pivotal-player selection and the 20.3 rescore classes see the same
+non-expiring outs the override layer applies. The rescore gate therefore compares
+classes under the rule a run serves, which is what 20.3's "the same
+`overrides.latest_statuses` a run applies" requires.
+
+**Not re-measured, and why that is acceptable.** F10
+(`override_layer_brier_increment`) is the prospective measurement of the override
+layer and is unchanged; it now measures the `v3` rule. The 14.3 October replay gate
+reads no injury reports (`replay_gate.py` applies no override), so its verdict carries
+over. Tested in `test_overrides.py` (the mixed fixture pinned under the `v3` defaults
+and under the explicit `v2` switches, the verbatim pre-switch algorithm pinned against
+the `v2` switches, a four-day-old OUT applying by default and expiring under `v2`) and
+`test_serving_context.py` (a game-scoped OUT reaches only its game by default and
+every game under `v2`).
+
+### 21.4 What remains frozen
+
+Unchanged from 13.1 and 17.3, and asserted by `tests/test_prospective_freeze.py`:
+
+- **Artifact `20260818`**, byte for byte: all six pinned checksums.
+- **`FEATURE_COLS`**: 51 columns, digest `914cdc17…`.
+- **Champions, halflives, estimators, rate targets, coherence constraints.**
+- **The `StatusPolicy` constants** (0.02, 0.10, 0.6 / 0.60, 0.85 / 0.15),
+  `UNAVAILABLE_STATUSES`, `REPORT_MAX_AGE_HOURS = 72.0` and `PASSTHROUGH_STATUSES =
+  {available, day_to_day, cleared, unknown}`.
+- **Horizons and the serving horizon (`gameday`), the nine cohorts, the cold-start
+  window, the October gate, the three look dates and row minimums, and every row of
+  the falsification table.** The thresholds derive from retrospective block variance
+  (13.5), which neither switch touches.
+
+The frozen additions are four hand-copied literals in `frozen.py`, each asserted
+against the live module, and the two override switches and the precedence window also
+against the parameter defaults of `resolve_statuses`, `resolve_overrides` and
+`apply_status_overrides`, which is where serving reads them:
+
+```python
+PROSPECTIVE_EXPIRE_UNAVAILABLE_STATUSES = False
+PROSPECTIVE_GAME_SCOPED_STATUS_RESOLUTION = True
+PROSPECTIVE_OFFICIAL_PRECEDENCE_HOURS = 6.0
+PROSPECTIVE_RATE_HISTORY_INCLUDES_POSTSEASON = False
+```
+
+The bundle records `"frozen_at": "2026-10-02"` and `"refrozen_from":
+"prospective_2026_27_v2"`. The run label is `prospective_2026_27_v3`, written by
+`daily_run.py` from `PROSPECTIVE_RUN_NOTE_LABEL`. `scoring.PROSPECTIVE_PREFIX` is the
+bare `prospective_2026_27`, so a look report pools `v1`, `v2` and `v3` runs by
+prefix; since no Regular Season run carries any of the three labels yet, every run a
+look selects will be a `v3` run. `score_runs.py --look` defaults its window's start
+to the bundle's `frozen_at`, which is now 2026-10-02.
+
+### 21.5 What is deliberately outside the freeze
+
+- **The preseason minutes prior (20.6).** Serving only, on run B, which is NOT
+  PROSPECTIVE by construction and whose notes can never carry the label. Run A never
+  holds a preseason game and never gets the flag, so no frozen number moves and no
+  frozen literal pins it.
+- **The player-prop layer (20.4).** Priced and paper-traded in the backend,
+  downstream of the stored predictions; it writes no prediction row.
+- **The scoring tool (`fnba_ml/scoring.py`, `score_runs.py`).** It reads the store and
+  writes reports. A fix to it changes what a look computes, never what was served, and
+  13.8.6's markdown plus csv lets a look be recomputed with the corrected tool.
+- **The UI and the backend readers.** How a served number is displayed, explained or
+  ranked (section 19) is not the forecast.

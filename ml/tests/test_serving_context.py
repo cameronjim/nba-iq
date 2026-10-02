@@ -275,35 +275,8 @@ def _game_scoped_out_for_g1() -> pd.DataFrame:
     })
 
 
-def test_by_default_a_game_scoped_report_reaches_every_game_of_the_player():
+def test_by_default_a_game_scoped_report_reaches_only_its_game():
     # arrange
-    frame = _two_game_serving_frame()
-    base = _FakeBaseModel(
-        {"star": 0.93, "backup": 0.88, "other": 0.9}, pd.Timestamp("2026-03-01")
-    )
-
-    # act
-    _, audit = rebuild_context(
-        frame, base, _game_scoped_out_for_g1(), pd.Timestamp("2026-03-02T00:00:00")
-    )
-
-    # assert
-    assert audit["CONTEXT_OVERRIDDEN"].tolist() == [True, False, False] * 2
-
-
-def test_the_context_stage_passes_game_ids_to_game_scoped_resolution(monkeypatch):
-    # arrange
-    import functools
-
-    import predict
-    from fnba_ml import overrides
-
-    monkeypatch.setattr(
-        predict, "resolve_overrides",
-        functools.partial(
-            overrides.resolve_overrides, game_scoped=True, expire_unavailable=False
-        ),
-    )
     frame = _two_game_serving_frame()
     base = _FakeBaseModel(
         {"star": 0.93, "backup": 0.88, "other": 0.9}, pd.Timestamp("2026-03-01")
@@ -319,6 +292,36 @@ def test_the_context_stage_passes_game_ids_to_game_scoped_resolution(monkeypatch
     assert audit.loc[0, "P_CONTEXT"] == pytest.approx(0.02)
     assert audit.loc[3, "P_CONTEXT"] == pytest.approx(0.93)
     assert rebuilt.loc[1, "exp_vacated_minutes"] > rebuilt.loc[4, "exp_vacated_minutes"]
+
+
+def test_under_the_v2_switches_a_game_scoped_report_reaches_every_game(monkeypatch):
+    # arrange
+    import functools
+
+    import predict
+    from fnba_ml import overrides
+
+    monkeypatch.setattr(
+        predict, "resolve_overrides",
+        functools.partial(
+            overrides.resolve_overrides, game_scoped=False, expire_unavailable=True
+        ),
+    )
+    frame = _two_game_serving_frame()
+    base = _FakeBaseModel(
+        {"star": 0.93, "backup": 0.88, "other": 0.9}, pd.Timestamp("2026-03-01")
+    )
+
+    # act
+    rebuilt, audit = rebuild_context(
+        frame, base, _game_scoped_out_for_g1(), pd.Timestamp("2026-03-02T00:00:00")
+    )
+
+    # assert
+    assert audit["CONTEXT_OVERRIDDEN"].tolist() == [True, False, False] * 2
+    assert rebuilt.loc[1, "exp_vacated_minutes"] == pytest.approx(
+        rebuilt.loc[4, "exp_vacated_minutes"]
+    )
 
 
 def test_horizon_metadata_counts_players_when_reports_carry_game_and_source():

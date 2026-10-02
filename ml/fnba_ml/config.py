@@ -74,8 +74,8 @@ POSTSEASON_COMPETITIONS: tuple[str, ...] = ("playin", "playoffs")
 PRESEASON_SEASON_TYPE = "Pre Season"
 TRUTH_SEASON_TYPES: tuple[str, ...] = (PRESEASON_SEASON_TYPE, *HISTORY_SEASON_TYPES)
 
-# off until the v3 re-freeze: on, postseason appearances enter the career-scoped
-# rate history while season-to-date and availability columns stay regular only.
+# off, and frozen off in v3 (MODEL.md 21.2): on, postseason appearances enter the
+# career-scoped rate history while season-to-date and availability stay regular only.
 RATE_HISTORY_INCLUDES_POSTSEASON: bool = False
 
 # ---- feature windows ----
@@ -586,14 +586,14 @@ HORIZON_RUN_METADATA: tuple[str, ...] = (
 # the day before the game. used only for `first_deadline_passed`.
 INITIAL_REPORT_DEADLINE_HOUR: int = 17
 
-# injury-report resolution switches (MODEL.md 20.2). the defaults reproduce the
-# frozen v2 serving behaviour; the v3 re-freeze flips both.
+# injury-report resolution switches (MODEL.md 20.2), flipped by the v3 re-freeze
+# (MODEL.md 21.3); the other values reproduce the v2 serving behaviour.
 # True: the 72-hour expiry drops out/suspended/g_league too. False: only the
 # fast-decaying game designations (questionable, doubtful, probable) expire.
-EXPIRE_UNAVAILABLE_STATUSES: bool = True
+EXPIRE_UNAVAILABLE_STATUSES: bool = False
 # True: resolve per (player, game) with official-over-cbs precedence.
 # False: newest report per player regardless of game or source.
-GAME_SCOPED_STATUS_RESOLUTION: bool = False
+GAME_SCOPED_STATUS_RESOLUTION: bool = True
 
 
 def horizon_label(horizon: str) -> str:
