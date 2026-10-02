@@ -927,6 +927,40 @@ class TestShadowRun:
         assert code == 1
 
 
+class TestPreseasonPriorFlag:
+    def test_only_run_b_asks_for_the_preseason_prior(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        empty_models = tmp_path / "empty_models"
+        empty_models.mkdir()
+
+        # act
+        code, calls = _drive(tmp_path, monkeypatch, empty_models, [])
+
+        # assert
+        assert code == 0
+        run_a, run_b = calls
+        assert "--preseason-prior" not in run_a
+        assert _flag(run_b, "--preseason-prior") == "on"
+
+    def test_run_b_frame_carries_the_season_type_and_run_a_frame_does_not(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        empty_models = tmp_path / "empty_models"
+        empty_models.mkdir()
+
+        # act
+        _, calls = _drive(tmp_path, monkeypatch, empty_models, [])
+
+        # assert
+        run_a, run_b = calls
+        assert "SEASON_TYPE" not in pd.read_parquet(_flag(run_a, "--dataset")).columns
+        extended = pd.read_parquet(_flag(run_b, "--dataset"))
+        assert extended["SEASON_TYPE"].tolist() == ["Regular Season", "Regular Season"]
+
+
 def _statuses(**by_player: str) -> pd.DataFrame:
     """resolved designations, one row per player, as latest_statuses returns them."""
     return pd.DataFrame({

@@ -417,6 +417,19 @@ TIER_ORDER: tuple[str, ...] = (
     UNKNOWN_TIER,
 )
 
+# realized preseason minutes by regular-season tier, ML Evaluate run 36956136123
+# (2026-10-02, four seasons, 8,174 player-games); the model learned regular-season
+# rotations, so it overshoots stars by ~6 minutes and undershoots the fringe by ~8.
+PRESEASON_MINUTES_PRIOR: dict[str, float] = {
+    "star (>=30)": 21.65,
+    "starter (20-30)": 18.36,
+    "bench (10-20)": 15.66,
+    "fringe (<10)": 13.99,
+    UNKNOWN_TIER: 16.06,
+}
+# 1.0 replaces the model's preseason minutes with the tier prior; lower blends.
+PRESEASON_PRIOR_WEIGHT: float = 1.0
+
 # named rather than derived by subtraction: it is the base model's contract and
 # that model has to be provably free of teammate context.
 BASE_FEATURE_COLS: list[str] = (

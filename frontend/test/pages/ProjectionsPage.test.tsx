@@ -264,6 +264,11 @@ describe('ProjectionsPage, tonight', () => {
 
     // assert
     expect(screen.getAllByText('Preseason').length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByTitle(
+        'Preseason minutes use a tier prior from four seasons of preseason box scores; stars play about 22 minutes.',
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it('closes with the publish and injury times, and no model id', async () => {

@@ -49,6 +49,13 @@ from fnba_ml.config import (  # noqa: E402
     is_cold_start,
 )
 from fnba_ml.features import attach_expected_context  # noqa: E402
+from fnba_ml.preseason import (  # noqa: E402
+    PRESEASON_PRIOR_APPLIED,
+    PRESEASON_PRIOR_CHOICES,
+    PRESEASON_PRIOR_OFF,
+    PRESEASON_PRIOR_ON,
+    apply_preseason_minutes_prior,
+)
 from fnba_ml.prospective import SOURCE_PROSPECTIVE  # noqa: E402
 from fnba_ml.intervals import (  # noqa: E402
     QUANTILE_LEVELS,
@@ -144,11 +151,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--coherence", choices=COHERENCE_VARIANTS, default=COHERENCE_NONE,
                         help="serving-time coherence correction: team minutes to 240, "
                              "the points identity, both, or none (frozen serving)")
+    parser.add_argument("--preseason-prior", choices=PRESEASON_PRIOR_CHOICES,
+                        default=PRESEASON_PRIOR_OFF,
+                        help="replace Pre Season conditional minutes with the tier prior "
+                             "(MODEL.md 20.6); regular-season rows are untouched")
     parser.add_argument("--scenarios", action="store_true",
                         help="score team-games with a questionable or doubtful star "
                              "once per play/sit world and mix the outputs (off by "
                              "default); writes a <out>_scenarios.parquet audit")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # the scenario rescore calls build_predictions again and would drop the prior.
+    if args.scenarios and args.preseason_prior == PRESEASON_PRIOR_ON:
+        parser.error("--scenarios cannot be combined with --preseason-prior on")
+    return args
 
 
 def artifact_feature_set(metadata: dict) -> str:
@@ -476,9 +491,13 @@ def forecast_cutoff(run_at: pd.Timestamp, information_as_of: pd.Timestamp) -> pd
 
 
 def run_notes(
-    cold_rows: int, n_rows: int, notes: str | None, coherence: str = COHERENCE_NONE
+    cold_rows: int,
+    n_rows: int,
+    notes: str | None,
+    coherence: str = COHERENCE_NONE,
+    preseason_prior: str = PRESEASON_PRIOR_OFF,
 ) -> str:
-    """the run-level notes: cold-start count, user text, then the coherence choice.
+    """the run-level notes: cold-start count, user text, coherence, preseason prior.
 
     the token is written only for a non-default choice, so the frozen serving run's
     note text is byte-identical to what section 13 pinned.
@@ -488,7 +507,15 @@ def run_notes(
         f"(GAME_DATE <= {PROSPECTIVE_COLD_START_THROUGH})",
         notes,
         f"coherence={coherence}" if coherence != COHERENCE_NONE else None,
+        f"preseason_prior={preseason_prior}"
+        if preseason_prior != PRESEASON_PRIOR_OFF else None,
     ]))
+
+
+def preseason_adjusted_rows(predictions: pd.DataFrame) -> int:
+    if PRESEASON_PRIOR_APPLIED not in predictions.columns:
+        return 0
+    return int(predictions[PRESEASON_PRIOR_APPLIED].sum())
 
 
 def universe_source(features: pd.DataFrame, metadata: dict) -> str:
@@ -509,6 +536,7 @@ def write_run(
     history_through_date: date | None = None,
     coherence: str = COHERENCE_NONE,
     trigger: str = TRIGGER_SCHEDULE,
+    preseason_prior: str = PRESEASON_PRIOR_OFF,
 ) -> tuple[int, int]:
     """build the rows, insert them in one transaction, link the run back."""
     rows = build_prediction_rows(predictions, TARGETS, QUANTILE_LEVELS)
@@ -563,6 +591,8 @@ def write_run(
             "status_overrides": overridden,
             "status_override_provenance": override_provenance_counts(predictions),
             "coherence": coherence,
+            "preseason_prior": preseason_prior,
+            "preseason_prior_rows": preseason_adjusted_rows(predictions),
             "override_policy": DEFAULT_POLICY.as_dict() if overridden else None,
         },
     )
@@ -621,6 +651,10 @@ def main(argv: list[str] | None = None) -> int:
             f"{pd.Timestamp(model.cutoff).date()}, or retrain."
         ) from exc
 
+    # before the overrides, so their unconditional recompute reads the prior's minutes.
+    if args.preseason_prior == PRESEASON_PRIOR_ON:
+        predictions = apply_preseason_minutes_prior(predictions, upcoming)
+
     # AFTER scoring, BEFORE rows are built. the layer needs the model's number to
     # blend with, and the row builder needs the final one. This is the SECOND
     # application of the same policy in one run: the first corrected the
@@ -662,7 +696,9 @@ def main(argv: list[str] | None = None) -> int:
     # entirely outside the cold-start window" is a fact a look report needs to be
     # able to read, and an absent note cannot say it.
     cold_rows = int(predictions[PROSPECTIVE_COLD_START_FLAG].sum())
-    notes = run_notes(cold_rows, len(predictions), notes, args.coherence)
+    notes = run_notes(
+        cold_rows, len(predictions), notes, args.coherence, args.preseason_prior
+    )
 
     if args.write_db and source == BIASED_UNIVERSE:
         if not args.allow_biased_universe:
@@ -702,6 +738,7 @@ def main(argv: list[str] | None = None) -> int:
             history_through_date=run_history_through,
             coherence=args.coherence,
             trigger=args.trigger,
+            preseason_prior=args.preseason_prior,
         )
 
     summary = override_summary(predictions)
@@ -719,6 +756,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {key:22s} {value}")
     print(f"universe  : {source}")
     print(f"coherence : {args.coherence}")
+    print(f"preseason : prior {args.preseason_prior}, "
+          f"{preseason_adjusted_rows(predictions):,} rows adjusted")
     if context_audit is None:
         print(f"context p : none (feature_set {artifact_feature_set(metadata)} has no "
               f"teammate context)")
