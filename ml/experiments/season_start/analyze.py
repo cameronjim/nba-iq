@@ -165,7 +165,7 @@ def season_window(
 
 def season_openers(frame: pd.DataFrame) -> pd.Series:
     """the first regular-season game date of each season."""
-    return pd.to_datetime(frame["GAME_DATE"]).groupby(frame["SEASON"]).min().sort_index()
+    return ns_dates(frame["GAME_DATE"]).groupby(frame["SEASON"]).min().sort_index()
 
 
 def prior_season_values(frame: pd.DataFrame) -> pd.DataFrame:
@@ -329,10 +329,15 @@ def input_profile(frame: pd.DataFrame, columns: tuple[str, ...] = PROFILE_COLS) 
     return pd.DataFrame(rows, columns=[WINDOW, "column", "median", "mean", "null_share"])
 
 
+def ns_dates(values: pd.Series) -> pd.Series:
+    """dates at one fixed resolution, since pandas refuses to merge mixed ones."""
+    return pd.to_datetime(values, errors="coerce").astype("datetime64[ns]")
+
+
 def usual_minutes_asof(history: pd.DataFrame, query: pd.DataFrame) -> pd.Series:
     """the mean of each player's last 10 regular-season appearances strictly before the date."""
     app = history.loc[history["PLAYED"] == 1, ["PLAYER_ID", "GAME_DATE", MINUTES_TARGET]].copy()
-    app["GAME_DATE"] = pd.to_datetime(app["GAME_DATE"])
+    app["GAME_DATE"] = ns_dates(app["GAME_DATE"])
     app = app.sort_values(["PLAYER_ID", "GAME_DATE"])
     app["usual"] = app.groupby("PLAYER_ID")[MINUTES_TARGET].transform(
         lambda s: s.rolling(10, min_periods=1).mean()
@@ -340,7 +345,7 @@ def usual_minutes_asof(history: pd.DataFrame, query: pd.DataFrame) -> pd.Series:
     app["PLAYER_ID"] = app["PLAYER_ID"].astype(str)
     q = query[["PLAYER_ID", "GAME_DATE"]].copy()
     q["PLAYER_ID"] = q["PLAYER_ID"].astype(str)
-    q["GAME_DATE"] = pd.to_datetime(q["GAME_DATE"])
+    q["GAME_DATE"] = ns_dates(q["GAME_DATE"])
     q["_row"] = np.arange(len(q))
     merged = pd.merge_asof(
         q.sort_values("GAME_DATE"),
@@ -535,7 +540,7 @@ def load_preseason_logs() -> tuple[pd.DataFrame | None, str]:
     if frame.empty:
         return None, "player_game_logs holds no rows with season_type 'Pre Season'"
     frame["PLAYER_ID"] = frame["PLAYER_ID"].astype(str)
-    frame["GAME_DATE"] = pd.to_datetime(frame["GAME_DATE"])
+    frame["GAME_DATE"] = ns_dates(frame["GAME_DATE"])
     frame[MINUTES_TARGET] = pd.to_numeric(frame[MINUTES_TARGET], errors="coerce").astype(float)
     return frame, f"{len(frame):,} Pre Season rows across {frame['SEASON'].nunique()} season(s)"
 
