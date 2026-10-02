@@ -54,6 +54,10 @@ on:
         description: "Season-start minutes experiment (ml/experiments/season_start)"
         type: boolean
         default: false
+      postseason_bracket:
+        description: "Build the switch-on dataset (--postseason-history) and run run_postseason_bracket.py against the baseline build (MODEL.md 20.1)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ml-evaluate
@@ -191,6 +195,23 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ml-challengers-${{ inputs.target }}-${{ github.run_id }}
+          path: ml/reports/challengers/**
+          if-no-files-found: warn
+          retention-days: 90
+
+      # the baseline dataset is the plain build above; the candidate is the same
+      # universe with playoff and play-in appearances in the career-scoped history.
+      - name: Postseason history bracket
+        if: inputs.postseason_bracket && !cancelled()
+        run: |
+          python ml/build_dataset.py --source postgres --postseason-history --out ml/data/dataset_postseason.parquet
+          python ml/run_postseason_bracket.py --baseline ml/data/dataset.parquet --candidate ml/data/dataset_postseason.parquet --version "postseason-$(date -u +%Y-%m-%d)" --reports-dir ml/reports/challengers
+
+      - name: Upload postseason bracket reports
+        if: always() && inputs.postseason_bracket
+        uses: actions/upload-artifact@v4
+        with:
+          name: ml-postseason-bracket-${{ inputs.target }}-${{ github.run_id }}
           path: ml/reports/challengers/**
           if-no-files-found: warn
           retention-days: 90
