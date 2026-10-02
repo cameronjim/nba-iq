@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
@@ -176,20 +177,106 @@ def test_cohort_definitions_have_not_drifted() -> None:
 
 
 def test_protocol_version_string() -> None:
-    assert config.PROSPECTIVE_PROTOCOL_VERSION == "prospective_2026_27_v2"
-    assert config.PROSPECTIVE_RUN_NOTE_LABEL == "prospective_2026_27_v2"
+    assert config.PROSPECTIVE_PROTOCOL_VERSION == "prospective_2026_27_v3"
+    assert config.PROSPECTIVE_RUN_NOTE_LABEL == "prospective_2026_27_v3"
     assert config.PROSPECTIVE_2026_27["protocol_version"] == (
         config.PROSPECTIVE_PROTOCOL_VERSION
     )
 
 
-def test_v2_records_what_it_was_refrozen_from() -> None:
+def test_v3_records_what_it_was_refrozen_from() -> None:
+    # arrange
     bundle = config.PROSPECTIVE_2026_27
-    assert config.PROSPECTIVE_PROTOCOL_VERSION.endswith("_v2")
-    assert bundle["refrozen_from"] == "prospective_2026_27_v1"
-    assert bundle["frozen_at"] == "2026-10-01"
+
+    # act
+    version = config.PROSPECTIVE_PROTOCOL_VERSION
+
+    # assert
+    assert version.endswith("_v3")
+    assert bundle["refrozen_from"] == "prospective_2026_27_v2"
+    assert bundle["frozen_at"] == "2026-10-02"
     # the re-freeze must land before opening night, or it is a mid-season change
     assert bundle["frozen_at"] < "2026-10-20"
+
+
+def test_the_scorer_pools_every_refreeze_by_the_bare_prefix() -> None:
+    # arrange
+    from fnba_ml import scoring
+
+    # act
+    prefix = scoring.PROSPECTIVE_PREFIX
+
+    # assert
+    assert prefix == "prospective_2026_27"
+    for version in ("v1", "v2", "v3"):
+        assert prefix in f"prospective_2026_27_{version}; channel=production"
+
+
+def test_expire_unavailable_switch_has_not_drifted() -> None:
+    # arrange
+    frozen_value = frozen.PROSPECTIVE_EXPIRE_UNAVAILABLE_STATUSES
+
+    # act
+    served = [
+        inspect.signature(fn).parameters["expire_unavailable"].default
+        for fn in (
+            overrides.resolve_statuses,
+            overrides.resolve_overrides,
+            overrides.apply_status_overrides,
+        )
+    ]
+
+    # assert
+    assert frozen_value is False
+    assert config.EXPIRE_UNAVAILABLE_STATUSES is frozen_value
+    assert served == [frozen_value] * 3
+
+
+def test_game_scoped_resolution_switch_has_not_drifted() -> None:
+    # arrange
+    frozen_value = frozen.PROSPECTIVE_GAME_SCOPED_STATUS_RESOLUTION
+
+    # act
+    served = [
+        inspect.signature(fn).parameters["game_scoped"].default
+        for fn in (
+            overrides.resolve_statuses,
+            overrides.resolve_overrides,
+            overrides.apply_status_overrides,
+        )
+    ]
+
+    # assert
+    assert frozen_value is True
+    assert config.GAME_SCOPED_STATUS_RESOLUTION is frozen_value
+    assert served == [frozen_value] * 3
+
+
+def test_official_precedence_window_has_not_drifted() -> None:
+    # arrange
+    frozen_value = frozen.PROSPECTIVE_OFFICIAL_PRECEDENCE_HOURS
+
+    # act
+    served = inspect.signature(overrides.resolve_statuses).parameters[
+        "precedence_hours"
+    ].default
+
+    # assert
+    assert frozen_value == 6.0
+    assert overrides.OFFICIAL_PRECEDENCE_HOURS == frozen_value
+    assert served == frozen_value
+
+
+def test_postseason_history_switch_stays_off() -> None:
+    # arrange
+    frozen_value = frozen.PROSPECTIVE_RATE_HISTORY_INCLUDES_POSTSEASON
+
+    # act
+    live = config.RATE_HISTORY_INCLUDES_POSTSEASON
+
+    # assert
+    assert frozen_value is False
+    assert live is frozen_value
 
 
 def test_look_dates_are_what_section_13_says() -> None:
@@ -323,7 +410,7 @@ def test_block_standard_deviations_are_present_where_a_threshold_was_derived() -
 
 def test_bundle_is_json_serialisable() -> None:
     text = json.dumps(config.PROSPECTIVE_2026_27, sort_keys=True, default=list)
-    assert json.loads(text)["protocol_version"] == "prospective_2026_27_v2"
+    assert json.loads(text)["protocol_version"] == "prospective_2026_27_v3"
 
 
 def test_bundle_agrees_with_its_components() -> None:
@@ -341,12 +428,25 @@ def test_bundle_agrees_with_its_components() -> None:
     assert bundle["artifact_dir"] == "models/20260818"
     assert bundle["report_max_age_hours"] == frozen.PROSPECTIVE_REPORT_MAX_AGE_HOURS
     assert bundle["passthrough_statuses"] == frozen.PROSPECTIVE_PASSTHROUGH_STATUSES
+    assert bundle["expire_unavailable_statuses"] is (
+        frozen.PROSPECTIVE_EXPIRE_UNAVAILABLE_STATUSES
+    )
+    assert bundle["game_scoped_status_resolution"] is (
+        frozen.PROSPECTIVE_GAME_SCOPED_STATUS_RESOLUTION
+    )
+    assert bundle["official_precedence_hours"] == (
+        frozen.PROSPECTIVE_OFFICIAL_PRECEDENCE_HOURS
+    )
+    assert bundle["rate_history_includes_postseason"] is (
+        frozen.PROSPECTIVE_RATE_HISTORY_INCLUDES_POSTSEASON
+    )
 
 
 def test_model_md_section_13_exists_and_declares_the_same_protocol() -> None:
     text = (ML_ROOT / "MODEL.md").read_text(encoding="utf-8")
     assert "## 13. `prospective_2026_27_v1` (FROZEN)" in text
     assert "## 17. Phase 0 correctness and the `prospective_2026_27_v2` re-freeze" in text
+    assert "## 21. The `prospective_2026_27_v3` re-freeze (2026-10-02)" in text
     assert config.PROSPECTIVE_PROTOCOL_VERSION in text
     assert config.PROSPECTIVE_MODEL_VERSION in text
     assert config.PROSPECTIVE_COLD_START_FLAG in text

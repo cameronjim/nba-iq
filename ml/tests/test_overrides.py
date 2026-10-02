@@ -248,14 +248,26 @@ def test_without_a_boundary_every_report_is_admissible():
     assert applied(out, "2544")[P_PLAY] == pytest.approx(OUT_PROBABILITY)
 
 
-def test_a_four_day_old_out_report_has_expired():
+def test_a_four_day_old_out_report_expired_under_the_v2_switches():
     report = statuses([("2544", "out", "2026-02-25 18:00")])
 
-    out = apply_status_overrides(predictions([0.93]), report, DEFAULT_POLICY, AS_OF)
+    out = apply_status_overrides(
+        predictions([0.93]), report, DEFAULT_POLICY, AS_OF,
+        expire_unavailable=True, game_scoped=False,
+    )
 
     assert REPORT_MAX_AGE_HOURS == 72.0
     assert applied(out, "2544")[P_PLAY] == pytest.approx(0.93)
     assert pd.isna(applied(out, "2544")[OVERRIDE_REASON])
+
+
+def test_a_four_day_old_out_report_still_applies_by_default():
+    report = statuses([("2544", "out", "2026-02-25 18:00")])
+
+    out = apply_status_overrides(predictions([0.93]), report, DEFAULT_POLICY, AS_OF)
+
+    assert applied(out, "2544")[P_PLAY] == pytest.approx(OUT_PROBABILITY)
+    assert applied(out, "2544")[OVERRIDE_REASON] == reason_for("out")
 
 
 def test_a_one_day_old_out_report_still_applies():
@@ -402,6 +414,7 @@ GAME_B = "0022500124"
 OFFICIAL = "nba_official"
 CBS = "cbssports"
 SWITCHES_ON = {"expire_unavailable": False, "game_scoped": True}
+V2_SWITCHES = {"expire_unavailable": True, "game_scoped": False}
 
 
 def scoped_statuses(rows: list[tuple[str, str, str, str | None, str]]) -> pd.DataFrame:
@@ -461,19 +474,19 @@ PIN_REPORTS = [
 ]
 
 
-def test_the_switch_defaults_are_the_frozen_behaviour():
+def test_the_switch_defaults_are_the_v3_behaviour():
     # act + assert
-    assert config.EXPIRE_UNAVAILABLE_STATUSES is True
-    assert config.GAME_SCOPED_STATUS_RESOLUTION is False
+    assert config.EXPIRE_UNAVAILABLE_STATUSES is False
+    assert config.GAME_SCOPED_STATUS_RESOLUTION is True
     assert OFFICIAL_PRECEDENCE_HOURS == 6.0
 
 
-def test_default_resolution_matches_the_pre_switch_algorithm():
+def test_the_v2_switches_match_the_pre_switch_algorithm():
     # arrange
     report = scoped_statuses(PIN_REPORTS)
 
     # act
-    latest = latest_statuses(report, AS_OF)
+    latest = resolve_statuses(report, AS_OF, None, REPORT_MAX_AGE_HOURS, **V2_SWITCHES)
     expected = pre_switch_latest_statuses(report, AS_OF, REPORT_MAX_AGE_HOURS)
 
     # assert
@@ -492,6 +505,26 @@ def test_default_overrides_are_pinned_on_a_mixed_fixture():
 
     # assert
     assert out[P_PLAY].tolist() == pytest.approx(
+        [0.6 * 0.93 + 0.4 * 0.60, OUT_PROBABILITY, DOUBTFUL_PROBABILITY, 0.60, 0.50]
+    )
+    assert out[OVERRIDE_REASON].tolist() == [
+        "status_questionable", "status_out", "status_doubtful", None, None,
+    ]
+    assert out[STATUS_SCOPE].tolist() == ["general", "general", "game", None, None]
+    assert out[STATUS_SOURCE].tolist() == [CBS, CBS, OFFICIAL, None, None]
+
+
+def test_v2_switch_overrides_are_pinned_on_a_mixed_fixture():
+    # arrange
+    frame = predictions([0.93, 0.80, 0.70, 0.60, 0.50],
+                        player_ids=["2544", "2545", "2546", "2547", "2548"])
+    report = scoped_statuses(PIN_REPORTS)
+
+    # act
+    out = apply_status_overrides(frame, report, DEFAULT_POLICY, AS_OF, **V2_SWITCHES)
+
+    # assert
+    assert out[P_PLAY].tolist() == pytest.approx(
         [OUT_PROBABILITY, 0.80, 0.85 * 0.70 + 0.15, 0.60, 0.50]
     )
     assert out[OVERRIDE_REASON].tolist() == [
@@ -506,7 +539,9 @@ def test_switches_off_ignore_the_game_a_report_is_for():
     report = scoped_statuses([("2544", "out", "2026-03-01 12:00", GAME_A, OFFICIAL)])
 
     # act
-    out = apply_status_overrides(two_game_predictions(), report, DEFAULT_POLICY, AS_OF)
+    out = apply_status_overrides(
+        two_game_predictions(), report, DEFAULT_POLICY, AS_OF, **V2_SWITCHES
+    )
 
     # assert
     assert out[P_PLAY].tolist() == pytest.approx([OUT_PROBABILITY, OUT_PROBABILITY])

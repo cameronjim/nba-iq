@@ -246,7 +246,7 @@ selects which games are scored; `predicted_at` is when the run was generated.
 
 ### Challengers and serving options (all off by default)
 
-`prospective_2026_27_v2` serves none of these, and `daily_run.py` passes none of
+`prospective_2026_27_v3` serves none of these, and `daily_run.py` passes none of
 them except the v1 shadow, whose run is `channel = 'shadow'` and never read by the
 app. Each was pre-registered before any result existed and gets one look on real
 data; none has one yet. Promoting any of them changes an emitted number and is a
@@ -608,10 +608,13 @@ questions were still chosen after the era was visible. The 2026-27 season is the
 first genuinely untouched evaluation this system will get, and it counts only if
 the protocol was fixed before opening night.
 
-**MODEL.md section 13, re-frozen as `prospective_2026_27_v2` in section 17, is that
-pre-registration**; v2 exists because the Phase 0 fixes (stale injury reports, future
-back-to-backs) change emitted numbers, and since no Regular Season slate was ever
-scored under v1 the re-freeze is a clean start. It holds the pinned artifact and
+**MODEL.md section 13, re-frozen as `prospective_2026_27_v2` in section 17 and as
+`prospective_2026_27_v3` in section 21, is that pre-registration**; v2 exists because
+the Phase 0 fixes (stale injury reports, future back-to-backs) change emitted numbers,
+and v3 because the injury-report switches (out-class designations no longer expire,
+per-game resolution with official-over-CBS precedence) change the override rule,
+while the postseason rate-history switch stays off after two looks. No Regular Season
+slate was scored under v1 or v2, so each re-freeze is a clean start. It holds the pinned artifact and
 its checksums, five primary endpoints, nine frozen cohorts, a
 three-rung comparison ladder (shifted appearance rate / per-stat frozen baselines /
 a `v1` no-teammate shadow run), a ten-row falsification table with thresholds
@@ -648,7 +651,7 @@ Nothing in them is served.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 814 tests
+python -m pytest tests -q      # 977 tests
 ```
 
 | File | Covers |

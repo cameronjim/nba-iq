@@ -58,7 +58,7 @@ PROBABILITIES: tuple[str, ...] = (PROB_ACTIVE, PROB_ACTIVE_MODEL)
 KEY: list[str] = ["nba_player_id", "nba_game_id"]
 RESULT_COLUMNS: list[str] = ["run_id", "cohort", "endpoint", "stat", "n", "value"]
 
-# the bare prefix, not the versioned label, so a v2 protocol is pooled with v1.
+# the bare prefix, not the versioned label, so every re-freeze pools with v1.
 PROSPECTIVE_PREFIX = PROSPECTIVE_RUN_NOTE_LABEL.rsplit("_v", 1)[0]
 
 # migration 015 may not be applied yet; these note tokens are the fallback.

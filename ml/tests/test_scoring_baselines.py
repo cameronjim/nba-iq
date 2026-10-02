@@ -435,7 +435,7 @@ class TestLookCli:
 
         # assert
         assert args.look == "dec1"
-        assert args.since.isoformat() == "2026-10-01"
+        assert args.since.isoformat() == "2026-10-02"
         assert args.until.isoformat() == "2026-11-30"
         assert args.version == PROSPECTIVE_MODEL_VERSION
         assert "dec1" in args.md.name
