@@ -29,6 +29,7 @@ from parsing import (
 )
 from espn_injuries import scrape_espn_injuries
 from fetching import stats_nba_reachable
+from injury_reconcile import reconcile_player_injury_columns
 from injury_report import scrape_official_injuries
 from odds import scrape_odds_snapshots
 from props import parse_props_markets, scrape_prop_odds
@@ -218,6 +219,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="run ONLY the official nba injury report, skipping CBS",
     )
     parser.add_argument(
+        "--reconcile-injuries-only",
+        dest="reconcile_injuries_only",
+        action="store_true",
+        help="run ONLY the injury label reconcile over the stored report rows",
+    )
+    parser.add_argument(
         "--odds-only",
         dest="odds_only",
         action="store_true",
@@ -274,12 +281,15 @@ def _run_phase(name: str, phase: Callable[[], object]) -> bool:
 
 
 def _injury_phases(conn: psycopg2.extensions.connection, dry_run: bool) -> None:
-    # official last so its game-specific designations overwrite CBS's on players;
-    # espn writes report rows only, never players.injury_status.
+    # the reconcile runs last and derives the players' labels from every source.
     _run_phase("injuries (cbs)", lambda: scrape_injuries(conn, dry_run=dry_run))
     _run_phase("injuries (espn)", lambda: scrape_espn_injuries(conn, dry_run=dry_run))
     _run_phase(
         "injuries (official)", lambda: scrape_official_injuries(conn, dry_run=dry_run)
+    )
+    _run_phase(
+        "injuries (reconcile)",
+        lambda: reconcile_player_injury_columns(conn, dry_run=dry_run),
     )
 
 
@@ -399,6 +409,8 @@ def main(argv: list[str] | None = None) -> None:
             scrape_espn_injuries(conn, dry_run=args.dry_run)
         elif args.official_injuries_only:
             scrape_official_injuries(conn, dry_run=args.dry_run)
+        elif args.reconcile_injuries_only:
+            reconcile_player_injury_columns(conn, dry_run=args.dry_run)
         elif args.odds_only:
             _odds_lane(conn, args.dry_run, props_markets)
         elif args.props_only:
