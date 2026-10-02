@@ -3757,9 +3757,9 @@ class TestNormalizeEspnStatus:
             ("Day-To-Day", "P", "", "probable"),
             ("Day-To-Day", None, "", "questionable"),
             ("Day-To-Day", "GTD", "He is OUT INDEFINITELY with a knee issue.", "out"),
-            ("Day-To-Day", "P", "He was ruled out for Friday.", "out"),
+            ("Day-To-Day", "P", "He was ruled out for Friday.", "probable"),
             ("Day-To-Day", "GTD", "There is no timetable for his return.", "out"),
-            ("Day-To-Day", "GTD", "He will miss the start of the season.", "out"),
+            ("Day-To-Day", "GTD", "He will miss the start of training camp.", "questionable"),
             ("Day-To-Day", "GTD", "He suffered a season-ending injury.", "out"),
             ("Day-To-Day", "GTD", "He remains sidelined indefinitely.", "out"),
             ("Day-To-Day", "GTD", "He is limited in practice.", "questionable"),
@@ -3768,6 +3768,23 @@ class TestNormalizeEspnStatus:
     def test_status_table(self, status, fantasy_abbr, comment, expected):
         # act + assert
         assert espn_injuries.normalize_espn_status(status, fantasy_abbr, comment) == expected
+
+    def test_a_stale_long_term_note_does_not_force_out(self):
+        # arrange: a summer note still on the feed in october
+        now = datetime(2026, 10, 2, tzinfo=timezone.utc)
+        july = datetime(2026, 7, 10, tzinfo=timezone.utc)
+
+        # act
+        stale = espn_injuries.normalize_espn_status(
+            "Day-To-Day", "GTD", "He is out indefinitely.", july, now
+        )
+        fresh = espn_injuries.normalize_espn_status(
+            "Day-To-Day", "GTD", "He is out indefinitely.", datetime(2026, 9, 28, tzinfo=timezone.utc), now
+        )
+
+        # assert
+        assert stale == "questionable"
+        assert fresh == "out"
 
 
 class TestEspnGameScopedStatuses:

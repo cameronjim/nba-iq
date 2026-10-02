@@ -13,6 +13,7 @@ from config import (
     ESPN_INJURIES_SOURCE,
     ESPN_INJURIES_URL,
     ESPN_INJURIES_WINDOW_DAYS,
+    ESPN_LONG_TERM_MAX_REPORT_AGE_DAYS,
     ESPN_LONG_TERM_PATTERNS,
     NAME_TO_ABBR,
     TEAM_META,
@@ -58,8 +59,14 @@ class EspnInjuryRow(NamedTuple):
     reported_at: datetime | None
 
 
-def normalize_espn_status(status: str, fantasy_abbr: str | None, comment: str) -> str:
-    if _LONG_TERM.search(comment or ""):
+def normalize_espn_status(
+    status: str,
+    fantasy_abbr: str | None,
+    comment: str,
+    reported_at: datetime | None = None,
+    now: datetime | None = None,
+) -> str:
+    if _LONG_TERM.search(comment or "") and _note_is_fresh(reported_at, now):
         return "out"
     text = (status or "").strip()
     if text.lower() == "out":
@@ -71,6 +78,12 @@ def normalize_espn_status(status: str, fantasy_abbr: str | None, comment: str) -
         # day_to_day is a passthrough downstream, but espn lists it as a gtd.
         return "questionable"
     return normalize_injury_status(text)
+
+
+def _note_is_fresh(reported_at: datetime | None, now: datetime | None) -> bool:
+    if reported_at is None or now is None:
+        return True
+    return now - reported_at <= timedelta(days=ESPN_LONG_TERM_MAX_REPORT_AGE_DAYS)
 
 
 def _parse_reported_at(raw: object) -> datetime | None:
@@ -101,7 +114,7 @@ def _group_team_abbr(group: Mapping, athlete: Mapping) -> str | None:
     return fallback if fallback in TEAM_META else None
 
 
-def parse_espn_injuries(payload: Mapping) -> list[EspnInjuryRow]:
+def parse_espn_injuries(payload: Mapping, now: datetime | None = None) -> list[EspnInjuryRow]:
     rows: list[EspnInjuryRow] = []
     for group in payload.get("injuries") or []:
         for item in group.get("injuries") or []:
@@ -114,16 +127,19 @@ def parse_espn_injuries(payload: Mapping) -> list[EspnInjuryRow]:
             status = str(item.get("status") or "").strip()
             comment = str(item.get("shortComment") or "").strip()
             reason = details.get("type") or (item.get("type") or {}).get("description")
+            reported_at = _parse_reported_at(item.get("date"))
             rows.append(
                 EspnInjuryRow(
                     player_name=name,
                     team_abbr=_group_team_abbr(group, athlete),
                     status_raw=status,
-                    status_normalized=normalize_espn_status(status, fantasy_abbr, comment),
+                    status_normalized=normalize_espn_status(
+                        status, fantasy_abbr, comment, reported_at, now
+                    ),
                     reason=str(reason) if reason else None,
                     comment=comment,
                     return_date=_parse_return_date(details.get("returnDate")),
-                    reported_at=_parse_reported_at(item.get("date")),
+                    reported_at=reported_at,
                 )
             )
     return rows
@@ -233,7 +249,7 @@ def _ingest_espn_injuries(
     dry_run: bool,
     now: datetime,
 ) -> int:
-    parsed = parse_espn_injuries(fetch_espn_injuries())
+    parsed = parse_espn_injuries(fetch_espn_injuries(), now)
     if not parsed:
         # an empty feed must never read as "nobody is injured".
         logger.warning("espn injuries: feed parsed to zero rows, writing nothing")
