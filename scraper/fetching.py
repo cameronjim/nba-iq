@@ -20,6 +20,7 @@ from config import (
     ADVANCED_RATINGS_FIRST_SEASON_START_YEAR,
     BACKFILL_MAX_ATTEMPTS,
     BACKFILL_REQUEST_DELAY_SECONDS,
+    ESPN_INJURIES_URL,
     ESPN_MAX_ATTEMPTS,
     ESPN_RETRY_DELAY_SECONDS,
     ESPN_SCOREBOARD_URL,
@@ -269,6 +270,23 @@ def fetch_espn_scoreboard_events(day: date) -> list[dict]:
 
     return _fetch_with_retry(
         f"espn scoreboard {dates}",
+        fetch,
+        max_attempts=ESPN_MAX_ATTEMPTS,
+        initial_delay=ESPN_RETRY_DELAY_SECONDS,
+    )
+
+
+def fetch_espn_injuries() -> dict:
+    def fetch() -> dict:
+        resp = requests.get(ESPN_INJURIES_URL, timeout=ESPN_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            raise ValueError("espn injuries answered with a non-object payload")
+        return payload
+
+    return _fetch_with_retry(
+        "espn injuries",
         fetch,
         max_attempts=ESPN_MAX_ATTEMPTS,
         initial_delay=ESPN_RETRY_DELAY_SECONDS,

@@ -9,6 +9,7 @@ import requests
 
 import backfill
 import database
+import espn_injuries
 import fetching
 import injury_report
 import roster_snapshot
@@ -1747,7 +1748,7 @@ class TestMatchCbsInjuryRows:
             [("202710", "Jimmy Butler III", "MIA"), ("1629029", "Luka Dončić", "LAL")]
         )
 
-        match = scrapes.match_cbs_injury_rows(
+        match = scrapes.match_injury_rows(
             [self._row("Jimmy Butler"), self._row("Luka Doncic")], index
         )
 
@@ -1758,7 +1759,7 @@ class TestMatchCbsInjuryRows:
             [("1", "Jalen Williams", "OKC"), ("2", "Jalen Williams", "DEN")]
         )
 
-        match = scrapes.match_cbs_injury_rows([self._row("Jalen Williams", "DEN")], index)
+        match = scrapes.match_injury_rows([self._row("Jalen Williams", "DEN")], index)
 
         assert [nba_id for nba_id, _ in match.matched] == ["2"]
 
@@ -1767,13 +1768,13 @@ class TestMatchCbsInjuryRows:
             [("1", "Jalen Williams", "OKC"), ("2", "Jalen Williams", "DEN")]
         )
 
-        match = scrapes.match_cbs_injury_rows([self._row("Jalen Williams")], index)
+        match = scrapes.match_injury_rows([self._row("Jalen Williams")], index)
 
         assert match.matched == []
         assert [r.player_name for r in match.ambiguous] == ["Jalen Williams"]
 
     def test_unknown_player_is_unmatched(self):
-        match = scrapes.match_cbs_injury_rows([self._row("Nobody Known")], {})
+        match = scrapes.match_injury_rows([self._row("Nobody Known")], {})
 
         assert [r.player_name for r in match.unmatched] == ["Nobody Known"]
 
@@ -3590,13 +3591,17 @@ class TestInjuryPhases:
         monkeypatch.setattr(
             run_scraper, "scrape_injuries", lambda conn, dry_run=False: calls.append("cbs")
         )
+        monkeypatch.setattr(
+            run_scraper, "scrape_espn_injuries",
+            lambda conn, dry_run=False: calls.append("espn"),
+        )
         monkeypatch.setattr(run_scraper, "scrape_official_injuries", official)
 
         # act
         run_scraper._injury_phases(object(), False)
 
         # assert
-        assert calls == ["cbs"]
+        assert calls == ["cbs", "espn"]
 
     def test_a_cbs_failure_does_not_cost_the_official_pass_which_runs_second(
         self, monkeypatch
@@ -3609,6 +3614,32 @@ class TestInjuryPhases:
             raise RuntimeError("cbs down")
 
         monkeypatch.setattr(run_scraper, "scrape_injuries", cbs)
+        monkeypatch.setattr(
+            run_scraper, "scrape_espn_injuries",
+            lambda conn, dry_run=False: calls.append("espn"),
+        )
+        monkeypatch.setattr(
+            run_scraper, "scrape_official_injuries",
+            lambda conn, dry_run=False: calls.append("official"),
+        )
+
+        # act
+        run_scraper._injury_phases(object(), False)
+
+        # assert
+        assert calls == ["cbs", "espn", "official"]
+
+    def test_an_espn_failure_does_not_cost_the_official_pass(self, monkeypatch):
+        # arrange
+        calls: list[str] = []
+
+        def espn(conn, dry_run=False):
+            raise RuntimeError("espn down")
+
+        monkeypatch.setattr(
+            run_scraper, "scrape_injuries", lambda conn, dry_run=False: calls.append("cbs")
+        )
+        monkeypatch.setattr(run_scraper, "scrape_espn_injuries", espn)
         monkeypatch.setattr(
             run_scraper, "scrape_official_injuries",
             lambda conn, dry_run=False: calls.append("official"),
@@ -3623,6 +3654,325 @@ class TestInjuryPhases:
     def test_the_official_only_flag_is_parsed(self):
         # act + assert
         assert _parse_args(["--official-injuries-only"]).official_injuries_only is True
+
+
+ESPN_INJURIES_FIXTURE = Path(__file__).parent / "fixtures" / "espn_injuries_2026-10-02.json"
+ESPN_NOW = datetime(2026, 10, 2, 16, 0, tzinfo=timezone.utc)
+ESPN_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+ESPN_PLAYERS = [
+    ("204001", "Kristaps Porzingis", "GSW"),
+    ("202710", "Jimmy Butler III", "GSW"),
+    ("1626204", "Larry Nance Jr.", "CLE"),
+]
+# (nba_game_id, game_date, home, away, home_team_id, away_team_id)
+ESPN_SCHEDULE = [
+    ("0012600010", date(2026, 10, 5), "GSW", "LAL", "1610612744", "1610612747"),
+    ("0012600020", date(2026, 10, 14), "POR", "GSW", "1610612757", "1610612744"),
+    ("0022600030", date(2026, 10, 30), "GSW", "PHX", "1610612744", "1610612756"),
+    ("0012600040", date(2026, 10, 6), "IND", "CLE", "1610612754", "1610612739"),
+]
+
+
+def _espn_payload() -> dict:
+    return json.loads(ESPN_INJURIES_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _espn_rows_by_name() -> dict[str, espn_injuries.EspnInjuryRow]:
+    return {r.player_name: r for r in espn_injuries.parse_espn_injuries(_espn_payload())}
+
+
+def _espn_schedule_dicts() -> list[dict]:
+    return [
+        {
+            "nba_game_id": game_id, "game_date": game_date,
+            "home_team_abbr": home, "away_team_abbr": away,
+            "home_team_id": home_id, "away_team_id": away_id,
+        }
+        for game_id, game_date, home, away, home_id, away_id in ESPN_SCHEDULE
+    ]
+
+
+def _espn_row(status="out", return_date=None, team="GSW"):
+    return espn_injuries.EspnInjuryRow(
+        player_name="Kristaps Porzingis", team_abbr=team, status_raw="Day-To-Day",
+        status_normalized=status, reason="Undisclosed", comment="",
+        return_date=return_date,
+        reported_at=datetime(2026, 9, 28, 15, 15, tzinfo=timezone.utc),
+    )
+
+
+class TestParseEspnInjuries:
+    def test_an_indefinite_absence_filed_as_day_to_day_reads_as_out(self):
+        # act
+        porzingis = _espn_rows_by_name()["Kristaps Porzingis"]
+
+        # assert
+        assert porzingis.status_raw == "Day-To-Day"
+        assert porzingis.status_normalized == "out"
+        assert porzingis.return_date == date(2026, 10, 13)
+        assert porzingis.team_abbr == "GSW"
+        assert porzingis.reason == "Undisclosed"
+        assert porzingis.reported_at == datetime(2026, 9, 28, 15, 15, tzinfo=timezone.utc)
+
+    def test_a_plain_day_to_day_row_is_questionable(self):
+        # act
+        toohey = _espn_rows_by_name()["Alex Toohey"]
+
+        # assert
+        assert toohey.status_normalized == "questionable"
+        assert toohey.return_date == date(2026, 10, 4)
+
+    def test_an_out_row_is_out(self):
+        # act
+        butler = _espn_rows_by_name()["Jimmy Butler III"]
+
+        # assert
+        assert butler.status_raw == "Out"
+        assert butler.status_normalized == "out"
+
+    def test_the_listing_team_wins_over_the_athletes_stale_team(self):
+        # act
+        nance = _espn_rows_by_name()["Larry Nance Jr."]
+
+        # assert
+        assert nance.team_abbr == "IND"
+
+    def test_an_empty_payload_parses_to_nothing(self):
+        # act + assert
+        assert espn_injuries.parse_espn_injuries({}) == []
+
+
+class TestNormalizeEspnStatus:
+    @pytest.mark.parametrize(
+        ("status", "fantasy_abbr", "comment", "expected"),
+        [
+            ("Out", None, "", "out"),
+            ("Out", "GTD", "", "out"),
+            ("Day-To-Day", "O", "", "out"),
+            ("Day-To-Day", "OUT", "", "out"),
+            ("Out", "OFS", "", "out"),
+            ("Day-To-Day", "D", "", "doubtful"),
+            ("Day-To-Day", "Q", "", "questionable"),
+            ("Day-To-Day", "GTD", "", "questionable"),
+            ("Day-To-Day", "P", "", "probable"),
+            ("Day-To-Day", None, "", "questionable"),
+            ("Day-To-Day", "GTD", "He is OUT INDEFINITELY with a knee issue.", "out"),
+            ("Day-To-Day", "P", "He was ruled out for Friday.", "out"),
+            ("Day-To-Day", "GTD", "There is no timetable for his return.", "out"),
+            ("Day-To-Day", "GTD", "He will miss the start of the season.", "out"),
+            ("Day-To-Day", "GTD", "He suffered a season-ending injury.", "out"),
+            ("Day-To-Day", "GTD", "He remains sidelined indefinitely.", "out"),
+            ("Day-To-Day", "GTD", "He is limited in practice.", "questionable"),
+        ],
+    )
+    def test_status_table(self, status, fantasy_abbr, comment, expected):
+        # act + assert
+        assert espn_injuries.normalize_espn_status(status, fantasy_abbr, comment) == expected
+
+
+class TestEspnGameScopedStatuses:
+    AS_OF = date(2026, 10, 2)
+
+    def test_games_before_the_return_date_are_out_and_the_rest_are_not(self):
+        # arrange
+        row = _espn_row(status="questionable", return_date=date(2026, 10, 13))
+
+        # act
+        statuses = espn_injuries.game_scoped_statuses(
+            [("204001", row)], _espn_schedule_dicts(), self.AS_OF
+        )
+
+        # assert
+        assert [(s["nba_game_id"], s["status_normalized"]) for s in statuses] == [
+            ("0012600010", "out"),
+        ]
+        assert statuses[0]["team_id"] == "1610612744"
+        assert statuses[0]["reason"] == "Undisclosed; expected return 2026-10-13"
+
+    def test_nothing_is_scoped_beyond_the_window(self):
+        # arrange
+        row = _espn_row(status="questionable", return_date=date(2027, 1, 1))
+
+        # act
+        statuses = espn_injuries.game_scoped_statuses(
+            [("204001", row)], _espn_schedule_dicts(), self.AS_OF
+        )
+
+        # assert
+        assert [s["nba_game_id"] for s in statuses] == ["0012600010", "0012600020"]
+        assert statuses[1]["team_id"] == "1610612744"
+
+    def test_games_already_past_are_skipped(self):
+        # arrange
+        row = _espn_row(status="questionable", return_date=date(2026, 10, 13))
+
+        # act
+        statuses = espn_injuries.game_scoped_statuses(
+            [("204001", row)], _espn_schedule_dicts(), date(2026, 10, 6)
+        )
+
+        # assert
+        assert statuses == []
+
+    def test_no_return_date_writes_only_the_general_row(self):
+        # arrange
+        row = _espn_row(status="questionable", return_date=None)
+
+        # act
+        statuses = espn_injuries.game_scoped_statuses(
+            [("204001", row)], _espn_schedule_dicts(), self.AS_OF
+        )
+
+        # assert
+        assert statuses == [{
+            "nba_player_id": "204001", "nba_game_id": None, "team_id": "1610612744",
+            "report_as_of": row.reported_at, "status_raw": "Day-To-Day",
+            "status_normalized": "questionable", "reason": "Undisclosed",
+        }]
+
+    def test_an_out_row_with_a_return_date_also_writes_the_general_row(self):
+        # arrange
+        row = _espn_row(status="out", return_date=date(2026, 10, 13))
+
+        # act
+        statuses = espn_injuries.game_scoped_statuses(
+            [("204001", row)], _espn_schedule_dicts(), self.AS_OF
+        )
+
+        # assert
+        assert [(s["nba_game_id"], s["status_normalized"]) for s in statuses] == [
+            (None, "out"), ("0012600010", "out"),
+        ]
+
+
+class EspnCursor:
+    def __init__(self):
+        self.statements: list[tuple[str, object]] = []
+        self._result: list[tuple] = []
+
+    def execute(self, sql, params=None):
+        self.statements.append((sql, params))
+        if "FROM nba_schedule" in sql:
+            self._result = list(ESPN_SCHEDULE)
+        elif "FROM players" in sql:
+            self._result = list(ESPN_PLAYERS)
+        else:
+            self._result = []
+
+    def fetchall(self):
+        return self._result
+
+    def close(self):
+        pass
+
+
+class EspnConn:
+    def __init__(self):
+        self.cursor_ = EspnCursor()
+
+    def cursor(self):
+        return self.cursor_
+
+
+class TestScrapeEspnInjuries:
+    @pytest.fixture(autouse=True)
+    def _offline(self, monkeypatch):
+        self.inserted: list[tuple] = []
+        self.finished: list[dict] = []
+
+        def record_insert(cur, sql, rows, template=None):
+            self.inserted.extend(rows)
+            return len(rows)
+
+        def record_finish(conn, run_id, status, rows, notes=None, watermark_to=None):
+            self.finished.append({"status": status, "rows": rows, "notes": notes})
+
+        monkeypatch.setattr(espn_injuries, "fetch_espn_injuries", _espn_payload)
+        monkeypatch.setattr(espn_injuries, "_start_ingestion_run", lambda *a, **k: 9)
+        monkeypatch.setattr(espn_injuries, "_finish_ingestion_run", record_finish)
+        monkeypatch.setattr(espn_injuries, "_batch_upsert", record_insert)
+
+    def test_porzingis_is_out_for_the_games_before_his_return(self):
+        # arrange
+        reported = datetime(2026, 9, 28, 15, 15, tzinfo=timezone.utc)
+
+        # act
+        written = espn_injuries.scrape_espn_injuries(EspnConn(), now=ESPN_NOW)
+
+        # assert
+        porzingis = [row for row in self.inserted if row[0] == "204001"]
+        assert porzingis == [
+            (
+                "204001", None, ESPN_NOW, reported, "Day-To-Day", "out",
+                "Undisclosed", "espn_injuries", "1610612744", ESPN_URL,
+            ),
+            (
+                "204001", "0012600010", ESPN_NOW, reported, "Day-To-Day", "out",
+                "Undisclosed; expected return 2026-10-13", "espn_injuries",
+                "1610612744", ESPN_URL,
+            ),
+        ]
+        assert written == len(self.inserted)
+        assert self.finished[-1]["status"] == "succeeded"
+
+    def test_a_questionable_player_gets_only_game_rows_for_his_listing_team(self):
+        # act
+        espn_injuries.scrape_espn_injuries(EspnConn(), now=ESPN_NOW)
+
+        # assert
+        nance = [(row[1], row[5], row[8]) for row in self.inserted if row[0] == "1626204"]
+        assert nance == [("0012600040", "out", "1610612754")]
+
+    def test_unmatched_names_are_skipped_and_logged(self, caplog):
+        # act
+        with caplog.at_level("INFO", logger="espn_injuries"):
+            espn_injuries.scrape_espn_injuries(EspnConn(), now=ESPN_NOW)
+
+        # assert
+        assert {row[0] for row in self.inserted} == {"204001", "202710", "1626204"}
+        assert "matched no player" in caplog.text
+        assert "Alex Toohey" in caplog.text
+
+    def test_players_injury_status_is_never_touched(self):
+        # arrange
+        conn = EspnConn()
+
+        # act
+        espn_injuries.scrape_espn_injuries(conn, now=ESPN_NOW)
+
+        # assert
+        assert not any("UPDATE players" in sql for sql, _ in conn.cursor_.statements)
+
+    def test_an_empty_feed_writes_nothing_and_fails_the_run(self, monkeypatch):
+        # arrange
+        monkeypatch.setattr(espn_injuries, "fetch_espn_injuries", lambda: {"injuries": []})
+
+        # act
+        written = espn_injuries.scrape_espn_injuries(EspnConn(), now=ESPN_NOW)
+
+        # assert
+        assert written == 0
+        assert self.inserted == []
+        assert self.finished[-1]["status"] == "failed"
+
+    def test_dry_run_reads_but_writes_nothing(self, monkeypatch):
+        # arrange
+        monkeypatch.undo()
+        monkeypatch.setattr(espn_injuries, "fetch_espn_injuries", _espn_payload)
+        conn = EspnConn()
+
+        # act
+        written = espn_injuries.scrape_espn_injuries(conn, dry_run=True, now=ESPN_NOW)
+
+        # assert
+        executed = [sql for sql, _ in conn.cursor_.statements]
+        assert written > 0
+        assert executed and all(not is_write_statement(sql) for sql in executed)
+
+    def test_the_espn_only_flag_is_parsed(self):
+        # act + assert
+        assert _parse_args(["--espn-injuries-only"]).espn_injuries_only is True
+        assert _parse_args([]).espn_injuries_only is False
 
 
 class TestClearancesForReport:

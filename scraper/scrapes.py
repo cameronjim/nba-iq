@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Generic, Protocol, TypeVar
 from zoneinfo import ZoneInfo
 
 import psycopg2
@@ -329,11 +330,22 @@ class CbsInjuryRow:
     team_abbr: str | None
 
 
+class NamedInjuryRow(Protocol):
+    @property
+    def player_name(self) -> str: ...
+
+    @property
+    def team_abbr(self) -> str | None: ...
+
+
+InjuryRowT = TypeVar("InjuryRowT", bound=NamedInjuryRow)
+
+
 @dataclass
-class CbsInjuryMatch:
-    matched: list[tuple[str, CbsInjuryRow]] = field(default_factory=list)
-    unmatched: list[CbsInjuryRow] = field(default_factory=list)
-    ambiguous: list[CbsInjuryRow] = field(default_factory=list)
+class InjuryNameMatch(Generic[InjuryRowT]):
+    matched: list[tuple[str, InjuryRowT]] = field(default_factory=list)
+    unmatched: list[InjuryRowT] = field(default_factory=list)
+    ambiguous: list[InjuryRowT] = field(default_factory=list)
 
 
 # order matters: "injury status" has to claim its column before "injury" does.
@@ -440,11 +452,11 @@ def index_players_by_canonical_name(
     return index
 
 
-def match_cbs_injury_rows(
-    rows: Iterable[CbsInjuryRow],
+def match_injury_rows(
+    rows: Iterable[InjuryRowT],
     players_by_name: Mapping[str, Sequence[tuple[str, str]]],
-) -> CbsInjuryMatch:
-    result = CbsInjuryMatch()
+) -> InjuryNameMatch[InjuryRowT]:
+    result: InjuryNameMatch[InjuryRowT] = InjuryNameMatch()
     seen: set[str] = set()
     for row in rows:
         candidates = list(players_by_name.get(canonical_player_name(row.player_name), ()))
@@ -458,7 +470,7 @@ def match_cbs_injury_rows(
             result.ambiguous.append(row)
             continue
         nba_id = candidates[0][0]
-        # one report row per player even if cbs lists him twice.
+        # one report row per player even if the source lists him twice.
         if nba_id in seen:
             continue
         seen.add(nba_id)
@@ -490,7 +502,7 @@ def scrape_injuries(
     # cbs publishes names only, so they are resolved to ids here with a read,
     # which also lets a dry run report the same clearances production writes.
     cur.execute("SELECT nba_id, name, team FROM players WHERE nba_id IS NOT NULL")
-    match = match_cbs_injury_rows(parsed, index_players_by_canonical_name(cur.fetchall()))
+    match = match_injury_rows(parsed, index_players_by_canonical_name(cur.fetchall()))
     if match.ambiguous:
         logger.warning(
             "cbs injuries: %d row(s) matched several players and were skipped: %s",

@@ -27,6 +27,7 @@ from parsing import (
     season_range,
     season_start_year,
 )
+from espn_injuries import scrape_espn_injuries
 from fetching import stats_nba_reachable
 from injury_report import scrape_official_injuries
 from odds import scrape_odds_snapshots
@@ -202,7 +203,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--injuries-only",
         dest="injuries_only",
         action="store_true",
-        help="run ONLY the injury scrapes (CBS, then the official report)",
+        help="run ONLY the injury scrapes (CBS, then ESPN, then the official report)",
+    )
+    parser.add_argument(
+        "--espn-injuries-only",
+        dest="espn_injuries_only",
+        action="store_true",
+        help="run ONLY the espn injury feed, skipping CBS and the official report",
     )
     parser.add_argument(
         "--official-injuries-only",
@@ -267,8 +274,10 @@ def _run_phase(name: str, phase: Callable[[], object]) -> bool:
 
 
 def _injury_phases(conn: psycopg2.extensions.connection, dry_run: bool) -> None:
-    # official second so its game-specific designations overwrite CBS's on players.
+    # official last so its game-specific designations overwrite CBS's on players;
+    # espn writes report rows only, never players.injury_status.
     _run_phase("injuries (cbs)", lambda: scrape_injuries(conn, dry_run=dry_run))
+    _run_phase("injuries (espn)", lambda: scrape_espn_injuries(conn, dry_run=dry_run))
     _run_phase(
         "injuries (official)", lambda: scrape_official_injuries(conn, dry_run=dry_run)
     )
@@ -386,6 +395,8 @@ def main(argv: list[str] | None = None) -> None:
             schedule_ok = _truth_layer_phases(conn, args.season, args.dry_run)
         elif args.injuries_only:
             _injury_phases(conn, args.dry_run)
+        elif args.espn_injuries_only:
+            scrape_espn_injuries(conn, dry_run=args.dry_run)
         elif args.official_injuries_only:
             scrape_official_injuries(conn, dry_run=args.dry_run)
         elif args.odds_only:
