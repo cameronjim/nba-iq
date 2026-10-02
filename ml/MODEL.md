@@ -4244,7 +4244,8 @@ before opening night or wait for the next season.
    per-season-type game counts it now prints.
 2. Build both datasets from one database state:
    `build_dataset.py --source postgres --out data/dataset.parquet --no-v4-candidate`
-   and the same with `--out data/dataset_postseason.parquet --postseason-history`.
+   and the same with `--out data/dataset_postseason.parquet --postseason-history
+   --universe-from data/dataset.parquet`.
 3. `run_postseason_bracket.py`: the served `v3-honest` incumbent with unchanged
    champions, fitted on each dataset over the five `ORIGINS`, identical validation rows,
    cohorts taken from the switch-off dataset for both passes (a tier is assigned from
@@ -4255,6 +4256,34 @@ before opening night or wait for the next season.
 4. The October origins are where the effect should live and `ORIGINS` has none (O1 is
    December). The per-origin table is read for direction, and the 14.3 October replay
    gate is rerun with the switch on before the re-freeze is signed.
+
+**First look (2026-10-02): null at mid-season origins.** ML Evaluate run 36956925799
+(prod) measured the switch over the five `ORIGINS`. Every endpoint moved by under 0.2%
+and every gated CI spans zero: `minutes_mae` -0.00% [-0.24%, +0.09%], `uncond_pts_mae`
++0.04%, `cond_pts_mae` +0.01%. The switch does not clear the bar on this origin set.
+That is the expected null: the earliest origin is December, by which point a 5-game
+halflife rate has forgotten the previous April, so the switch can only matter at
+season start, and no origin in `ORIGINS` covers October or November.
+
+**The season-start look, pre-registered before it runs.** `config.SEASON_START_ORIGINS`
+holds two windows, S1 (2024-10-22 to 2024-11-30) and S2 (2025-10-21 to 2025-11-30).
+They exist for season-start questions only and are not part of `ORIGINS` or
+`DEV_ORIGINS`, so no champion decision is redefined. Both end before the Feb-Apr 2026
+selection holdout and each has at least two full seasons of training before it. Each
+start is clamped at runtime to the first regular-season game date the dataset records
+for that season, so a mistyped date cannot pull the previous season into a window, and
+training is everything strictly before the clamped start, exactly as for `ORIGINS`.
+`run_postseason_bracket.py --origins season-start` runs it; the bar is unchanged (at
+least 1% relative improvement on a gated endpoint with a 95% CI excluding zero, no gated
+cohort regressing by more than 1%), and the report adds a reported-only split of the
+first 14 days of each window against the rest, where the effect should decay. **This
+second look does not violate the one-look rule, because that rule is per origin set per
+candidate:** the first look was on the dev set, this one is on a different origin set,
+and each writes under its own report stem (`<version>_postseason_<set>`), which is
+refused if it already exists. The candidate dataset is now built with
+`--universe-from` the baseline parquet, so the two builds hold identical modelled rows
+by construction; the first attempt was refused once because a status backfill landed
+between two independent builds.
 
 **Known limit.** `parsing.season_end_date` closes a season on June 30, so the July
 playoff games of 2020-21 (and the 2019-20 bubble) would be dropped by the stray-row

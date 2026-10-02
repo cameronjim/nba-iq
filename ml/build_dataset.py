@@ -7,10 +7,19 @@ import logging
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fnba_ml.cli import add_common_args, add_source_args, build_source, setup_logging  # noqa: E402
+from fnba_ml.cli import (  # noqa: E402
+    add_common_args,
+    add_source_args,
+    build_source,
+    load_dataset,
+    setup_logging,
+)
 from fnba_ml.config import (  # noqa: E402
+    COMPETITION_COL,
     DATA_DIR,
     FEATURE_COLS,
     FEATURE_SETS,
@@ -21,14 +30,16 @@ from fnba_ml.config import (  # noqa: E402
     RATE_HISTORY_INCLUDES_POSTSEASON,
     V4_FEATURE_COLS,
 )
+from fnba_ml.data.schema import normalise_dates, normalise_ids  # noqa: E402
 from fnba_ml.features import attach_cross_fit_context, build_features  # noqa: E402
 from fnba_ml.matchup import attach_v4_features  # noqa: E402
-from fnba_ml.prospective import postseason_sidecar_path  # noqa: E402
+from fnba_ml.prospective import history_from_dataset, postseason_sidecar_path  # noqa: E402
 from fnba_ml.teammates import (  # noqa: E402
     position_group_counts,
     teammate_feature_summary,
 )
 from fnba_ml.universe import (  # noqa: E402
+    STATUS_SOURCE_COL,
     build_postseason_appearances,
     build_universe,
     coverage_report,
@@ -53,7 +64,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "appearances, whatever config.RATE_HISTORY_INCLUDES_POSTSEASON says "
              "(the MODEL.md 20.1 candidate)",
     )
+    parser.add_argument(
+        "--universe-from", type=Path, default=None,
+        help="take the modelled rows from this built dataset instead of re-querying "
+             "player_game_status, so a candidate build holds exactly the baseline's "
+             "rows; postseason appearances still load from the source",
+    )
     return parser.parse_args(argv)
+
+
+def load_universe(source, universe_from: Path | None = None) -> pd.DataFrame:
+    """the modelled rows: built from the source, or sliced out of a built dataset."""
+    if universe_from is None:
+        return build_universe(source)
+    dataset = load_dataset(universe_from)
+    # parquet hands ids back as a string dtype that merge_asof will not join to the
+    # source's object ids.
+    universe = normalise_dates(normalise_ids(history_from_dataset(dataset)))
+    for extra in (STATUS_SOURCE_COL, COMPETITION_COL):
+        if extra in dataset.columns:
+            universe[extra] = dataset[extra].to_numpy()
+    log.info("universe: %d modelled rows from %s", len(universe), universe_from)
+    return universe.sort_values(
+        ["GAME_DATE", "GAME_ID", "TEAM_ID", "PLAYER_ID"]
+    ).reset_index(drop=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(args.verbose)
 
     source = build_source(args)
-    universe = build_universe(source)
+    universe = load_universe(source, args.universe_from)
     postseason = build_postseason_appearances(source)
     coverage = coverage_report(universe, source.load_player_game_logs())
     composition = universe_composition(universe)
