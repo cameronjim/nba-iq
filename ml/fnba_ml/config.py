@@ -479,6 +479,43 @@ FEATURE_COLS_V5_STAKES: list[str] = FEATURE_COLS + V5_STAKES_FEATURE_COLS
 CANDIDATE_FEATURE_VERSION_V5 = "v5"
 CANDIDATE_FEATURE_SET_V5 = "v5-stakes"
 
+# ---- the v6 candidate contract (feature_version v6), not served ----
+# v5-stakes plus box-score detail columns (MODEL.md 22). every column reads
+# appearances strictly before the row's game.
+V6_START_WINDOW: int = 10
+
+# a teammate counts as a usual starter at or above this started_rate_10.
+V6_USUAL_STARTER_RATE: float = 0.5
+
+# in appearances, not days: one halflife for every box EWMA in the family.
+V6_BOX_EWMA_HALFLIFE: float = 10.0
+
+# the raw box columns the family reads. outcomes of their own game, never features.
+V6_BOX_DETAIL_COLS: tuple[str, ...] = ("STARTED", "PLUS_MINUS", "OREB", "DREB", "PF")
+
+V6_START_FEATURE_COLS: list[str] = [
+    "started_rate_10",
+    "started_last",
+    "starts_streak",
+]
+# expectations over the same P_CONTEXT p_j that exp_vacated_usg is built from.
+V6_TEAMMATE_START_COLS: list[str] = [
+    "team_starters_out_exp",
+    "exp_vacated_starts",
+]
+V6_BOX_FORM_COLS: list[str] = [
+    "plus_minus_ewma_10",
+    "pf_per36_ewma",
+    "oreb_share_ewma",
+    "dreb_share_ewma",
+]
+V6_CONTEXT_FEATURE_COLS: list[str] = (
+    V6_START_FEATURE_COLS + V6_TEAMMATE_START_COLS + V6_BOX_FORM_COLS
+)
+FEATURE_COLS_V6_CONTEXT: list[str] = FEATURE_COLS_V5_STAKES + V6_CONTEXT_FEATURE_COLS
+CANDIDATE_FEATURE_VERSION_V6 = "v6"
+CANDIDATE_FEATURE_SET_V6 = "v6-context"
+
 # ---- the evaluation bracket: feature sets over identical rows ----
 # v1 is the no-teammate-context floor, v2-oracle is what perfect pre-tipoff
 # lineup information buys, v3-honest is what ships.
@@ -488,6 +525,7 @@ FEATURE_SETS: dict[str, list[str]] = {
     "v2-oracle": BASE_FEATURE_COLS + ["usg_ewma"] + TEAMMATE_ORACLE_COLS,
     "v4": list(FEATURE_COLS_V4),
     "v5-stakes": list(FEATURE_COLS_V5_STAKES),
+    "v6-context": list(FEATURE_COLS_V6_CONTEXT),
 }
 SERVED_FEATURE_SET = "v3-honest"
 ORACLE_FEATURE_SET = "v2-oracle"
@@ -716,6 +754,31 @@ P3_PROMOTION_FLOOR: float = 0.01
 P3_COHORT_REGRESSION_TOLERANCE: float = 0.01
 P3_V5_GATED_ENDPOINTS: tuple[str, ...] = ("availability_brier", "minutes_mae")
 P3_RATE_GATED_ENDPOINTS: tuple[str, ...] = ("cond_pts_mae", "uncond_pts_mae")
+
+# ---- the v6 challengers' pre-registered rule, written before any result ----
+# the P3 floor and tolerance unchanged; each candidate inherits its parent's gates.
+P3_V6_GATED_ENDPOINTS: tuple[str, ...] = P3_V5_GATED_ENDPOINTS
+P3_RATE_V6_GATED_ENDPOINTS: tuple[str, ...] = P3_RATE_GATED_ENDPOINTS
+
+# residual-rate-v6 reads the parent's context plus the start columns.
+RATE_CONTEXT_COLS_V6: list[str] = [
+    *RATE_CONTEXT_COLS,
+    "started_rate_10",
+    "started_last",
+    "team_starters_out_exp",
+    "exp_vacated_starts",
+]
+
+# the fringe guard: below this out-of-fold MIN_PRED the residual is exactly 0, so
+# the row gets the champion rate. fitting is unchanged.
+RATE_RESIDUAL_MIN_MINUTES: float = 10.0
+
+# comparisons that already had their one look; a rerun beside a new candidate is a
+# same-rows reference and can never promote.
+P3_DECIDED_COMPARISONS: dict[str, str] = {
+    CANDIDATE_FEATURE_SET_V5: "p3-2026-10-02",
+    "residual-rate": "p3-2026-10-02",
+}
 
 
 def season_tag(season: str) -> str:

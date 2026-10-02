@@ -13,6 +13,7 @@ if str(ML_ROOT) not in sys.path:
 
 import run_p3_bracket as p3  # noqa: E402
 from fnba_ml import config  # noqa: E402
+from fnba_ml.box_context import attach_v6_features  # noqa: E402
 from fnba_ml.matchup import attach_v4_features  # noqa: E402
 from fnba_ml.models import PerMinuteRate, conditional_estimate  # noqa: E402
 from fnba_ml.promotion import ENDPOINT_AVAILABILITY, ENDPOINT_MINUTES  # noqa: E402
@@ -24,8 +25,11 @@ FIXTURE_ORIGINS = [
 
 
 @pytest.fixture(scope="module")
-def v4_frame(features_status: pd.DataFrame, team_logs: pd.DataFrame) -> pd.DataFrame:
-    return attach_v4_features(features_status, team_logs)
+def v4_frame(
+    features_status: pd.DataFrame, team_logs: pd.DataFrame, box_details: pd.DataFrame
+) -> pd.DataFrame:
+    # the v4 and v6 families both attached, as build_dataset.py writes them
+    return attach_v6_features(attach_v4_features(features_status, team_logs), box_details)
 
 
 @pytest.fixture(scope="module")
@@ -227,14 +231,22 @@ def test_main_writes_every_report_and_refuses_a_second_look(
                    "_cohorts_all_endpoints.csv", "_clip_rates.csv", ".md"):
         assert (tmp_path / f"fx_p3{suffix}").is_file(), suffix
     decision = pd.read_csv(tmp_path / "fx_p3_decision.csv")
-    assert set(decision["comparison"]) == {p3.COMPARISON_V5, p3.COMPARISON_RATE}
+    assert set(decision["comparison"]) == {
+        p3.COMPARISON_V5, p3.COMPARISON_RATE, p3.COMPARISON_V6, p3.COMPARISON_RATE_V6,
+    }
     assert set(decision.loc[decision["gate"], "endpoint"]) == {
         *config.P3_V5_GATED_ENDPOINTS, *config.P3_RATE_GATED_ENDPOINTS,
     }
+    decided = decision[~decision["binding"]]
+    assert set(decided["comparison"]) == set(config.P3_DECIDED_COMPARISONS)
+    assert not decided["promoted"].any()
+    assert decided["verdict"].str.startswith("REFERENCE ONLY").all()
     markdown = (tmp_path / "fx_p3.md").read_text(encoding="utf-8")
     assert "coherence_endpoints: available" in markdown
     coherence = pd.read_csv(tmp_path / "fx_p3_coherence.csv")
     assert {"variant", "endpoint", "cohort", "n", "mae", "origin", "family"} <= set(coherence.columns)
-    assert set(coherence["family"]) == {"champion", p3.COMPARISON_RATE}
+    assert set(coherence["family"]) == {
+        "champion", p3.COMPARISON_RATE, p3.COMPARISON_RATE_V6,
+    }
     with pytest.raises(SystemExit, match="one look per version"):
         p3.main(argv)

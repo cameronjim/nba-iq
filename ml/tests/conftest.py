@@ -86,6 +86,13 @@ def postseason(history_schedule, history_team_logs, history_logs, positions) -> 
 
 
 @pytest.fixture(scope="session")
+def box_details(source: ParquetSource) -> pd.DataFrame:
+    frame = source.load_box_details()
+    assert frame is not None, "the fixture set must carry box_details files"
+    return frame
+
+
+@pytest.fixture(scope="session")
 def positions(source: ParquetSource) -> pd.DataFrame:
     frame = source.load_player_positions()
     assert frame is not None, "the fixture set must carry a player_positions file"

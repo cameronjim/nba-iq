@@ -1,4 +1,4 @@
-"""the P3 decision run: v5-stakes and the residual rate, each against the incumbent, one look."""
+"""the P3 decision run: the feature-set and rate challengers, each against the incumbent, one look."""
 
 from __future__ import annotations
 
@@ -16,22 +16,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fnba_ml.cli import add_common_args, load_dataset, setup_logging  # noqa: E402
 from fnba_ml.config import (  # noqa: E402
     CANDIDATE_FEATURE_SET_V5,
+    CANDIDATE_FEATURE_SET_V6,
     CANDIDATE_FEATURE_VERSION_V5,
+    CANDIDATE_FEATURE_VERSION_V6,
     CHAMPIONS,
     DATA_DIR,
     DEV_ORIGINS,
     FEATURE_COLS,
     FEATURE_VERSION,
     P3_COHORT_REGRESSION_TOLERANCE,
+    P3_DECIDED_COMPARISONS,
     P3_PROMOTION_FLOOR,
     P3_RATE_GATED_ENDPOINTS,
+    P3_RATE_V6_GATED_ENDPOINTS,
     P3_V5_GATED_ENDPOINTS,
+    P3_V6_GATED_ENDPOINTS,
     RATE_CONTEXT_COLS,
+    RATE_CONTEXT_COLS_V6,
     RATE_MODEL_TARGETS,
+    RATE_RESIDUAL_MIN_MINUTES,
     RATE_TARGETS,
     REPORTS_DIR,
     SERVED_FEATURE_SET,
     V5_STAKES_FEATURE_COLS,
+    V6_CONTEXT_FEATURE_COLS,
 )
 from fnba_ml.eval_core import cohort_masks, split  # noqa: E402
 from fnba_ml.features import feature_set_columns  # noqa: E402
@@ -63,17 +71,51 @@ log = logging.getLogger("run_p3_bracket")
 
 COMPARISON_V5 = CANDIDATE_FEATURE_SET_V5
 COMPARISON_RATE = "residual-rate"
+COMPARISON_V6 = CANDIDATE_FEATURE_SET_V6
+COMPARISON_RATE_V6 = "residual-rate-v6"
+
+# feature-set comparisons: name -> the FEATURE_SETS entry refitted in place of the incumbent.
+FEATURE_SET_COMPARISONS: dict[str, str] = {
+    COMPARISON_V5: CANDIDATE_FEATURE_SET_V5,
+    COMPARISON_V6: CANDIDATE_FEATURE_SET_V6,
+}
+# rate comparisons: name -> (context columns, fringe guard), both fixed in config.
+RATE_COMPARISONS: dict[str, tuple[tuple[str, ...], float | None]] = {
+    COMPARISON_RATE: (tuple(RATE_CONTEXT_COLS), None),
+    COMPARISON_RATE_V6: (tuple(RATE_CONTEXT_COLS_V6), RATE_RESIDUAL_MIN_MINUTES),
+}
 COMPARISON_GATES: dict[str, tuple[str, ...]] = {
     COMPARISON_V5: P3_V5_GATED_ENDPOINTS,
     COMPARISON_RATE: P3_RATE_GATED_ENDPOINTS,
+    COMPARISON_V6: P3_V6_GATED_ENDPOINTS,
+    COMPARISON_RATE_V6: P3_RATE_V6_GATED_ENDPOINTS,
 }
-INCUMBENT_LABEL = {COMPARISON_V5: SERVED_FEATURE_SET, COMPARISON_RATE: "champion rate"}
+INCUMBENT_LABEL = {
+    COMPARISON_V5: SERVED_FEATURE_SET,
+    COMPARISON_RATE: "champion rate",
+    COMPARISON_V6: SERVED_FEATURE_SET,
+    COMPARISON_RATE_V6: "champion rate",
+}
 
 Losses = dict[str, tuple[np.ndarray, np.ndarray]]
 
 
 def rate_endpoint(target: str, conditional: bool) -> str:
     return f"{'cond' if conditional else 'uncond'}_{target.lower()}_mae"
+
+
+def is_binding(name: str) -> bool:
+    """False for a comparison that already had its one look (MODEL.md 13.6)."""
+    return name not in P3_DECIDED_COMPARISONS
+
+
+def verdict_text(name: str, verdict: PromotionVerdict) -> str:
+    if is_binding(name):
+        return verdict.reason
+    return (
+        f"REFERENCE ONLY (decided at {P3_DECIDED_COMPARISONS[name]}; this rerun is "
+        f"not a second look): {verdict.reason}"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -173,14 +215,21 @@ def emit(origin: str, valid_all: pd.DataFrame, losses: Losses) -> list[pd.DataFr
     return out
 
 
+Estimates = dict[str, tuple[np.ndarray, np.ndarray]]
+
+
 @dataclass
 class BracketScores:
-    """per-row losses for both comparisons, plus the coherence side outputs."""
+    """per-row losses for every comparison, plus the coherence side outputs.
+
+    each coherence input is (origin, scored incumbent frame, {family: estimates}).
+    """
 
     losses: dict[str, tuple[pd.DataFrame, pd.DataFrame]]
     clip_rates: pd.DataFrame
-    coherence_inputs: list[tuple[str, pd.DataFrame, dict[str, tuple[np.ndarray, np.ndarray]],
-                                 dict[str, tuple[np.ndarray, np.ndarray]]]] = field(default_factory=list)
+    coherence_inputs: list[tuple[str, pd.DataFrame, dict[str, Estimates]]] = field(
+        default_factory=list
+    )
 
 
 def score_brackets(
@@ -189,15 +238,19 @@ def score_brackets(
     targets: tuple[str, ...] = RATE_MODEL_TARGETS,
     rate_params: dict[str, object] | None = None,
 ) -> BracketScores:
-    """both comparisons over identical rows, every origin.
+    """every comparison over identical rows, every origin.
 
-    the residual rate is fitted on the incumbent's pieces, so its comparison
+    each residual rate is fitted on the incumbent's pieces, so its comparison
     differs from the champion's in the per-minute rate and in nothing else.
     """
     incumbent_feats = feature_set_columns(frame, SERVED_FEATURE_SET)
-    candidate_feats = feature_set_columns(frame, CANDIDATE_FEATURE_SET_V5)
+    candidate_feats = {
+        name: feature_set_columns(frame, feature_set)
+        for name, feature_set in FEATURE_SET_COMPARISONS.items()
+    }
+    names = [*FEATURE_SET_COMPARISONS, *RATE_COMPARISONS]
     blocks: dict[str, tuple[list[pd.DataFrame], list[pd.DataFrame]]] = {
-        COMPARISON_V5: ([], []), COMPARISON_RATE: ([], []),
+        name: ([], []) for name in names
     }
     clip_rows: list[dict] = []
     coherence_inputs = []
@@ -214,14 +267,17 @@ def score_brackets(
                  len(valid_all))
 
         incumbent = fit_and_score(train_all, valid_all, incumbent_feats, cutoff)
-        candidate = fit_and_score(train_all, valid_all, candidate_feats, cutoff)
         pts_rate = PerMinuteRate("PTS").fit(train_app)
-        blocks[COMPARISON_V5][0].extend(emit(
+        incumbent_losses = emit(
             origin, valid_all, availability_minutes_losses(valid_all, incumbent, pts_rate)
-        ))
-        blocks[COMPARISON_V5][1].extend(emit(
-            origin, valid_all, availability_minutes_losses(valid_all, candidate, pts_rate)
-        ))
+        )
+        for name, feats in candidate_feats.items():
+            candidate = fit_and_score(train_all, valid_all, feats, cutoff)
+            blocks[name][0].extend(incumbent_losses)
+            blocks[name][1].extend(emit(
+                origin, valid_all,
+                availability_minutes_losses(valid_all, candidate, pts_rate),
+            ))
 
         champion = {
             target: minutes_propagated_estimate(
@@ -229,27 +285,29 @@ def score_brackets(
             )
             for target in RATE_TARGETS if target in valid_all.columns
         }
-        models = {
-            target: ResidualRateModel(
-                cutoff=cutoff, **({"params": dict(rate_params)} if rate_params else {})
-            ).fit(train_app, target)
-            for target in targets
-        }
-        challenger = residual_rate_estimates(incumbent, models)
-        blocks[COMPARISON_RATE][0].extend(emit(
+        champion_losses = emit(
             origin, valid_all, rate_losses(valid_all, {t: champion[t] for t in targets})
-        ))
-        blocks[COMPARISON_RATE][1].extend(emit(
-            origin, valid_all, rate_losses(valid_all, challenger)
-        ))
-
-        # the challenger family is the champion with only its own stats replaced,
-        # which is what a served swap would look like downstream.
+        )
         champion_uncond = {t: pair[1] for t, pair in champion.items()}
-        challenger_uncond = {**champion_uncond,
-                             **{t: pair[1] for t, pair in challenger.items()}}
-        for family, values in (("champion", champion_uncond),
-                               (COMPARISON_RATE, challenger_uncond)):
+        families: dict[str, Estimates] = {"champion": champion}
+        for name, (context_cols, min_minutes) in RATE_COMPARISONS.items():
+            models = {
+                target: ResidualRateModel(
+                    cutoff=cutoff, context_cols=context_cols,
+                    residual_min_minutes=min_minutes,
+                    **({"params": dict(rate_params)} if rate_params else {}),
+                ).fit(train_app, target)
+                for target in targets
+            }
+            challenger = residual_rate_estimates(incumbent, models)
+            blocks[name][0].extend(champion_losses)
+            blocks[name][1].extend(emit(origin, valid_all, rate_losses(valid_all, challenger)))
+            # the challenger family is the champion with only its own stats replaced,
+            # which is what a served swap would look like downstream.
+            families[name] = {**champion, **challenger}
+
+        for family, estimates in families.items():
+            values = {**champion_uncond, **{t: pair[1] for t, pair in estimates.items()}}
             _, counts = coherence_clip(values)
             for constraint, n_bound in counts.items():
                 clip_rows.append({
@@ -258,7 +316,7 @@ def score_brackets(
                 })
         # the scored incumbent frame carries P_PLAY and MIN_PRED, which the
         # coherence endpoints need to rebuild team minute sums.
-        coherence_inputs.append((origin, incumbent, champion, {**champion, **challenger}))
+        coherence_inputs.append((origin, incumbent, families))
 
     if not blocks[COMPARISON_V5][0]:
         raise SystemExit("no origin produced results; check the dataset's date range")
@@ -340,9 +398,7 @@ def decide_comparison(
     return verdict, gated_cohorts
 
 
-def _coherence_frame(
-    scored: pd.DataFrame, estimates: dict[str, tuple[np.ndarray, np.ndarray]]
-) -> pd.DataFrame:
+def _coherence_frame(scored: pd.DataFrame, estimates: Estimates) -> pd.DataFrame:
     """the prediction-shaped frame eval_coherence scores: E_<stat>_COND and E_<stat>."""
     frame = scored.reset_index(drop=True).copy()
     minutes = frame[MIN_PRED].to_numpy(dtype=float)
@@ -361,8 +417,8 @@ def coherence_report(scores: BracketScores) -> tuple[str, pd.DataFrame | None]:
     except ImportError:
         return "not available (fnba_ml.eval_coherence is not installed)", None
     frames: list[pd.DataFrame] = []
-    for origin, scored, champion, challenger in scores.coherence_inputs:
-        for family, estimates in (("champion", champion), (COMPARISON_RATE, challenger)):
+    for origin, scored, families in scores.coherence_inputs:
+        for family, estimates in families.items():
             result = coherence_endpoints(_coherence_frame(scored, estimates))
             frames.append(result.assign(origin=origin, family=family))
     if not frames:
@@ -379,7 +435,7 @@ def _md(frame: pd.DataFrame) -> str:
 def write_reports(
     scores: BracketScores, reports_dir: Path, version: str, header: list[str]
 ) -> dict[str, PromotionVerdict]:
-    """decide both comparisons and write the csvs and the markdown."""
+    """decide every comparison and write the csvs and the markdown."""
     reports_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{version}_p3"
     verdicts: dict[str, PromotionVerdict] = {}
@@ -390,7 +446,9 @@ def write_reports(
         verdicts[name] = verdict
         decision_frames.append(decision_table(verdict).assign(
             comparison=name, incumbent_label=INCUMBENT_LABEL[name],
-            promoted=verdict.promoted, verdict=verdict.reason,
+            binding=is_binding(name),
+            promoted=verdict.promoted and is_binding(name),
+            verdict=verdict_text(name, verdict),
         ))
         if not gated.empty:
             gated_frames.append(gated.assign(comparison=name))
@@ -422,7 +480,7 @@ def write_reports(
     for name, verdict in verdicts.items():
         lines += [
             f"## {name} vs {INCUMBENT_LABEL[name]}", "",
-            f"**{verdict.reason}**", "",
+            f"**{verdict_text(name, verdict)}**", "",
             "positive relative_improvement = the candidate is better.", "",
             _md(decision_table(verdict)), "",
             "### per origin (positive delta_pct = the candidate is worse)", "",
@@ -459,14 +517,18 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     frame = load_dataset(args.dataset)
-    needed = [*V5_STAKES_FEATURE_COLS, *RATE_CONTEXT_COLS]
+    needed = [*V5_STAKES_FEATURE_COLS, *RATE_CONTEXT_COLS, *V6_CONTEXT_FEATURE_COLS,
+              *RATE_CONTEXT_COLS_V6]
     missing = sorted({c for c in needed if c not in frame.columns})
     if missing:
         raise SystemExit(
             f"the dataset is missing {len(missing)} candidate column(s): "
-            f"{', '.join(missing[:8])}. run build_v4_dataset.py first."
+            f"{', '.join(missing[:8])}. rebuild it with build_dataset.py."
         )
 
+    decided = ", ".join(
+        f"{name} ({stem})" for name, stem in P3_DECIDED_COMPARISONS.items()
+    )
     header = [
         f"- git commit: {git_commit() or 'unknown'}",
         f"- dataset: {args.dataset} ({len(frame):,} rows)",
@@ -477,15 +539,24 @@ def main(argv: list[str] | None = None) -> int:
         f"{len(V5_STAKES_FEATURE_COLS)} columns",
         f"- candidate 2: residual rate on the incumbent's pieces, stats "
         f"{', '.join(RATE_MODEL_TARGETS)}",
+        f"- candidate 3: {CANDIDATE_FEATURE_SET_V6} (feature_version "
+        f"{CANDIDATE_FEATURE_VERSION_V6}), {CANDIDATE_FEATURE_SET_V5} + "
+        f"{len(V6_CONTEXT_FEATURE_COLS)} box-detail columns",
+        f"- candidate 4: {COMPARISON_RATE_V6}, the residual rate with "
+        f"{len(RATE_CONTEXT_COLS_V6)} context columns and the residual set to 0 where "
+        f"MIN_PRED < {RATE_RESIDUAL_MIN_MINUTES:g}",
+        f"- already decided, rerun here as same-rows references that cannot promote: "
+        f"{decided}",
         f"- origins: {len(DEV_ORIGINS)} (config.DEV_ORIGINS)",
         f"- bar (config P3 block, written before this ran): paired {BLOCK_DAYS}-day "
         f"moving-block bootstrap, {N_REPLICATES} replicates, 95% CI excluding zero, "
         f"AND >= {P3_PROMOTION_FLOOR:.0%} relative improvement on a gated endpoint, "
         f"AND no gated-endpoint cohort regressing by more than "
         f"{P3_COHORT_REGRESSION_TOLERANCE:.0%}",
-        f"- gates: {CANDIDATE_FEATURE_SET_V5} {' or '.join(P3_V5_GATED_ENDPOINTS)}; "
-        f"residual rate {' or '.join(P3_RATE_GATED_ENDPOINTS)}; everything else is "
-        f"reported only",
+        f"- gates: {CANDIDATE_FEATURE_SET_V5} and {CANDIDATE_FEATURE_SET_V6} "
+        f"{' or '.join(P3_V5_GATED_ENDPOINTS)}; {COMPARISON_RATE} and "
+        f"{COMPARISON_RATE_V6} {' or '.join(P3_RATE_GATED_ENDPOINTS)}; everything "
+        f"else is reported only",
     ]
     for line in header:
         print(line)
@@ -495,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print()
     for name, verdict in verdicts.items():
-        print(f"{name}: {verdict.reason}")
+        print(f"{name}: {verdict_text(name, verdict)}")
     print(f"reports -> {args.reports_dir / f'{args.version}_p3.md'} and csvs")
     # exit 0 either way: a null result is a valid outcome of a pre-registered test.
     return 0

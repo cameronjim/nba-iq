@@ -25,6 +25,7 @@ import pandas as pd
 
 from ..config import COMPETITION_BY_SEASON_TYPE, COMPETITION_COL, SEASONS, season_tag
 from .schema import (
+    BOX_DETAIL_COLS,
     PLAYER_LOG_COLS,
     POSITION_COLS,
     SCHEDULE_COLS,
@@ -210,6 +211,28 @@ class ParquetSource:
         sched = normalise_ids(sched)
         require_columns(sched, SCHEDULE_COLS, "canonical schedule")
         return sched.reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    def load_box_details(self) -> pd.DataFrame | None:
+        """an optional ``box_details_<season>.parquet`` per season, else None.
+
+        the nba_api exports carry no starter flag or rebound split, so only a
+        directory that supplies the file (the test fixtures do) has the v6 family.
+        """
+        raw, found = self._read_seasons("box_details")
+        if raw.empty:
+            log.warning("no box_details_*.parquet in %s; v6 columns skipped",
+                        self.data_dir)
+            return None
+        require_columns(raw, BOX_DETAIL_COLS, "box details")
+        out = raw[list(BOX_DETAIL_COLS)].copy()
+        out[COMPETITION_COL] = _competition(raw)
+        for col in ("MIN", "PLUS_MINUS", "OREB", "DREB", "PF"):
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype(float)
+        out["STARTED"] = out["STARTED"].astype("boolean")
+        out = normalise_ids(normalise_dates(out))
+        log.info("parquet box details: %d rows, seasons %s", len(out), found)
+        return out.reset_index(drop=True)
 
     # ------------------------------------------------------------------
     def load_player_game_status(self) -> pd.DataFrame | None:
