@@ -1,0 +1,695 @@
+{
+ "timestamp": "2026-10-02T06:15:46Z",
+ "status": "success",
+ "season": {
+  "year": 2027,
+  "type": 1,
+  "name": "Preseason",
+  "displayName": "2026-27"
+ },
+ "injuries": [
+  {
+   "id": "9",
+   "displayName": "Golden State Warriors",
+   "injuries": [
+    {
+     "id": "532851",
+     "longComment": "Porzingis will miss the start of training camp due to the unknown issue, and his status for the beginning of the regular season is murky. If the veteran big man is forced to miss time to begin the campaign, Al Horford and Charles Bassey would be candidates for increased playing time.",
+     "shortComment": "Porzingis is out indefinitely due to an undisclosed issue, Anthony Slater of ESPN.com reports.",
+     "status": "Day-To-Day",
+     "date": "2026-09-28T15:15Z",
+     "athlete": {
+      "firstName": "Kristaps",
+      "lastName": "Porzingis",
+      "displayName": "Kristaps Porzingis",
+      "shortName": "K. Porzingis",
+      "position": {
+       "id": "9",
+       "name": "Center",
+       "displayName": "Center",
+       "abbreviation": "C",
+       "leaf": false
+      },
+      "team": {
+       "id": "9",
+       "uid": "s:40~l:46~t:9",
+       "slug": "golden-state-warriors",
+       "name": "Warriors",
+       "abbreviation": "GS",
+       "displayName": "Golden State Warriors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Undisclosed",
+      "location": "Other",
+      "returnDate": "2026-10-13"
+     }
+    },
+    {
+     "id": "532850",
+     "longComment": "Butler tore the ACL in his right knee in January before undergoing surgery in early February. The star forward still does not have a clear timetable for a return to game action, though it's encouraging to see his progression thus far. The 37-year-old appeared in 38 games during the 2025-26 regular season, averaging 20.0 points, 5.6 rebounds, 4.9 assists and 1.4 steals across 31.1 minutes per contest.",
+     "shortComment": "Butler has been cleared to participate in light on-court activities, Evan Webeck of the California Post reports.",
+     "status": "Out",
+     "date": "2026-09-28T15:08Z",
+     "athlete": {
+      "firstName": "Jimmy",
+      "lastName": "Butler III",
+      "displayName": "Jimmy Butler III",
+      "shortName": "J. Butler III",
+      "position": {
+       "id": "7",
+       "name": "Forward",
+       "displayName": "Forward",
+       "abbreviation": "F",
+       "leaf": false
+      },
+      "team": {
+       "id": "9",
+       "uid": "s:40~l:46~t:9",
+       "slug": "golden-state-warriors",
+       "name": "Warriors",
+       "abbreviation": "GS",
+       "displayName": "Golden State Warriors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "4",
+      "name": "INJURY_STATUS_OUT",
+      "description": "out",
+      "abbreviation": "O"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "OUT",
+       "abbreviation": "OUT"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "detail": "Surgery",
+      "side": "Right",
+      "returnDate": "2026-12-01"
+     }
+    },
+    {
+     "id": "532849",
+     "longComment": "Moody suffered the injury March 23 and underwent season-ending surgery four days later. The 24-year-old had been targeting September to resume running and on-court work, so his latest progress appears to keep his rehabilitation on track, though he remains without a firm timetable for his return to game action.",
+     "shortComment": "Moody has progressed to light on-court activities as he continues his recovery from a ruptured left patellar tendon, Evan Webeck of The Mercury News reports.",
+     "status": "Out",
+     "date": "2026-09-28T15:06Z",
+     "athlete": {
+      "firstName": "Moses",
+      "lastName": "Moody",
+      "displayName": "Moses Moody",
+      "shortName": "M. Moody",
+      "position": {
+       "id": "3",
+       "name": "Guard",
+       "displayName": "Guard",
+       "abbreviation": "G",
+       "leaf": false
+      },
+      "team": {
+       "id": "9",
+       "uid": "s:40~l:46~t:9",
+       "slug": "golden-state-warriors",
+       "name": "Warriors",
+       "abbreviation": "GS",
+       "displayName": "Golden State Warriors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "4",
+      "name": "INJURY_STATUS_OUT",
+      "description": "out",
+      "abbreviation": "O"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "OUT",
+       "abbreviation": "OUT"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "detail": "Surgery",
+      "side": "Left",
+      "returnDate": "2026-12-01"
+     }
+    },
+    {
+     "id": "532550",
+     "longComment": "Toohey was selected by the Warriors with the 52nd overall pick in the 2025 NBA Draft, though he was waived from his two-way deal in December before undergoing left knee surgery. The 22-year-old will compete for a spot on Golden State's regular-season roster in training camp, but it's unclear if he's fully recovered from the knee injury after missing Summer League.",
+     "shortComment": "Toohey (knee) signed an Exhibit 10 contract with the Warriors on Wednesday, Anthony Slater of ESPN.com reports.",
+     "status": "Day-To-Day",
+     "date": "2026-09-10T01:12Z",
+     "athlete": {
+      "firstName": "Alex",
+      "lastName": "Toohey",
+      "displayName": "Alex Toohey",
+      "shortName": "A. Toohey",
+      "position": {
+       "id": "7",
+       "name": "Forward",
+       "displayName": "Forward",
+       "abbreviation": "F",
+       "leaf": false
+      },
+      "team": {
+       "id": "9",
+       "uid": "s:40~l:46~t:9",
+       "slug": "golden-state-warriors",
+       "name": "Warriors",
+       "abbreviation": "GS",
+       "displayName": "Golden State Warriors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "detail": "Surgery",
+      "side": "Left",
+      "returnDate": "2026-10-04"
+     }
+    }
+   ]
+  },
+  {
+   "id": "11",
+   "displayName": "Indiana Pacers",
+   "injuries": [
+    {
+     "id": "532935",
+     "longComment": "There is optimism that the veteran center will be a full participant within the next one or two weeks. The injury appears unlikely to threaten Nance's availability for the start of the regular season, though his progress throughout camp will be worth monitoring.",
+     "shortComment": "Pacers coach Rick Carlisle said Nance is limited to 5-on-0 work at training camp after suffering a hamstring injury just over two weeks ago, Tony East of Forbes.com reports.",
+     "status": "Day-To-Day",
+     "date": "2026-09-29T17:33Z",
+     "athlete": {
+      "firstName": "Larry",
+      "lastName": "Nance Jr.",
+      "displayName": "Larry Nance Jr.",
+      "shortName": "L. Nance Jr.",
+      "position": {
+       "id": "7",
+       "name": "Forward",
+       "displayName": "Forward",
+       "abbreviation": "F",
+       "leaf": false
+      },
+      "team": {
+       "id": "5",
+       "uid": "s:40~l:46~t:5",
+       "slug": "cleveland-cavaliers",
+       "name": "Cavaliers",
+       "abbreviation": "CLE",
+       "displayName": "Cleveland Cavaliers"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Hamstring",
+      "location": "Leg",
+      "returnDate": "2026-10-07"
+     }
+    },
+    {
+     "id": "518463",
+     "longComment": "Furphy started in 21 of 35 regular-season appearances for the Pacers, posting averages of 5.1 points, 4.4 rebounds, 1.2 assists and 0.7 three-pointers in 18.4 minutes per contest. While no timetable has been announced, Furphy's absence could extend through the beginning of the 2026-27 season. With this news, the Pacers will likely lean more on Ben Sheppard, Kam Jones and Quenton Jackson moving forward.",
+     "shortComment": "Furphy was diagnosed with a torn right ACL on Monday and will miss the remainder of the season, Michael Scotto of USA Today reports.",
+     "status": "Out",
+     "date": "2026-02-09T21:43Z",
+     "athlete": {
+      "firstName": "Johnny",
+      "lastName": "Furphy",
+      "displayName": "Johnny Furphy",
+      "shortName": "J. Furphy",
+      "position": {
+       "id": "3",
+       "name": "Guard",
+       "displayName": "Guard",
+       "abbreviation": "G",
+       "leaf": false
+      },
+      "team": {
+       "id": "11",
+       "uid": "s:40~l:46~t:11",
+       "slug": "indiana-pacers",
+       "name": "Pacers",
+       "abbreviation": "IND",
+       "displayName": "Indiana Pacers"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "4",
+      "name": "INJURY_STATUS_OUT",
+      "description": "out",
+      "abbreviation": "O"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "OUT",
+       "abbreviation": "OUT"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "detail": "Surgery",
+      "side": "Right",
+      "returnDate": "2027-01-01"
+     }
+    }
+   ]
+  },
+  {
+   "id": "28",
+   "displayName": "Toronto Raptors",
+   "injuries": [
+    {
+     "id": "533036",
+     "longComment": "This appears to be a precautionary move for the Raptors, who will take on the Heat in the preseason opener Saturday. Battle could be cleared to play Saturday, and he'll need to impress during the preseason to earn a role in the rotation.",
+     "shortComment": "Battle was held out of Thursday's scrimmage due to a lower back injury, Josh Lewenberg of TSN.ca reports.",
+     "status": "Day-To-Day",
+     "date": "2026-10-01T23:00Z",
+     "athlete": {
+      "firstName": "Jamison",
+      "lastName": "Battle",
+      "displayName": "Jamison Battle",
+      "shortName": "J. Battle",
+      "position": {
+       "id": "7",
+       "name": "Forward",
+       "displayName": "Forward",
+       "abbreviation": "F",
+       "leaf": false
+      },
+      "team": {
+       "id": "28",
+       "uid": "s:40~l:46~t:28",
+       "slug": "toronto-raptors",
+       "name": "Raptors",
+       "abbreviation": "TOR",
+       "displayName": "Toronto Raptors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Back",
+      "location": "Torso",
+      "detail": "Not Specified",
+      "side": "Not Specified",
+      "returnDate": "2026-10-03"
+     }
+    },
+    {
+     "id": "533035",
+     "longComment": "Anderson's knee injury is considered to be minor, but his availability will be worth monitoring heading into Toronto's first preseason matchup against Miami on Saturday. The 33-year-old signed a one-year deal with the Raptors in July and is competing for a spot in the frontcourt rotation heading into the 2026-27 campaign.",
+     "shortComment": "Anderson sat out of Thursday's scrimmage due to a bruised right knee, Josh Lewenberg of TSN.ca reports.",
+     "status": "Day-To-Day",
+     "date": "2026-10-01T22:56Z",
+     "athlete": {
+      "firstName": "Kyle",
+      "lastName": "Anderson",
+      "displayName": "Kyle Anderson",
+      "shortName": "K. Anderson",
+      "position": {
+       "id": "7",
+       "name": "Forward",
+       "displayName": "Forward",
+       "abbreviation": "F",
+       "leaf": false
+      },
+      "team": {
+       "id": "28",
+       "uid": "s:40~l:46~t:28",
+       "slug": "toronto-raptors",
+       "name": "Raptors",
+       "abbreviation": "TOR",
+       "displayName": "Toronto Raptors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "detail": "Bruise",
+      "side": "Right",
+      "returnDate": "2026-10-03"
+     }
+    },
+    {
+     "id": "533034",
+     "longComment": "Graves is competing for a reserve role entering his rookie season, so even though the injury is thought to be minor, it's currently costing him time on the court. He can be considered day-to-day for the time being.",
+     "shortComment": "Graves did not participate in the Raptors' scrimmage Thursday after tweaking his groin in practice, Josh Lewenberg of TSN.ca reports.",
+     "status": "Day-To-Day",
+     "date": "2026-10-01T22:47Z",
+     "athlete": {
+      "firstName": "Allen",
+      "lastName": "Graves",
+      "displayName": "Allen Graves",
+      "shortName": "A. Graves",
+      "position": {
+       "id": "7",
+       "name": "Forward",
+       "displayName": "Forward",
+       "abbreviation": "F",
+       "leaf": false
+      },
+      "team": {
+       "id": "28",
+       "uid": "s:40~l:46~t:28",
+       "slug": "toronto-raptors",
+       "name": "Raptors",
+       "abbreviation": "TOR",
+       "displayName": "Toronto Raptors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Groin",
+      "location": "Groin",
+      "detail": "Not Specified",
+      "side": "Not Specified",
+      "returnDate": "2026-10-03"
+     }
+    },
+    {
+     "id": "532551",
+     "longComment": "Bittle missed Toronto's Summer League finale due to right knee soreness, though it's unclear exactly what he's dealing with now. The 23-year-old center out of Oregon signed an Exhibit 10 contract with the Raptors in June and is set to compete for a spot on the regular-season roster at training camp, so his status will be worth monitoring moving forward.",
+     "shortComment": "Bittle (lower leg) was spotted in a walking boot Wednesday, Esfandiar Baraheni of The Athletic reports.",
+     "status": "Day-To-Day",
+     "date": "2026-09-10T01:30Z",
+     "athlete": {
+      "firstName": "Nate",
+      "lastName": "Bittle",
+      "displayName": "Nate Bittle",
+      "shortName": "N. Bittle",
+      "position": {
+       "id": "9",
+       "name": "Center",
+       "displayName": "Center",
+       "abbreviation": "C",
+       "leaf": false
+      },
+      "team": {
+       "id": "28",
+       "uid": "s:40~l:46~t:28",
+       "slug": "toronto-raptors",
+       "name": "Raptors",
+       "abbreviation": "TOR",
+       "displayName": "Toronto Raptors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Lower Leg",
+      "location": "Leg",
+      "side": "Right",
+      "returnDate": "2026-10-03"
+     }
+    },
+    {
+     "id": "532152",
+     "longComment": "Martin will miss the Raptors' Summer League finale after being held out of the team's first four games in Las Vegas. He appeared in just 23 regular-season games in 2025-26 and figures to continue providing backcourt depth in 2026-27.",
+     "shortComment": "Martin (knee) won't play in Sunday's Summer League game against the Nuggets, Zulfi Sheikh of Sportsnet reports.",
+     "status": "Day-To-Day",
+     "date": "2026-07-19T22:30Z",
+     "athlete": {
+      "firstName": "Alijah",
+      "lastName": "Martin",
+      "displayName": "Alijah Martin",
+      "shortName": "A. Martin",
+      "position": {
+       "id": "3",
+       "name": "Guard",
+       "displayName": "Guard",
+       "abbreviation": "G",
+       "leaf": false
+      },
+      "team": {
+       "id": "28",
+       "uid": "s:40~l:46~t:28",
+       "slug": "toronto-raptors",
+       "name": "Raptors",
+       "abbreviation": "TOR",
+       "displayName": "Toronto Raptors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "detail": "Inflammation",
+      "side": "Not Specified",
+      "returnDate": "2026-10-03"
+     }
+    },
+    {
+     "id": "532150",
+     "longComment": "Hepburn will be held out of the Raptors' Summer League finale, marking his third consecutive contest on the inactive list. The 23-year-old point guard appeared in two Las Vegas Summer League games, averaging 6.5 points, 6.5 assists, 3.5 rebounds and 1.5 steals in 29.1 minutes per contest.",
+     "shortComment": "Hepburn (knee) won't play in Sunday's Summer League game against the Nuggets, Zulfi Sheikh of Sportsnet reports.",
+     "status": "Day-To-Day",
+     "date": "2026-07-19T22:26Z",
+     "athlete": {
+      "firstName": "Chucky",
+      "lastName": "Hepburn",
+      "displayName": "Chucky Hepburn",
+      "shortName": "C. Hepburn",
+      "position": {
+       "id": "3",
+       "name": "Guard",
+       "displayName": "Guard",
+       "abbreviation": "G",
+       "leaf": false
+      },
+      "team": {
+       "id": "28",
+       "uid": "s:40~l:46~t:28",
+       "slug": "toronto-raptors",
+       "name": "Raptors",
+       "abbreviation": "TOR",
+       "displayName": "Toronto Raptors"
+      },
+      "status": {
+       "id": "1",
+       "name": "Active",
+       "type": "active",
+       "abbreviation": "Active"
+      }
+     },
+     "source": {
+      "id": "1",
+      "description": "basic/manual",
+      "state": "basic"
+     },
+     "type": {
+      "id": "6",
+      "name": "INJURY_STATUS_DAYTODAY",
+      "description": "day-to-day",
+      "abbreviation": "DD"
+     },
+     "details": {
+      "fantasyStatus": {
+       "description": "GTD",
+       "abbreviation": "GTD"
+      },
+      "type": "Knee",
+      "location": "Leg",
+      "returnDate": "2026-10-03"
+     }
+    }
+   ]
+  }
+ ]
+}

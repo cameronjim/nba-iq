@@ -228,6 +228,21 @@ ESPN_SCOREBOARD_URL = (
 ESPN_TIMEOUT_SECONDS = 15
 ESPN_MAX_ATTEMPTS = 3
 ESPN_RETRY_DELAY_SECONDS = 2.0
+ESPN_INJURIES_URL = (
+    "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+)
+ESPN_INJURIES_SOURCE = "espn_injuries"
+ESPN_INJURIES_INGESTION_KIND = "injuries_espn"
+# how far ahead an expected return date turns into game-scoped out rows.
+ESPN_INJURIES_WINDOW_DAYS = 14
+# espn often files a long absence as day-to-day, so the blurb decides it.
+# "ruled out" and "will miss the start" are single-game or camp notes and stay off.
+ESPN_LONG_TERM_PATTERNS = (
+    r"out indefinitely|out for the season|season-ending"
+    r"|will miss the remainder|sidelined indefinitely|no timetable"
+)
+# a long-term note older than this is stale: espn leaves summer notes up for months.
+ESPN_LONG_TERM_MAX_REPORT_AGE_DAYS = 30
 # matches the backend odds board window: today through today+2, eastern.
 ODDS_WINDOW_DAYS = 2
 ODDS_SNAPSHOT_SOURCE = "espn_scoreboard"
