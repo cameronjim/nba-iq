@@ -78,3 +78,23 @@ test.describe('Stats page', () => {
     expect(firstRowName).toContain(ALL_STAR.name);
   });
 });
+
+test.describe('Scoreboard placement', () => {
+  test('the stats page does not show the live scores strip', async ({ page }) => {
+    await mockApi(page);
+    const stats = new StatsPage(page);
+
+    await stats.goto();
+
+    await expect(stats.playerTable.rowFor(ALL_STAR.name)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Scroll scores left' })).toHaveCount(0);
+  });
+
+  test('the home page keeps the live scores strip', async ({ page }) => {
+    await mockApi(page);
+
+    await page.goto('/');
+
+    await expect(page.getByRole('button', { name: 'Scroll scores left' })).toBeVisible();
+  });
+});

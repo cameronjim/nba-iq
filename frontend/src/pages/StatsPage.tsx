@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { IconSearch, IconClose } from '../components/icons';
 import { SkeletonTable } from '../components/Skeleton';
-import { ScoreboardStrip } from '../components/ScoreboardStrip';
 import { PlayerTable } from '../components/player/PlayerTable';
 import { TeamTable } from '../components/TeamTable';
 import { PlayerModal } from '../components/player/PlayerModal';
@@ -55,8 +54,6 @@ export const StatsPage = () => {
 
   return (
     <div className="pb-20">
-      <ScoreboardStrip />
-
       <div className="max-w-[1400px] mx-auto px-4 py-6">
         <div className="flex items-center gap-4 mb-5">
           <div className="tabs tabs-boxed">
