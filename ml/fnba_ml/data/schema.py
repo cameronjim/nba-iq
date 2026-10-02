@@ -81,6 +81,13 @@ STATUS_COLS: tuple[str, ...] = (
     "STARTED", "PLAYED", "DNP_REASON", "MIN", "STATUS_SOURCE",
 )
 
+# one row per appearance from the box-score details pass (migration 018), read
+# only by the v6 candidate family. optional: a source without it returns None.
+BOX_DETAIL_COLS: tuple[str, ...] = (
+    "PLAYER_ID", "GAME_ID", "TEAM_ID", "GAME_DATE", "MIN",
+    "STARTED", "PLUS_MINUS", "OREB", "DREB", "PF",
+)
+
 _SCHEDULE_ID_COLS = ("GAME_ID", "HOME_TEAM_ID", "AWAY_TEAM_ID")
 
 

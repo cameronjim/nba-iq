@@ -258,6 +258,8 @@ data; none has one yet. Promoting any of them changes an emitted number and is a
 | scenario serving | `predict.py --scenarios` | `<out>_scenarios.parquet` audit | not backtestable |
 | `v5-stakes` | `config.FEATURE_SETS["v5-stakes"]` | `run_p3_bracket.py` | availability Brier or minutes MAE |
 | residual rate | `fnba_ml/rate_model.py` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
+| `v6-context` | `config.FEATURE_SETS["v6-context"]`, `fnba_ml/box_context.py` | `run_p3_bracket.py` | availability Brier or minutes MAE |
+| `residual-rate-v6` | `RATE_CONTEXT_COLS_V6`, `RATE_RESIDUAL_MIN_MINUTES` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
 | count models | `fnba_ml/count_model.py` | `report_counts.py` | report-only |
 | tiered intervals | `train.py --tiered-quantiles` | `report_counts.py` | report-only |
 | v1 shadow | `train.py --feature-set v1`, `daily_run.py --shadow-feature-set v1` | `score_runs.py` | ladder rung (c), MODEL.md 13.4 |
@@ -303,6 +305,16 @@ more than 1% (`config`'s P3 block). It reads `data/dataset_v4.parquet`
 `_decision.csv`, `_per_origin.csv`, `_cohorts.csv`, `_cohorts_all_endpoints.csv`,
 `_clip_rates.csv` and `_coherence.csv`. It refuses to overwrite an existing decision
 csv. A pass is a recommendation to re-freeze, not a promotion.
+
+**`v6-context` and `residual-rate-v6` (MODEL.md 22).** Both parents had their look at
+`p3-2026-10-02`. `v6-context` is `v5-stakes` plus nine box-detail columns
+(`started_rate_10`, `started_last`, `starts_streak`, `team_starters_out_exp`,
+`exp_vacated_starts`, `plus_minus_ewma_10`, `pf_per36_ewma`, `oreb_share_ewma`,
+`dreb_share_ewma`), all as-of joined strictly before the game; `build_dataset.py`
+attaches them from `load_box_details` unless `--no-v6-candidate`. `residual-rate-v6`
+adds the four start columns to the rate context and zeroes the residual where
+`MIN_PRED < 10`. The bracket runs all four comparisons on the same rows; the two
+parents are labelled `REFERENCE ONLY` and can never promote.
 
 **Count models and tiered intervals (`report_counts.py`).** LightGBM Poisson
 boosters for STL/BLK/FG3M/TOV with a `log E[MIN]` offset plus the league log rate,
@@ -651,7 +663,7 @@ Nothing in them is served.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 977 tests
+python -m pytest tests -q      # 991 tests
 ```
 
 | File | Covers |
@@ -660,6 +672,7 @@ python -m pytest tests -q      # 977 tests
 | `tests/test_features.py` | all 12 leakage tests ported from `ml-spike/leakage_tests.py`, plus the `groupby().first()` trap regression, missingness-flag checks, the per-minute rate definition (hand-recomputed) and the rate backfill reproducing the built-in columns exactly, and a pin that `build_features(schedule=None)` is the pre-existing schedule computation |
 | `tests/test_prospective.py` | the future-game universe and its one-date-at-a-time feature build. Outcome-derived columns (`avail_rate_*`, rolls, EWMAs) of a future row are identical whether or not other future dates exist, with the naive whole-week build kept as a negative control that does leak. Schedule-derived columns read the whole known schedule: a future back-to-back has `TEAM_REST_DAYS == 1` and `IS_B2B == 1`, the first future game's rest is measured from the last played game, `OPP_REST_DAYS` follows the opponent's own future games, a new season's second game reads rest from its opener, and a future row's `OPP_DEF_FORM` is the mean of the opponent's last played games, not diluted by unplayed ones |
 | `tests/test_rate_model.py` | the residual rate: its target by hand, the cutoff refusal, a permutation control (shuffled context buys nothing) next to a planted +0.1 home effect that is recovered, box-score flip invariance on a rebuilt feature frame with a counter-assertion on later rows, the shared-cutoff guard, and the v5-stakes column list |
+| `tests/test_box_context.py` | the v6 family: start rate with fewer than 10 and exactly 10 prior appearances, a null flag, a box line flipped on game g moving no row on or before g (with a counter-assertion on later rows) by hand and on the fixture, teammate starters out with a star at the OUT override probability, rebound shares and the foul floor, the contract, the fringe guard leaving the champion rate exactly below 10 projected minutes, and the bracket's v6 registration |
 | `tests/test_p3_bracket.py` | the P3 bar as written, identical rows across both comparisons, appearance-only conditional rows, the decision logic on a synthetic win, loss, sub-floor win and cohort regression, and `main` end to end on the fixture including the one-look refusal |
 | `tests/test_universe.py` | status-based preferred; fallback labeled and warns; approximation over-states availability and truncates long absences; schedule symmetry |
 | `tests/test_models.py` | composition math; out-of-fold discipline for **both** multiplied quantities including deliberately constructed in-fold failures and a mismatched-cutoff pair; the minutes-propagation regression test (double the predicted minutes → double both estimates, checked through the fitted serving path); per-minute rate behaviour and the cameo floor; metric helpers |

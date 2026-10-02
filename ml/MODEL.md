@@ -4731,3 +4731,137 @@ to the bundle's `frozen_at`, which is now 2026-10-02.
   13.8.6's markdown plus csv lets a look be recomputed with the corrected tool.
 - **The UI and the backend readers.** How a served number is displayed, explained or
   ranked (section 19) is not the forecast.
+
+## 22. v6-context candidate (2026-10-02): built, pre-registered, unmeasured
+
+**Verdict first: two new challengers exist, `v6-context` and `residual-rate-v6`, and
+neither has a number.** Everything in this section was written before
+`run_p3_bracket.py` had scored either one. `prospective_2026_27_v3` serves exactly as
+section 21 froze it: artifact `20260818`, the 51 `FEATURE_COLS` (digest `914cdc17…`),
+`FEATURE_VERSION = "v3"`, the 13.1 champions. `tests/test_prospective_freeze.py` is
+green and sections 13, 17, 18 and 21 are not edited.
+
+### 22.1 Why: the P3 look on prod (report stem `p3-2026-10-02`)
+
+The one look 18.4 scheduled, against the 18.2 bars (95% CI excluding zero AND >= 1%
+pooled relative improvement on a gated endpoint, no cohort regressing > 1%):
+
+- `v5-stakes` vs incumbent: availability Brier +0.38% [+0.15, +0.56], minutes MAE
+  +0.24% [+0.12, +0.40]. Real, under the bar. NOT PROMOTED.
+- residual rate vs champion EWMA rate: conditional PTS MAE +0.65% [+0.55, +0.87]
+  pooled, stars (>=30 min) +1.12%, starters +0.70%; unconditional PTS MAE +0.05% (CI
+  spans zero); unconditional REB MAE -0.17% (worse, CI excludes zero); fringe (<10 min)
+  uncond PTS +4.0% worse (n=8781, flagged regresses). NOT PROMOTED.
+
+Both are directionally right and too small. Under 13.6 neither is re-scored: a fix is a
+new candidate with its own single look, which is what this section registers. The
+lever both lacked is the same one. The database now holds the full box-score details for
+every game 2022-23 through 2025-26 (`player_game_logs.started`, `plus_minus`,
+`oreb`/`dreb`/`pf`, `position`, `dnp_reason`, `details_source`, plus the inactive and
+rostered rows in `player_game_status`), and no feature read any of it. Who starts is the
+single largest determinant of a player's minutes that the v3 contract can only infer
+from a minutes rank (`top5_min_share_10` was built in 15.2 because `started` was null
+league-wide; it no longer is).
+
+### 22.2 `v6-context` (`FEATURE_SETS["v6-context"]`, 58 + 9 = 67 columns)
+
+The 58 `v5-stakes` columns, unchanged and in the same order, plus nine columns from
+`fnba_ml/box_context.py` (`config.V6_CONTEXT_FEATURE_COLS`):
+
+| Column | Definition |
+|---|---|
+| `started_rate_10` | share of the last 10 appearances (`V6_START_WINDOW`) started; fewer than 10 is the mean so far; a null `started` is missing, not a bench game |
+| `started_last` | started in the most recent appearance (1/0, null if that row's flag is null) |
+| `starts_streak` | consecutive starts ending at the most recent appearance; a null flag breaks it |
+| `team_starters_out_exp` | `sum_{j != i, started_rate_10_j >= 0.5} (1 - p_j)` over the team-game: the expected number of usual starters out |
+| `exp_vacated_starts` | `sum_{j != i} (1 - p_j) * started_rate_10_j`: the same, weighted by how often each teammate starts |
+| `plus_minus_ewma_10` | EWMA of plus-minus, halflife 10 appearances (`V6_BOX_EWMA_HALFLIFE`) |
+| `pf_per36_ewma` | EWMA of `PF * 36 / max(MIN, 4)`, the 4-minute floor being `RATE_MINUTES_FLOOR` |
+| `oreb_share_ewma` | EWMA of the player's share of his team-game's offensive rebounds (sum over the team's player lines) |
+| `dreb_share_ewma` | the same for defensive rebounds |
+
+**Leakage contract.** Every per-appearance window is inclusive of its own game and
+reaches a scheduled row only through `merge_asof(..., allow_exact_matches=False)` by
+`PLAYER_ID`, the same guard as the five joins in `build_features`, so the row for game
+g reads appearances strictly before g. Career-scoped, regular season only (the rate
+history's scope under 21.2). The two teammate columns are expectations over the same
+as-of, out-of-fold `P_CONTEXT` p_j that `exp_vacated_usg` is built from, so they read
+no target-game outcome; at serving, a player listed OUT would enter at the override
+table's 0.02 exactly as he does in `exp_vacated_usg`. The raw `STARTED`, `PLUS_MINUS`,
+`OREB`, `DREB` and `PF` are never columns of the feature frame.
+
+**Plumbing.** `PostgresSource.load_box_details` (one parameterised SELECT on
+`player_game_logs`) and `ParquetSource.load_box_details` (optional
+`box_details_<season>.parquet`) return the canonical `schema.BOX_DETAIL_COLS` frame;
+`build_dataset.py` attaches the family after the v4 one unless `--no-v6-candidate`,
+and a source with no details skips it with a warning. `CANDIDATE_FEATURE_VERSION_V6 =
+"v6"`; promoting it is a 13.2 item (6) and (7) re-freeze, as `v5-stakes` would have
+been.
+
+### 22.3 `residual-rate-v6` and the fringe guard
+
+The 18.3(b) residual rate with two pre-registered changes and nothing else
+(`RATE_MODEL_TARGETS`, `RATE_MODEL_PARAMS`, the training rows, the `ewma_MIN` training
+minutes and the incumbent's availability and minutes models are all the parent's):
+
+1. **Context.** `RATE_CONTEXT_COLS_V6` = the 15 `RATE_CONTEXT_COLS` plus
+   `started_rate_10`, `started_last`, `team_starters_out_exp` and `exp_vacated_starts`.
+2. **The fringe guard, written in config before any result:**
+
+```
+RATE_RESIDUAL_MIN_MINUTES: float = 10.0
+```
+
+At scoring, the residual is multiplied by `1(MIN_PRED >= 10)`, so a row whose
+out-of-fold projected minutes are under 10 (or null) is served the champion rate
+exactly, and the challenger's loss on it equals the champion's. Fitting is unchanged. A
+hard cut and not a shrink toward zero, because a ramp needs a second constant to set its
+width and nothing measured yet says what that width should be. **A stated risk, not a hedge:** the fringe cohort is
+defined by `roll10_MIN < 10` (13.3) and the guard by `MIN_PRED`, which is the number the
+composition multiplies and the only one serving has. A fringe row projected at 10 or
+more still takes the residual, so the guard can narrow the parent's +4.0% without
+closing it, and if it does not close it the bar blocks the candidate.
+
+### 22.4 The bars, and the look
+
+Unchanged from 18.2 and applied by the same `promotion.decide`:
+
+```
+P3_PROMOTION_FLOOR: float = 0.01
+P3_COHORT_REGRESSION_TOLERANCE: float = 0.01
+P3_V6_GATED_ENDPOINTS: tuple[str, ...] = P3_V5_GATED_ENDPOINTS
+P3_RATE_V6_GATED_ENDPOINTS: tuple[str, ...] = P3_RATE_GATED_ENDPOINTS
+```
+
+| Candidate | Against | Gates | Reported only |
+|---|---|---|---|
+| `v6-context` | `v3-honest` | availability Brier, minutes MAE | unconditional PTS MAE |
+| `residual-rate-v6` | champion rate | conditional PTS MAE, unconditional PTS MAE | AST, REB, FGA (both forms), clip rates, coherence endpoints |
+
+`run_p3_bracket.py` now runs four comparisons over identical rows in one invocation:
+both v6 candidates and both parents. The parents are listed in
+`config.P3_DECIDED_COMPARISONS` against `p3-2026-10-02`; their rows carry
+`binding = False`, `promoted` is forced False, and their verdict reads `REFERENCE ONLY
+(decided at p3-2026-10-02; this rerun is not a second look)`. They are there so the
+child and the parent can be read off the same rows, not to be decided again.
+
+**The look:** ML Evaluate on prod with `challengers: true` and `challenger_version:
+p3-v6-<date>`, which rebuilds the dataset with the v6 columns and runs the bracket. The
+workflow needs no new flag. One look per candidate: a v6 that disappoints is the
+result, and a fix is `v7`. As in 18.4, `v6-context` is read first; the rate challenger is
+fitted on the `v3-honest` pieces, so if `v6-context` passes, the rate verdict describes a
+composition that would no longer ship and is recorded as such.
+
+### 22.5 Open items
+
+- **Serving cannot build the v6 teammate columns yet.** `predict.rebuild_context`
+  rebuilds the v3 expected columns from override-adjusted p_j; it does not call
+  `box_context.teammate_start_features`. A promotion would need that wiring, a 13.2
+  re-freeze in any case.
+- **Fixture-only so far.** The suite exercises the family on synthetic box details in
+  which the first five roster slots always start, so `team_starters_out_exp` and
+  `exp_vacated_starts` coincide there. On real data they differ wherever a rotation
+  moves.
+- **`position` and `dnp_reason` are still unread.** The box position is set for starters
+  only and `players.position` already feeds `POS_GROUP`; neither seemed worth a column
+  ahead of the start flag.

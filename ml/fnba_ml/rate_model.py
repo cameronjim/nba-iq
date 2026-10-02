@@ -11,7 +11,7 @@ rate goes through :func:`models.minutes_propagated_estimate` like the champion.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import lightgbm as lgb
@@ -66,19 +66,39 @@ def residual_target(
     return stat / np.maximum(minutes, minutes_floor) - np.asarray(served_rate, dtype=float)
 
 
+def design_columns(context_cols: Sequence[str] = tuple(RATE_CONTEXT_COLS)) -> tuple[str, ...]:
+    """the design matrix's column order for one context column list."""
+    return (SERVED_RATE_FEATURE, *context_cols, MINUTES_FEATURE, *POS_FEATURES)
+
+
+def residual_guard(minutes: np.ndarray, min_minutes: float | None) -> np.ndarray:
+    """1 where the residual applies, 0 below ``min_minutes``; all 1 when it is None.
+
+    a null projected minutes value is below every threshold.
+    """
+    minutes = np.asarray(minutes, dtype=float)
+    if min_minutes is None:
+        return np.ones(len(minutes), dtype=float)
+    with np.errstate(invalid="ignore"):
+        return (minutes >= float(min_minutes)).astype(float)
+
+
 def design_matrix(
-    frame: pd.DataFrame, served_rate: np.ndarray, minutes: np.ndarray
+    frame: pd.DataFrame,
+    served_rate: np.ndarray,
+    minutes: np.ndarray,
+    context_cols: Sequence[str] = tuple(RATE_CONTEXT_COLS),
 ) -> pd.DataFrame:
     """the model's inputs in a fixed column order. reads no outcome column."""
-    missing = [c for c in RATE_CONTEXT_COLS if c not in frame.columns]
+    missing = [c for c in context_cols if c not in frame.columns]
     if missing:
         raise ValueError(
             f"the frame is missing {len(missing)} rate context column(s): "
-            f"{', '.join(missing)}. run build_v4_dataset.py first."
+            f"{', '.join(missing)}. run build_dataset.py first."
         )
     out = pd.DataFrame(index=range(len(frame)))
     out[SERVED_RATE_FEATURE] = np.asarray(served_rate, dtype=float)
-    for col in RATE_CONTEXT_COLS:
+    for col in context_cols:
         out[col] = pd.to_numeric(frame[col], errors="coerce").to_numpy(dtype=float)
     out[MINUTES_FEATURE] = np.asarray(minutes, dtype=float)
     if "POS_GROUP" in frame.columns:
@@ -89,7 +109,7 @@ def design_matrix(
         groups = np.full(len(frame), "", dtype=object)
     for group, col in zip(POS_GROUP_ORDER, POS_FEATURES):
         out[col] = (groups == group).astype(float)
-    return out[list(DESIGN_COLUMNS)]
+    return out[list(design_columns(context_cols))]
 
 
 def _appearances(frame: pd.DataFrame) -> pd.DataFrame:
@@ -110,6 +130,9 @@ class ResidualRateModel:
     cutoff: pd.Timestamp
     params: dict[str, object] = field(default_factory=lambda: dict(RATE_MODEL_PARAMS))
     minutes_floor: float = RATE_MINUTES_FLOOR
+    context_cols: tuple[str, ...] = tuple(RATE_CONTEXT_COLS)
+    # the pre-registered fringe guard; None applies the residual to every row.
+    residual_min_minutes: float | None = None
     target: str | None = None
     rate: PerMinuteRate | None = None
     estimator: lgb.LGBMRegressor | None = None
@@ -140,7 +163,8 @@ class ResidualRateModel:
             rows[TRAINING_MINUTES_COL], errors="coerce"
         ).to_numpy(dtype=float)
         self.estimator = lgb.LGBMRegressor(**self.params)
-        self.estimator.fit(design_matrix(rows, served, minutes), y)
+        self.context_cols = tuple(self.context_cols)
+        self.estimator.fit(design_matrix(rows, served, minutes, self.context_cols), y)
         return self
 
     def _check_fitted(self) -> None:
@@ -152,7 +176,7 @@ class ResidualRateModel:
         return self.rate.predict(frame)
 
     def predict_residual(self, frame: pd.DataFrame) -> np.ndarray:
-        """the fitted correction to the champion rate, per row."""
+        """the fitted correction to the champion rate per row, 0 where the guard is off."""
         self._check_fitted()
         if MIN_PRED not in frame.columns:
             raise ValueError(
@@ -161,7 +185,10 @@ class ResidualRateModel:
             )
         served = self.rate.predict(frame)
         minutes = frame[MIN_PRED].to_numpy(dtype=float)
-        return self.estimator.predict(design_matrix(frame, served, minutes))
+        residual = self.estimator.predict(
+            design_matrix(frame, served, minutes, self.context_cols)
+        )
+        return residual * residual_guard(minutes, self.residual_min_minutes)
 
     def predict(self, frame: pd.DataFrame) -> np.ndarray:
         """the challenger per-minute rate: served + residual, floored at 0."""
@@ -177,7 +204,8 @@ class ResidualRateModel:
     def feature_gain(self) -> pd.Series:
         self._check_fitted()
         return pd.Series(
-            self.estimator.booster_.feature_importance("gain"), index=list(DESIGN_COLUMNS)
+            self.estimator.booster_.feature_importance("gain"),
+            index=list(design_columns(self.context_cols)),
         ).sort_values(ascending=False)
 
 

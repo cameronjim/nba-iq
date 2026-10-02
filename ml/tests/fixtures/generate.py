@@ -373,6 +373,28 @@ def _postseason(frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     return out
 
 
+def _box_details(
+    logs: pd.DataFrame, status: pd.DataFrame, seed: int
+) -> pd.DataFrame:
+    """the migration-018 detail columns per logged line, on their own rng so every
+    other fixture number stays what the main seed draws."""
+    rng = np.random.default_rng(seed + 1_000)
+    started = status[["PLAYER_ID", "GAME_ID", "TEAM_ID", "STARTED"]]
+    box = logs.merge(started, on=["PLAYER_ID", "GAME_ID", "TEAM_ID"], how="left")
+    reb = box["REB"].to_numpy(dtype=float)
+    oreb = np.round(reb * rng.uniform(0.1, 0.4, len(box)), 0)
+    box["OREB"] = oreb
+    box["DREB"] = np.round(reb, 0) - oreb
+    box["PF"] = rng.poisson(box["MIN"].to_numpy(dtype=float) * 0.07).astype(float)
+    if "PLUS_MINUS" not in box.columns:
+        box["PLUS_MINUS"] = 0.0
+    keep = ["PLAYER_ID", "GAME_ID", "TEAM_ID", "GAME_DATE", "MIN", "STARTED",
+            "PLUS_MINUS", "OREB", "DREB", "PF", "SEASON_KEY"]
+    if "COMPETITION" in box.columns:
+        keep.append("COMPETITION")
+    return box[keep].reset_index(drop=True)
+
+
 def generate(
     out_dir: Path | None = None, seed: int = 17, with_postseason: bool = True
 ) -> Path:
@@ -387,6 +409,10 @@ def generate(
     frames["player_game_status"] = frames["player_game_status"].drop(
         columns=["SEASON_KEY"], errors="ignore"
     ).merge(status_games, on="GAME_ID", how="left")
+
+    frames["box_details"] = _box_details(
+        frames["player_logs"], frames["player_game_status"], seed
+    )
 
     # positions are reference data: one file, no season split
     frames.pop("player_positions").to_parquet(

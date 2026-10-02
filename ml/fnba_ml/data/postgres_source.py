@@ -30,6 +30,7 @@ import pandas as pd
 
 from ..config import COMPETITION_COL, HISTORY_SEASON_TYPES, SEASONS
 from .schema import (
+    BOX_DETAIL_COLS,
     PLAYER_LOG_COLS,
     POSITION_COLS,
     SCHEDULE_COLS,
@@ -175,6 +176,28 @@ JOIN nba_schedule s
 WHERE s.season = ANY(%(seasons)s)
   AND s.season_type = ANY(%(season_types)s)
 ORDER BY st.nba_player_id, s.game_date
+"""
+
+# the v6 candidate's box-score details (migration 018). a row the details pass
+# has not reached carries null started/oreb/dreb/pf, which stay null downstream.
+BOX_DETAILS_SQL = """
+SELECT
+    pgl.nba_player_id      AS "PLAYER_ID",
+    pgl.nba_game_id        AS "GAME_ID",
+    pgl.team_id            AS "TEAM_ID",
+    pgl.season_type        AS "SEASON_TYPE",
+    pgl.game_date          AS "GAME_DATE",
+    pgl.minutes            AS "MIN",
+    pgl.started            AS "STARTED",
+    pgl.plus_minus         AS "PLUS_MINUS",
+    pgl.oreb               AS "OREB",
+    pgl.dreb               AS "DREB",
+    pgl.pf                 AS "PF",
+    pgl.details_source     AS "DETAILS_SOURCE"
+FROM player_game_logs pgl
+WHERE pgl.season = ANY(%(seasons)s)
+  AND pgl.season_type = ANY(%(season_types)s)
+ORDER BY pgl.nba_player_id, pgl.game_date
 """
 
 # schedule rows only ever supply future context, so a prediction run may read
@@ -375,6 +398,24 @@ class PostgresSource:
         ).astype(object)
         log.info("loaded %d injury statuses known as of %s", len(frame), boundary)
         return frame
+
+    def load_box_details(self) -> pd.DataFrame | None:
+        """the box-score detail columns per appearance, or None if none are filled.
+
+        NOT EXERCISED BY THE TEST SUITE; there is no test database.
+        """
+        df = self._read(self._sql(BOX_DETAILS_SQL, "pgl.game_date"))
+        if df.empty or df["DETAILS_SOURCE"].isna().all():
+            log.warning("no box-score details for seasons %s; v6 columns skipped",
+                        self.seasons)
+            return None
+        df[COMPETITION_COL] = competition_of(df["SEASON_TYPE"])
+        for col in ("MIN", "PLUS_MINUS", "OREB", "DREB", "PF"):
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+        df["STARTED"] = df["STARTED"].astype("boolean")
+        df = normalise_ids(normalise_dates(df))
+        require_columns(df, BOX_DETAIL_COLS, "box details")
+        return df[[*BOX_DETAIL_COLS, COMPETITION_COL]].reset_index(drop=True)
 
     def load_player_game_status(self) -> pd.DataFrame | None:
         df = self._read(self._sql(STATUS_SQL, "s.game_date"))

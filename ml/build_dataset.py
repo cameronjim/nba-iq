@@ -29,7 +29,9 @@ from fnba_ml.config import (  # noqa: E402
     P_CONTEXT,
     RATE_HISTORY_INCLUDES_POSTSEASON,
     V4_FEATURE_COLS,
+    V6_CONTEXT_FEATURE_COLS,
 )
+from fnba_ml.box_context import attach_v6_features  # noqa: E402
 from fnba_ml.data.schema import normalise_dates, normalise_ids  # noqa: E402
 from fnba_ml.features import attach_cross_fit_context, build_features  # noqa: E402
 from fnba_ml.matchup import attach_v4_features  # noqa: E402
@@ -57,6 +59,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-v4-candidate", action="store_true",
         help=f"skip the {len(V4_FEATURE_COLS)} P2 candidate columns",
+    )
+    parser.add_argument(
+        "--no-v6-candidate", action="store_true",
+        help=f"skip the {len(V6_CONTEXT_FEATURE_COLS)} v6 box-detail columns "
+             f"(MODEL.md 22)",
     )
     parser.add_argument(
         "--postseason-history", action="store_true", default=None,
@@ -105,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     features = attach_cross_fit_context(features)
     if not args.no_v4_candidate:
         features = attach_v4_features(features, source.load_team_game_logs())
+    if not args.no_v6_candidate:
+        features = attach_v6_features(features, source.load_box_details())
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     features.to_parquet(args.out, index=False)
