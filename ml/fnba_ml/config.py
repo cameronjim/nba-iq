@@ -551,6 +551,13 @@ PRESEASON_ROLE_PRIOR_GAMES: int = 10
 PRESEASON_ROLE_PRIOR_WEIGHT: float = 0.5
 PRESEASON_ROLE_PRIOR_MIN_GAMES: int = 1
 
+# the second prior variant blends only these roster cohorts (preseason_role labels);
+# a returning same-team player keeps the champion minutes.
+PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS: tuple[str, ...] = (
+    "season start: new team",
+    "season start: no history",
+)
+
 # ---- the evaluation bracket: feature sets over identical rows ----
 # v1 is the no-teammate-context floor, v2-oracle is what perfect pre-tipoff
 # lineup information buys, v3-honest is what ships.

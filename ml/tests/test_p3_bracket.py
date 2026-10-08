@@ -249,8 +249,11 @@ def test_main_writes_every_report_and_refuses_a_second_look(
         *config.P3_DECIDED_COMPARISONS, p3.COMPARISON_V6_SEASON_START,
     }
     assert set(decision.loc[decision["binding"], "comparison"]) == {
-        p3.COMPARISON_V7, p3.COMPARISON_PRIOR,
+        p3.COMPARISON_V7, p3.COMPARISON_PRIOR, p3.COMPARISON_PRIOR_NEWCOMERS,
     }
+    roster = pd.read_csv(tmp_path / "fx_p3_prior_roster_cohorts.csv")
+    assert set(roster["comparison"]) <= set(p3.PRIOR_COMPARISONS)
+    assert set(roster["endpoint"]) <= set(config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS)
     assert not decided["promoted"].any()
     assert decided["verdict"].str.startswith("REFERENCE ONLY").all()
     markdown = (tmp_path / "fx_p3.md").read_text(encoding="utf-8")

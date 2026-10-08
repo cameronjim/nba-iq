@@ -19,6 +19,7 @@ from .config import (
     PRESEASON_ROLE_GAMES,
     PRESEASON_ROLE_PRIOR_GAMES,
     PRESEASON_ROLE_PRIOR_MIN_GAMES,
+    PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS,
     PRESEASON_ROLE_PRIOR_WEIGHT,
     PRESEASON_ROLE_TEAM_MINUTES,
 )
@@ -241,6 +242,18 @@ def preseason_role_minutes_prior(
     w = np.where(usable, prior_weights(apps_before, weight, games), 0.0)
     target = np.where(usable, share * PRESEASON_ROLE_TEAM_MINUTES, 0.0)
     return (1.0 - w) * minutes + w * target
+
+
+def newcomer_minutes_prior(
+    min_pred: np.ndarray,
+    blended: np.ndarray,
+    roster_cohort: np.ndarray,
+    cohorts: tuple[str, ...] = PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS,
+) -> np.ndarray:
+    """the blended minutes on newcomer rows, the champion's everywhere else."""
+    newcomer = np.isin(np.asarray(roster_cohort, dtype=object), list(cohorts))
+    return np.where(newcomer, np.asarray(blended, dtype=float),
+                    np.asarray(min_pred, dtype=float))
 
 
 def roster_cohorts(frame: pd.DataFrame) -> np.ndarray:

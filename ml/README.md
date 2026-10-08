@@ -262,6 +262,7 @@ data; none has one yet. Promoting any of them changes an emitted number and is a
 | `residual-rate-v6` | `RATE_CONTEXT_COLS_V6`, `RATE_RESIDUAL_MIN_MINUTES` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
 | `v7-preseason-role` | `config.FEATURE_SETS["v7-preseason-role"]`, `fnba_ml/preseason_role.py` | `run_p3_bracket.py` (season-start origins) | availability Brier or minutes MAE |
 | `preseason-role-prior` | `PRESEASON_ROLE_PRIOR_*` | `run_p3_bracket.py` (season-start origins) | minutes or unconditional PTS MAE over each player's first 10 appearances |
+| `preseason-role-prior-newcomers` | `PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS` | `run_p3_bracket.py` (season-start origins) | the same, blending new-team and no-history rows only |
 | count models | `fnba_ml/count_model.py` | `report_counts.py` | report-only |
 | tiered intervals | `train.py --tiered-quantiles` | `report_counts.py` | report-only |
 | v1 shadow | `train.py --feature-set v1`, `daily_run.py --shadow-feature-set v1` | `score_runs.py` | ladder rung (c), MODEL.md 13.4 |
@@ -326,7 +327,9 @@ last two preseason games of the row's team in the same season (`pre_started_rate
 `build_dataset.py` attaches them from `load_preseason_logs` unless
 `--no-v7-candidate` (`daily_run.py` always passes it, so serving never reads a Pre
 Season row). The prior blends the incumbent's minutes toward `pre_min_share * 240`
-with weight `0.5 * max(0, 1 - k/10)`. Both are scored in the same bracket run on
+with weight `0.5 * max(0, 1 - k/10)`; `preseason-role-prior-newcomers` applies the same
+blend to new-team and no-history rows only, and both priors' gated endpoints are also
+written per roster cohort (`<stem>_p3_prior_roster_cohorts.csv`). All are scored in the same bracket run on
 `config.PRESEASON_ROLE_ORIGINS` (the 2023, 2024 and 2025 season starts), with
 `v6-context@season-start` as a same-rows reference and new-team, no-history and
 same-team cohorts.
@@ -678,7 +681,7 @@ Nothing in them is served.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 1010 tests
+python -m pytest tests -q      # 1013 tests
 ```
 
 | File | Covers |

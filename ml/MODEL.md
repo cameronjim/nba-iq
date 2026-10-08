@@ -4892,9 +4892,10 @@ with its own look. Nothing served changes; `prospective_2026_27_v3` stands.
 
 ## 23. v7-preseason-role (2026-10-07): pre-registered, unmeasured
 
-**Verdict first: two new challengers exist, `v7-preseason-role` and
-`preseason-role-prior`, and neither has a number.** Everything in this section was
-written before `run_p3_bracket.py` had scored either one. `prospective_2026_27_v3`
+**Verdict first: three new challengers exist, `v7-preseason-role`,
+`preseason-role-prior` and `preseason-role-prior-newcomers`, and none has a number.**
+Everything in this section was written before `run_p3_bracket.py` had scored any of
+them. `prospective_2026_27_v3`
 serves exactly as section 21 froze it: artifact `20260818`, the 51 `FEATURE_COLS`
 (digest `914cdc17…`), `FEATURE_VERSION = "v3"`, the 13.1 champions.
 `tests/test_prospective_freeze.py` is green and sections 13, 17, 18, 21 and 22 are not
@@ -4996,6 +4997,25 @@ cohorts; on returning stars it will cost minutes MAE. The cohort rule below bloc
 if that cost exceeds 1%, and this is the prior as Cameron asked for it, not a
 calibrated one. A tier-calibrated version would be a new candidate.
 
+**The second variant, `preseason-role-prior-newcomers`, registered with the first and
+before any look.** The same blend, weights, fade and played-at-least-one rule, applied
+only to rows in the roster cohorts (23.5) named in config:
+
+```
+PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS: tuple[str, ...] = (
+    "season start: new team",
+    "season start: no history",
+)
+```
+
+A returning same-team player keeps the champion minutes exactly, so the compression
+cost above cannot reach him. Both variants are kept so the look separates the two
+questions: whether the preseason role helps at all, and whether restricting it to the
+players whose role is actually unknown is what makes the difference. Restricting a
+prior to the cohorts where it should help is also restricting where it can show a
+gain, so the newcomer variant's pooled first-10 number is diluted by the untouched
+same-team rows; the gate is still the pooled number.
+
 ### 23.4 The origins
 
 `config.PRESEASON_ROLE_ORIGINS`:
@@ -5048,6 +5068,7 @@ P3_PRESEASON_PRIOR_GATED_ENDPOINTS = ("minutes_mae_first10", "uncond_pts_mae_fir
 |---|---|---|---|
 | `v7-preseason-role` | `v3-honest` | availability Brier, minutes MAE (whole window) | unconditional PTS MAE, every `_first10` endpoint |
 | `preseason-role-prior` | champion minutes (`v3-honest` E[MIN\|plays]) | minutes MAE and unconditional PTS MAE on the first-10 rows | the same two over the whole window |
+| `preseason-role-prior-newcomers` | champion minutes | the same two first-10 endpoints | the same two over the whole window |
 | `v6-context@season-start` | `v3-honest` | none: `REFERENCE ONLY` | all |
 
 The bar is the P3 bar applied by the same `promotion.decide`: paired 7-day moving-block
@@ -5055,7 +5076,11 @@ bootstrap, 95% CI excluding zero and at least 1% relative improvement on a gated
 endpoint, and no cohort on a gated endpoint regressing by more than 1%. The
 `v6-context@season-start` row is there because v7 contains v6, and v6 had its one look
 (22.5): v7 minus the reference, on identical rows, is the part preseason added. It is
-registered as non-binding through its parent. `v6-context` and `residual-rate-v6` join
+registered as non-binding through its parent. Both priors are binding, each its own
+candidate under the same bar. For both, the report also writes the two gated first-10
+endpoints within each of the three roster cohorts (`<stem>_p3_prior_roster_cohorts.csv`
+and a section of the markdown); those rows are reported only, beyond the cohort rule
+that already applies to every gated endpoint. `v6-context` and `residual-rate-v6` join
 `config.P3_DECIDED_COMPARISONS` against `p3-v6-2026-10-02`, so the same invocation
 reruns them on `DEV_ORIGINS` as `REFERENCE ONLY` and no rerun is a second v6 look.
 

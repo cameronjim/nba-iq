@@ -39,6 +39,7 @@ from fnba_ml.config import (  # noqa: E402
     PRESEASON_ROLE_FIRST_GAMES_SUFFIX,
     PRESEASON_ROLE_ORIGINS,
     PRESEASON_ROLE_PRIOR_GAMES,
+    PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS,
     PRESEASON_ROLE_PRIOR_WEIGHT,
     RATE_CONTEXT_COLS,
     RATE_CONTEXT_COLS_V6,
@@ -75,7 +76,9 @@ from fnba_ml.promotion import (  # noqa: E402
 )
 from fnba_ml.preseason_role import (  # noqa: E402
     ROSTER_COHORT_COL,
+    ROSTER_COHORTS,
     SEASON_APPS_COL,
+    newcomer_minutes_prior,
     preseason_role_minutes_prior,
     regular_season_apps_before,
     roster_cohort_masks,
@@ -93,11 +96,13 @@ COMPARISON_RATE_V6 = "residual-rate-v6"
 COMPARISON_V7 = CANDIDATE_FEATURE_SET_V7
 COMPARISON_V6_SEASON_START = f"{CANDIDATE_FEATURE_SET_V6}@season-start"
 COMPARISON_PRIOR = "preseason-role-prior"
+COMPARISON_PRIOR_NEWCOMERS = "preseason-role-prior-newcomers"
+PRIOR_COMPARISONS: tuple[str, ...] = (COMPARISON_PRIOR, COMPARISON_PRIOR_NEWCOMERS)
 
 # scored on PRESEASON_ROLE_ORIGINS only: by the fade, every v7 column is neutral by
 # December, so DEV_ORIGINS could not see either candidate.
 SEASON_START_COMPARISONS: tuple[str, ...] = (
-    COMPARISON_V7, COMPARISON_V6_SEASON_START, COMPARISON_PRIOR,
+    COMPARISON_V7, COMPARISON_V6_SEASON_START, *PRIOR_COMPARISONS,
 )
 # a same-rows rerun of an already decided candidate, binding exactly as its parent is.
 REFERENCE_PARENTS: dict[str, str] = {COMPARISON_V6_SEASON_START: COMPARISON_V6}
@@ -120,6 +125,7 @@ COMPARISON_GATES: dict[str, tuple[str, ...]] = {
     COMPARISON_V7: P3_V7_GATED_ENDPOINTS,
     COMPARISON_V6_SEASON_START: P3_V6_GATED_ENDPOINTS,
     COMPARISON_PRIOR: P3_PRESEASON_PRIOR_GATED_ENDPOINTS,
+    COMPARISON_PRIOR_NEWCOMERS: P3_PRESEASON_PRIOR_GATED_ENDPOINTS,
 }
 INCUMBENT_LABEL = {
     COMPARISON_V5: SERVED_FEATURE_SET,
@@ -129,6 +135,7 @@ INCUMBENT_LABEL = {
     COMPARISON_V7: SERVED_FEATURE_SET,
     COMPARISON_V6_SEASON_START: SERVED_FEATURE_SET,
     COMPARISON_PRIOR: "champion minutes",
+    COMPARISON_PRIOR_NEWCOMERS: "champion minutes",
 }
 
 Losses = dict[str, tuple[np.ndarray, np.ndarray]]
@@ -440,22 +447,34 @@ def score_season_start(
                 masks,
             ))
 
-        blended = incumbent.copy()
-        blended[MIN_PRED] = preseason_role_minutes_prior(
-            incumbent[MIN_PRED].to_numpy(dtype=float),
+        champion_minutes = incumbent[MIN_PRED].to_numpy(dtype=float)
+        everyone = preseason_role_minutes_prior(
+            champion_minutes,
             valid_all["pre_min_share"].to_numpy(dtype=float),
             valid_all["pre_games_played"].to_numpy(dtype=float),
             valid_all[SEASON_APPS_COL].to_numpy(dtype=float),
         )
-        prior_losses = availability_minutes_losses(valid_all, blended, pts_rate)
-        blocks[COMPARISON_PRIOR][0].extend(emit(
+        prior_minutes = {
+            COMPARISON_PRIOR: everyone,
+            COMPARISON_PRIOR_NEWCOMERS: newcomer_minutes_prior(
+                champion_minutes, everyone, valid_all[ROSTER_COHORT_COL].to_numpy()
+            ),
+        }
+        incumbent_prior_rows = emit(
             origin, valid_all,
             with_first_games(minutes_and_points(incumbent_losses), first), masks,
-        ))
-        blocks[COMPARISON_PRIOR][1].extend(emit(
-            origin, valid_all,
-            with_first_games(minutes_and_points(prior_losses), first), masks,
-        ))
+        )
+        for name, minutes in prior_minutes.items():
+            blended = incumbent.copy()
+            blended[MIN_PRED] = minutes
+            blocks[name][0].extend(incumbent_prior_rows)
+            blocks[name][1].extend(emit(
+                origin, valid_all,
+                with_first_games(minutes_and_points(
+                    availability_minutes_losses(valid_all, blended, pts_rate)
+                ), first),
+                masks,
+            ))
 
     if not blocks[COMPARISON_V7][0]:
         raise SystemExit("no season-start origin produced results; check the dataset")
@@ -564,6 +583,18 @@ def coherence_report(scores: BracketScores) -> tuple[str, pd.DataFrame | None]:
     return "available", pd.concat(frames, ignore_index=True)
 
 
+def prior_roster_table(all_cohorts: pd.DataFrame) -> pd.DataFrame:
+    """each prior's gated first-10 endpoints within the three roster cohorts."""
+    if all_cohorts.empty:
+        return all_cohorts
+    keep = (
+        all_cohorts["comparison"].isin(PRIOR_COMPARISONS)
+        & all_cohorts["endpoint"].isin(P3_PRESEASON_PRIOR_GATED_ENDPOINTS)
+        & all_cohorts["cohort"].isin(ROSTER_COHORTS)
+    )
+    return all_cohorts[keep].reset_index(drop=True)
+
+
 def _md(frame: pd.DataFrame) -> str:
     if frame is None or frame.empty:
         return "_(none)_"
@@ -610,6 +641,8 @@ def write_reports(
     gated_cohorts.to_csv(reports_dir / f"{stem}_cohorts.csv", index=False)
     per_origin.to_csv(reports_dir / f"{stem}_per_origin.csv", index=False)
     all_cohorts.to_csv(reports_dir / f"{stem}_cohorts_all_endpoints.csv", index=False)
+    roster = prior_roster_table(all_cohorts)
+    roster.to_csv(reports_dir / f"{stem}_prior_roster_cohorts.csv", index=False)
     scores.clip_rates.to_csv(reports_dir / f"{stem}_clip_rates.csv", index=False)
     if coherence is not None:
         coherence.to_csv(reports_dir / f"{stem}_coherence.csv", index=False)
@@ -629,6 +662,11 @@ def write_reports(
                 columns=["comparison"]) if not gated_cohorts.empty else gated_cohorts),
             "",
         ]
+    lines += [
+        "## both priors: gated endpoints by roster cohort (positive delta_pct = worse)",
+        "", "reported only; the gate is the pooled decision and the cohort rule above.",
+        "", _md(roster), "",
+    ]
     lines += [
         "## coherence", "",
         f"eval_coherence.coherence_endpoints: {coherence_status}", "",
@@ -693,10 +731,13 @@ def main(argv: list[str] | None = None) -> int:
         f"pre_min_share * 240 with weight {PRESEASON_ROLE_PRIOR_WEIGHT:g} * max(0, 1 - "
         f"k / {PRESEASON_ROLE_PRIOR_GAMES}) over each player's first "
         f"{PRESEASON_ROLE_PRIOR_GAMES} appearances",
+        f"- candidate 7: {COMPARISON_PRIOR_NEWCOMERS}, the same blend on the "
+        f"{' and '.join(PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS)} cohorts only; same-team "
+        f"players keep the champion minutes",
         f"- already decided, rerun here as same-rows references that cannot promote: "
         f"{decided}",
         f"- origins: {len(DEV_ORIGINS)} (config.DEV_ORIGINS) for candidates 1-4; "
-        f"candidates 5-6 on config.PRESEASON_ROLE_ORIGINS, each start the season opener "
+        f"candidates 5-7 on config.PRESEASON_ROLE_ORIGINS, each start the season opener "
         f"found in the data: {windows}",
         f"- bar (config P3 block, written before this ran): paired {BLOCK_DAYS}-day "
         f"moving-block bootstrap, {N_REPLICATES} replicates, 95% CI excluding zero, "
@@ -706,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
         f"- gates: {CANDIDATE_FEATURE_SET_V5} and {CANDIDATE_FEATURE_SET_V6} "
         f"{' or '.join(P3_V5_GATED_ENDPOINTS)}; {COMPARISON_RATE} and "
         f"{COMPARISON_RATE_V6} {' or '.join(P3_RATE_GATED_ENDPOINTS)}; "
-        f"{COMPARISON_V7} {' or '.join(P3_V7_GATED_ENDPOINTS)}; {COMPARISON_PRIOR} "
+        f"{COMPARISON_V7} {' or '.join(P3_V7_GATED_ENDPOINTS)}; both priors "
         f"{' or '.join(P3_PRESEASON_PRIOR_GATED_ENDPOINTS)}; everything else is "
         f"reported only",
     ]

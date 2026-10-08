@@ -27,6 +27,7 @@ from fnba_ml.preseason_role import (  # noqa: E402
     COHORT_NO_HISTORY,
     COHORT_SAME_TEAM,
     attach_preseason_role_features,
+    newcomer_minutes_prior,
     preseason_role_features,
     preseason_role_minutes_prior,
     prior_weights,
@@ -305,7 +306,15 @@ def test_the_bracket_registers_both_v7_candidates_and_the_v6_reference() -> None
     # act + assert
     assert p3.SEASON_START_COMPARISONS == (
         p3.COMPARISON_V7, p3.COMPARISON_V6_SEASON_START, p3.COMPARISON_PRIOR,
+        p3.COMPARISON_PRIOR_NEWCOMERS,
     )
+    assert p3.COMPARISON_GATES[p3.COMPARISON_PRIOR_NEWCOMERS] == (
+        config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS
+    )
+    assert p3.is_binding(p3.COMPARISON_PRIOR_NEWCOMERS)
+    assert set(config.PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS) == {
+        COHORT_NEW_TEAM, COHORT_NO_HISTORY,
+    }
     assert p3.COMPARISON_GATES[p3.COMPARISON_V7] == config.P3_V7_GATED_ENDPOINTS
     assert p3.COMPARISON_GATES[p3.COMPARISON_PRIOR] == (
         config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS
@@ -423,3 +432,80 @@ def test_the_prior_changes_no_row_outside_the_first_games(
     moved = every & incumbent["row_key"].isin(first_keys)
     assert not np.allclose(prior.loc[moved.to_numpy(), "loss"].to_numpy(),
                            incumbent.loc[moved.to_numpy(), "loss"].to_numpy())
+
+
+def test_the_newcomer_prior_blends_newcomers_and_leaves_same_team_rows_alone() -> None:
+    # arrange
+    min_pred = np.array([30.0, 30.0, 30.0])
+    blended = np.array([27.0, 27.0, 27.0])
+    cohorts = np.array([COHORT_SAME_TEAM, COHORT_NEW_TEAM, COHORT_NO_HISTORY], dtype=object)
+
+    # act
+    out = newcomer_minutes_prior(min_pred, blended, cohorts)
+
+    # assert
+    np.testing.assert_allclose(out, [30.0, 27.0, 27.0])
+
+
+@pytest.fixture(scope="module")
+def season_start_with_movers(
+    v7_frame: pd.DataFrame,
+) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
+    # the synthetic league has no trades, so team 0's returners are relabelled as
+    # new-team players; every other label is the real one.
+    mover_team = _team_ids()[0]
+
+    def with_movers(frame: pd.DataFrame) -> np.ndarray:
+        labels = roster_cohorts(frame)
+        moved = (frame["TEAM_ID"].astype(str).to_numpy() == mover_team) & (
+            labels == COHORT_SAME_TEAM
+        )
+        return np.where(moved, COHORT_NEW_TEAM, labels).astype(object)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(p3, "roster_cohorts", with_movers)
+        origins = p3.clamp_to_opener(v7_frame, FIXTURE_SEASON_START)
+        return p3.score_season_start(v7_frame, origins)
+
+
+def _paired(frame: pd.DataFrame, cohort: str, endpoint: str) -> np.ndarray:
+    rows = frame[(frame["cohort"] == cohort) & (frame["endpoint"] == endpoint)]
+    return rows.sort_values(["origin", "row_key"])["loss"].to_numpy()
+
+
+def test_the_newcomer_variant_moves_only_newcomer_rows_in_the_bracket(
+    season_start_with_movers: dict[str, tuple[pd.DataFrame, pd.DataFrame]],
+) -> None:
+    # arrange
+    incumbent, newcomers = season_start_with_movers[p3.COMPARISON_PRIOR_NEWCOMERS]
+    _, everyone = season_start_with_movers[p3.COMPARISON_PRIOR]
+    endpoint = "minutes_mae_first10"
+
+    # act
+    same_inc = _paired(incumbent, COHORT_SAME_TEAM, endpoint)
+    same_new = _paired(newcomers, COHORT_SAME_TEAM, endpoint)
+    same_all = _paired(everyone, COHORT_SAME_TEAM, endpoint)
+    moved_inc = _paired(incumbent, COHORT_NEW_TEAM, endpoint)
+    moved_new = _paired(newcomers, COHORT_NEW_TEAM, endpoint)
+    moved_all = _paired(everyone, COHORT_NEW_TEAM, endpoint)
+
+    # assert
+    assert len(same_inc) and len(moved_inc)
+    np.testing.assert_array_equal(same_new, same_inc)
+    assert not np.allclose(same_all, same_inc)
+    np.testing.assert_allclose(moved_new, moved_all)
+    assert not np.allclose(moved_new, moved_inc)
+
+
+def test_the_first_ten_endpoints_are_broken_out_by_roster_cohort(
+    season_start_with_movers: dict[str, tuple[pd.DataFrame, pd.DataFrame]],
+) -> None:
+    # act
+    for name in p3.PRIOR_COMPARISONS:
+        incumbent, _ = season_start_with_movers[name]
+        gated = incumbent[incumbent["endpoint"].isin(config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS)]
+
+        # assert
+        for endpoint in config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS:
+            cohorts = set(gated.loc[gated["endpoint"] == endpoint, "cohort"])
+            assert {COHORT_NEW_TEAM, COHORT_NO_HISTORY, COHORT_SAME_TEAM} <= cohorts, name
