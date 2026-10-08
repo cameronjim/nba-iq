@@ -210,6 +210,12 @@ NBA_WEB_SCHEDULE_DAYS_AHEAD = 21
 NBA_WEB_BOX_SCORE_URL = "https://www.nba.com/game/{game_id}/box-score"
 WEB_BOX_SCORE_DELAY_SECONDS = 2.0
 WEB_BOX_SCORE_SOURCE = "nba_web_boxscore"
+# per-run caps for the automatic nba.com lane, so a catch-up after an outage
+# stays inside the scraper workflow's 30-minute timeout.
+WEB_GAME_LOG_RUN_LIMIT = 40
+WEB_BOX_DETAILS_RUN_LIMIT = 40
+# a game the schedule does not yet call final is fetched this long after tip.
+GAME_FINAL_AFTER_TIP_HOURS = 3
 BOX_SOURCE_AUTO = "auto"
 BOX_SOURCE_STATS = "stats"
 BOX_SOURCE_WEB = "web"

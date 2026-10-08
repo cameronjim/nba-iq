@@ -63,14 +63,15 @@ from rows import (
     enumerate_game_id_groups,
     game_log_fetch_from,
     game_log_rows_from_web,
+    game_status_rows_from_web,
     web_game_is_final,
-    web_inactive_rows,
     player_ids_absent_from_box,
     schedule_rows_from_league_schedule,
     schedule_rows_from_nba_web,
     schedule_row_from_web_game,
     schedule_rows_from_team_logs,
     season_types_to_fetch,
+    select_games_for_web_logs,
     split_rows_on_season_boundary,
     supplement_player_log_rows,
 )
@@ -609,10 +610,11 @@ def backfill_box_details(
     return len(games) - failed
 
 
-# a game with no team log that finished, or whose date has passed. postponed
-# games are excluded the way the validation report excludes them.
+# a game with no team log scheduled on or before today; game_ready_for_logs
+# then keeps the ones that are over. postponed games are excluded the way the
+# validation report excludes them.
 WEB_GAME_LOGS_NEEDED_SQL = """
-SELECT s.nba_game_id, s.season_type, s.game_date
+SELECT s.nba_game_id, s.season_type, s.game_date, s.game_status, s.scheduled_at
   FROM nba_schedule s
  WHERE s.season = %s
    AND s.season_type = ANY(%s)
@@ -620,7 +622,7 @@ SELECT s.nba_game_id, s.season_type, s.game_date
    AND NOT EXISTS (SELECT 1
                      FROM team_game_logs t
                     WHERE t.nba_game_id = s.nba_game_id)
-   AND (s.game_status ILIKE 'final%%' OR s.game_date < %s)
+   AND s.game_date <= %s
  ORDER BY s.game_date, s.nba_game_id
 """
 
@@ -652,23 +654,20 @@ def _games_needing_web_logs(
     conn: psycopg2.extensions.connection,
     season: str,
     season_types: Sequence[str],
-    today: date,
+    now: datetime,
     limit: int | None,
 ) -> list[tuple[str, str, date]]:
-    sql = WEB_GAME_LOGS_NEEDED_SQL
-    params: list[object] = [season, list(season_types), today]
-    if limit is not None:
-        sql += " LIMIT %s"
-        params.append(limit)
+    today = now.astimezone(ZoneInfo("America/New_York")).date()
     cur = conn.cursor()
     try:
-        cur.execute(sql, tuple(params))
-        return [
-            (str(game_id), str(season_type), game_date)
-            for game_id, season_type, game_date in cur.fetchall()
+        cur.execute(WEB_GAME_LOGS_NEEDED_SQL, (season, list(season_types), today))
+        candidates = [
+            (str(game_id), str(season_type), game_date, game_status, scheduled_at)
+            for game_id, season_type, game_date, game_status, scheduled_at in cur.fetchall()
         ]
     finally:
         cur.close()
+    return select_games_for_web_logs(candidates, now, limit)
 
 
 def _apply_web_game(
@@ -694,10 +693,7 @@ def _apply_web_game(
             f"{len(player_logs)} player line(s)"
         )
     box_players, box_teams = box_detail_rows_from_web(game, game_id)
-    played = [row for row in box_players if row["minutes"] is not None]
-    status_rows = derive_game_status_rows(
-        game_id, played, web_inactive_rows(game), WEB_BOX_SCORE_SOURCE
-    )
+    status_rows = game_status_rows_from_web(game, game_id)
 
     counts = {
         "player_logs": _batch_upsert(cur, PLAYER_GAME_LOG_UPSERT_SQL, player_logs),
@@ -722,11 +718,18 @@ def backfill_game_logs_from_web(
     limit: int | None = None,
     delay_seconds: float = WEB_BOX_SCORE_DELAY_SECONDS,
     today: date | None = None,
+    now: datetime | None = None,
+    discover: bool = True,
 ) -> int:
     # one nba.com page per scheduled game the league-wide log never covered,
     # oldest first. resumable: a game drops out once its team logs land.
-    today = today or datetime.now(ZoneInfo("America/New_York")).date()
-    undiscovered = _unscheduled_season_types(conn, season, season_types)
+    # the cron lanes pass discover=False: their schedule crawl already lands
+    # every game days before tip, and discovery is minutes of page fetches.
+    now = now or datetime.now(ZoneInfo("America/New_York"))
+    today = today or now.astimezone(ZoneInfo("America/New_York")).date()
+    undiscovered = (
+        _unscheduled_season_types(conn, season, season_types) if discover else []
+    )
     if undiscovered:
         logger.info(
             "web game logs: schedule has no %s game for %s; discovering them first",
@@ -738,7 +741,7 @@ def backfill_game_logs_from_web(
         )
         if dry_run:
             logger.info("web game logs: dry run stored no discovered game to fetch")
-    games = _games_needing_web_logs(conn, season, season_types, today, limit)
+    games = _games_needing_web_logs(conn, season, season_types, now, limit)
     if not games:
         logger.info("web game logs: nothing to do for %s", season)
         return 0

@@ -18,13 +18,20 @@ on:
     # hours to stay inside the odds api's monthly quota. a slot shared
     # with another lane runs as its own workflow and only adds a snapshot.
     - cron: "*/30 15-23,0-3 * * *"
+    # game logs only, from the nba.com box-score pages, once every west-coast
+    # game has finished in both halves of the DST year. new logs, team logs,
+    # status rows, box details and the stint sync for the current season,
+    # capped per run; the full scrape runs the same steps when stats.nba.com
+    # is unreachable, so a missed night catches up within 6 hours.
+    - cron: "0 9 * * *"
   workflow_dispatch:          # also allows manual trigger from GitHub UI
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     # the full scrape takes about 15 minutes; the injuries-only lane takes
-    # seconds. either way a hang must not burn the 6-hour default.
+    # seconds and the game-logs lane a few minutes. either way a hang must not
+    # burn the 6-hour default.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +46,7 @@ jobs:
         run: pip install -r scraper/requirements.txt
 
       # github.event.schedule carries the cron expression that fired, which is
-      # how one workflow runs three cadences. each pattern below must match its
+      # how one workflow runs four cadences. each pattern below must match its
       # cron line above character for character; an unknown schedule fails the
       # run rather than silently falling through to the full scrape.
       # a manual dispatch has an empty schedule and runs the full scrape.
@@ -54,6 +61,7 @@ jobs:
             "0 */6 * * *" | "") flag="" ;;
             "30 15,19,20,21,22,23,0,1,2 * * *") flag="--injuries-only" ;;
             "*/30 15-23,0-3 * * *") flag="--odds-only" ;;
+            "0 9 * * *") flag="--game-logs-web" ;;
             *) echo "unknown schedule '$SCHEDULE'" >&2; exit 1 ;;
           esac
           python scraper/run_scraper.py $flag
