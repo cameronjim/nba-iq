@@ -455,3 +455,71 @@ class TestEvaluateWorkflow:
         assert len(blocks) <= 25
         for name, block in blocks.items():
             assert "type" in block and "default" in block, name
+
+
+ADDED_SEASON_CUTOFF = "2024-07-01"
+
+
+@pytest.fixture(scope="module")
+def season_added(fixture_dir: Path, tmp_path_factory) -> dict[str, dict[str, Path]]:
+    """the same v7 fit from a build of one season and a build with the next appended."""
+    import build_dataset
+
+    root = tmp_path_factory.mktemp("season_added")
+    out: dict[str, dict[str, Path]] = {}
+    for name, seasons in (("before", ["2023-24"]), ("after", ["2023-24", "2024-25"])):
+        dataset = root / f"{name}.parquet"
+        assert build_dataset.main([
+            "--source", "parquet", "--data-dir", str(fixture_dir),
+            "--seasons", *seasons, "--out", str(dataset),
+        ]) == 0
+        models_dir = root / f"models_{name}"
+        assert train.main([
+            "--dataset", str(dataset), "--feature-set", config.PROSPECTIVE_FEATURE_SET,
+            "--version", "added", "--cutoff", ADDED_SEASON_CUTOFF,
+            "--models-dir", str(models_dir),
+        ]) == 0
+        out[name] = {"dataset": dataset, "dir": models_dir / "added"}
+    return out
+
+
+class TestAnAddedSeasonLeavesTraining:
+    def test_the_season_list_reaches_2026_27(self) -> None:
+        # act + assert
+        assert config.SEASONS[-1] == "2026-27"
+        assert train.WINDOW_REFERENCE_VERSION == "20260818"
+
+    def test_the_training_rows_before_the_cutoff_are_identical(self, season_added) -> None:
+        # arrange
+        columns = [
+            "PLAYER_ID", "GAME_ID", "GAME_DATE", "PLAYED", "MIN",
+            *config.FEATURE_SETS[config.PROSPECTIVE_FEATURE_SET],
+        ]
+        cutoff = pd.Timestamp(ADDED_SEASON_CUTOFF)
+
+        # act
+        frames = {}
+        for name, paths in season_added.items():
+            frame = pd.read_parquet(paths["dataset"])
+            rows = frame[pd.to_datetime(frame["GAME_DATE"]) < cutoff][columns]
+            frames[name] = rows.sort_values(["GAME_DATE", "GAME_ID", "PLAYER_ID"]).reset_index(
+                drop=True
+            )
+        appended = pd.read_parquet(season_added["after"]["dataset"])
+
+        # assert
+        assert (pd.to_datetime(appended["GAME_DATE"]) >= cutoff).any()
+        pd.testing.assert_frame_equal(frames["before"], frames["after"], check_dtype=False)
+
+    def test_the_fit_records_the_same_window_and_holdout(self, season_added) -> None:
+        # act
+        meta = {
+            name: json.loads((paths["dir"] / train.META_FILE).read_text("utf-8"))
+            for name, paths in season_added.items()
+        }
+
+        # assert
+        assert meta["before"]["training_window"] == meta["after"]["training_window"]
+        assert meta["before"]["metrics"] == meta["after"]["metrics"]
+        assert meta["before"]["feature_cols"] == meta["after"]["feature_cols"]
+        assert meta["before"]["production"] == meta["after"]["production"]

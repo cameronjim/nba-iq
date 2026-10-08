@@ -5294,7 +5294,12 @@ before the run's first scored date and each the same function the dataset build 
 `daily_run.py` no longer passes `--no-v7-candidate` to the dataset build. The serving
 inputs come from `PostgresSource` with the run's first scored date as its cutoff: team
 logs and box details for `config.SEASONS` plus the slate's season, preseason logs for
-the slate's season. A source with no box details fails the `serving` phase rather than
+the slate's season. `config.SEASONS` now ends at 2026-27, so the daily dataset rebuild
+and every serving loader read the season being served, while training is unchanged:
+its window is set by the inherited 2026-04-13 cutoff, not by the season list, and the
+2026-27 Pre Season stays truth only because the history sources load
+`HISTORY_SEASON_TYPES`, which exclude it (20.5; tested in `test_train.py`,
+`test_daily_run.py` and `test_preseason_truth.py`). A source with no box details fails the `serving` phase rather than
 serving a frame the model cannot read, and `predict.py` refuses any frame that lacks a
 column the artifact was fitted on, naming the column. A slate season with no preseason
 line before the window gives every row the no-preseason values (`pre_games_played =
@@ -5366,11 +5371,6 @@ The bundle records `"frozen_at": "2026-10-08"` and `"refrozen_from":
 - **The artifact.** Train it on prod, commit `models/20261008-v7/` and its registry
   entry, fill the six checksums here and in `frozen.py`. Until then the daily run fails
   preflight, so this branch must not merge before the artifact does.
-- **`config.SEASONS` stops at 2025-26.** The daily run's dataset rebuild reads
-  `SEASONS`, so once 2026-27 games are played its history will not hold them until
-  2026-27 is added. The serving inputs already read the slate's season, but the base
-  columns come from the history. This predates `v4` and is an operational step, not a
-  model change.
 - **No falsification row for v7 against v3.** 24.6. Registering one now, before
   opening night, would be a further re-freeze; it is not done here.
 - **One season of preseason role per player at serving.** The columns read only the

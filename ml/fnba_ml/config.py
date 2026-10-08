@@ -55,7 +55,9 @@ DATA_DIR = ML_ROOT / "data"
 # previously trained artifacts. recorded in every registry entry.
 FEATURE_VERSION = "v3"
 
-SEASONS: list[str] = ["2022-23", "2023-24", "2024-25", "2025-26"]
+# the seasons every source loads. a training window is set by its cutoff, not by
+# this list: the v4 artifact takes 2026-04-13 from models/20260818 (MODEL.md 24.7).
+SEASONS: list[str] = ["2022-23", "2023-24", "2024-25", "2025-26", "2026-27"]
 SEASON_TYPES: list[str] = ["Regular Season"]
 
 # the sources load every competition a player logs minutes in; the universe and

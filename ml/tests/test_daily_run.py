@@ -1054,6 +1054,73 @@ class TestServingPhase:
         assert "--no-v6-candidate" not in argvs[0]
 
 
+class _RecordingSource:
+    """a PostgresSource stand-in: records what it was asked for, returns one row per season."""
+
+    calls: list[tuple[str, list[str], object]] = []
+
+    def __init__(self, seasons=None, cutoff=None, **_):
+        self.seasons = list(seasons or config.SEASONS)
+        self.cutoff = cutoff
+
+    def _rows(self, loader: str) -> pd.DataFrame:
+        self.calls.append((loader, self.seasons, self.cutoff))
+        return pd.DataFrame({"SEASON": self.seasons})
+
+    def load_team_game_logs(self) -> pd.DataFrame:
+        return self._rows("team_logs")
+
+    def load_box_details(self) -> pd.DataFrame:
+        return self._rows("box")
+
+    def load_preseason_logs(self) -> pd.DataFrame:
+        return self._rows("preseason")
+
+
+class TestServingLoaders:
+    def test_every_serving_loader_reads_2026_27_before_the_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        from fnba_ml.data import postgres_source
+
+        _RecordingSource.calls = []
+        monkeypatch.setattr(postgres_source, "PostgresSource", _RecordingSource)
+        handed: dict[str, pd.DataFrame] = {}
+
+        def capture(features, history, team_logs, box, preseason, cutoff):
+            handed.update(team_logs=team_logs, box=box, preseason=preseason)
+            handed["cutoff"] = cutoff
+            return features
+
+        monkeypatch.setattr(daily_run, "attach_serving_v7_columns", capture)
+        schedule = pd.DataFrame({"SEASON": ["2026-27"], "GAME_ID": ["0022600001"]})
+
+        # act
+        daily_run.attach_serving_columns(
+            pd.DataFrame(), pd.DataFrame(), schedule, date(2026, 11, 3)
+        )
+
+        # assert
+        seasons = {loader: s for loader, s, _ in _RecordingSource.calls}
+        assert "2026-27" in seasons["team_logs"] and "2026-27" in seasons["box"]
+        assert set(config.SEASONS) <= set(seasons["team_logs"])
+        assert seasons["preseason"] == ["2026-27"]
+        assert {c for _, _, c in _RecordingSource.calls} == {pd.Timestamp("2026-11-03")}
+        for name in ("team_logs", "box", "preseason"):
+            assert "2026-27" in set(handed[name]["SEASON"]), name
+
+    def test_the_daily_dataset_rebuild_loads_2026_27(self) -> None:
+        # act
+        import build_dataset
+
+        args = build_dataset.parse_args(["--source", "postgres"])
+
+        # assert
+        assert "2026-27" in args.seasons
+        assert "2026-27" in _RecordingSource().seasons
+
+
 class TestPreseasonPriorFlag:
     def test_only_run_b_asks_for_the_preseason_prior(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
