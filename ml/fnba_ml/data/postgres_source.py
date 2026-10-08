@@ -28,11 +28,12 @@ import os
 
 import pandas as pd
 
-from ..config import COMPETITION_COL, HISTORY_SEASON_TYPES, SEASONS
+from ..config import COMPETITION_COL, HISTORY_SEASON_TYPES, PRESEASON_SEASON_TYPE, SEASONS
 from .schema import (
     BOX_DETAIL_COLS,
     PLAYER_LOG_COLS,
     POSITION_COLS,
+    PRESEASON_LOG_COLS,
     SCHEDULE_COLS,
     STAT_COLS,
     STATUS_COLS,
@@ -200,6 +201,23 @@ WHERE pgl.season = ANY(%(seasons)s)
 ORDER BY pgl.nba_player_id, pgl.game_date
 """
 
+# the v7 candidate's preseason box lines. the season type is its own parameter, so
+# the source's history types never widen to include Pre Season.
+PRESEASON_LOGS_SQL = """
+SELECT
+    pgl.nba_player_id      AS "PLAYER_ID",
+    pgl.nba_game_id        AS "GAME_ID",
+    pgl.team_id            AS "TEAM_ID",
+    pgl.season             AS "SEASON",
+    pgl.game_date          AS "GAME_DATE",
+    pgl.minutes            AS "MIN",
+    pgl.started            AS "STARTED"
+FROM player_game_logs pgl
+WHERE pgl.season = ANY(%(seasons)s)
+  AND pgl.season_type = %(preseason_type)s
+ORDER BY pgl.nba_player_id, pgl.game_date
+"""
+
 # schedule rows only ever supply future context, so a prediction run may read
 # them past the cutoff; every other table is bounded by the cutoff date.
 CUTOFF_CLAUSE = " AND {col} < %(cutoff)s"
@@ -311,11 +329,12 @@ class PostgresSource:
         head, _, tail = base.partition("ORDER BY")
         return f"{head.rstrip()}{CUTOFF_CLAUSE.format(col=cutoff_col)}\nORDER BY{tail}"
 
-    def _read(self, sql: str) -> pd.DataFrame:
+    def _read(self, sql: str, extra: dict[str, object] | None = None) -> pd.DataFrame:
         import psycopg2  # noqa: PLC0415 - optional at import time, required at call time
 
+        params = {**self._params(), **(extra or {})}
         with psycopg2.connect(self._database_url or load_database_url()) as conn:
-            return pd.read_sql_query(sql, conn, params=self._params())
+            return pd.read_sql_query(sql, conn, params=params)
 
     def _read_unparameterised(self, sql: str) -> pd.DataFrame:
         """for the reference-data queries that take no season/cutoff bounds.
@@ -416,6 +435,25 @@ class PostgresSource:
         df = normalise_ids(normalise_dates(df))
         require_columns(df, BOX_DETAIL_COLS, "box details")
         return df[[*BOX_DETAIL_COLS, COMPETITION_COL]].reset_index(drop=True)
+
+    def load_preseason_logs(self) -> pd.DataFrame | None:
+        """the Pre Season box lines for the v7 family, or None if there are none.
+
+        NOT EXERCISED BY THE TEST SUITE; there is no test database.
+        """
+        df = self._read(
+            self._sql(PRESEASON_LOGS_SQL, "pgl.game_date"),
+            {"preseason_type": PRESEASON_SEASON_TYPE},
+        )
+        if df.empty:
+            log.warning("no Pre Season logs for seasons %s; v7 columns skipped",
+                        self.seasons)
+            return None
+        df["MIN"] = pd.to_numeric(df["MIN"], errors="coerce").astype(float)
+        df["STARTED"] = df["STARTED"].astype("boolean")
+        df = normalise_ids(normalise_dates(df))
+        require_columns(df, PRESEASON_LOG_COLS, "preseason logs")
+        return df[list(PRESEASON_LOG_COLS)].reset_index(drop=True)
 
     def load_player_game_status(self) -> pd.DataFrame | None:
         df = self._read(self._sql(STATUS_SQL, "s.game_date"))

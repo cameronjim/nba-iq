@@ -28,6 +28,7 @@ from .schema import (
     BOX_DETAIL_COLS,
     PLAYER_LOG_COLS,
     POSITION_COLS,
+    PRESEASON_LOG_COLS,
     SCHEDULE_COLS,
     STAT_COLS,
     STATUS_COLS,
@@ -232,6 +233,22 @@ class ParquetSource:
         out["STARTED"] = out["STARTED"].astype("boolean")
         out = normalise_ids(normalise_dates(out))
         log.info("parquet box details: %d rows, seasons %s", len(out), found)
+        return out.reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    def load_preseason_logs(self) -> pd.DataFrame | None:
+        """an optional ``preseason_logs_<season>.parquet`` per season, else None."""
+        raw, found = self._read_seasons("preseason_logs")
+        if raw.empty:
+            log.warning("no preseason_logs_*.parquet in %s; v7 columns skipped",
+                        self.data_dir)
+            return None
+        require_columns(raw, PRESEASON_LOG_COLS, "preseason logs")
+        out = raw[list(PRESEASON_LOG_COLS)].copy()
+        out["MIN"] = pd.to_numeric(out["MIN"], errors="coerce").astype(float)
+        out["STARTED"] = out["STARTED"].astype("boolean")
+        out = normalise_ids(normalise_dates(out))
+        log.info("parquet preseason logs: %d rows, seasons %s", len(out), found)
         return out.reset_index(drop=True)
 
     # ------------------------------------------------------------------

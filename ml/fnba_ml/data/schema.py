@@ -88,7 +88,13 @@ BOX_DETAIL_COLS: tuple[str, ...] = (
     "STARTED", "PLUS_MINUS", "OREB", "DREB", "PF",
 )
 
-_SCHEDULE_ID_COLS = ("GAME_ID", "HOME_TEAM_ID", "AWAY_TEAM_ID")
+# one row per Pre Season box line, read only by the v7 preseason-role family
+# (MODEL.md 23). truth only otherwise: never a training row or a rate input.
+PRESEASON_LOG_COLS: tuple[str, ...] = (
+    "PLAYER_ID", "GAME_ID", "TEAM_ID", "SEASON", "GAME_DATE", "MIN", "STARTED",
+)
+
+_SCHEDULE_ID_COLS =("GAME_ID", "HOME_TEAM_ID", "AWAY_TEAM_ID")
 
 
 def competition_of(season_type: pd.Series) -> pd.Series:

@@ -29,7 +29,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fnba_ml.cli import add_common_args, load_dataset, setup_logging  # noqa: E402
 from fnba_ml.config import (  # noqa: E402
-    COMPETITION_COL,
     DATA_DIR,
     ORIGINS,
     P3_COHORT_REGRESSION_TOLERANCE,
@@ -38,9 +37,13 @@ from fnba_ml.config import (  # noqa: E402
     REPORTS_DIR,
     SEASON_START_ORIGINS,
     SERVED_FEATURE_SET,
-    TRAINING_COMPETITIONS,
 )
-from fnba_ml.eval_core import cohort_masks, split  # noqa: E402
+from fnba_ml.eval_core import (  # noqa: E402
+    clamp_to_opener,
+    cohort_masks,
+    season_opener,
+    split,
+)
 from fnba_ml.features import feature_set_columns  # noqa: E402
 from fnba_ml.models import PerMinuteRate, minutes_propagated_estimate  # noqa: E402
 from fnba_ml.promotion import (  # noqa: E402
@@ -118,33 +121,6 @@ def origin_set_names(choice: str) -> list[str]:
 
 def report_stem(version: str, origin_set: str) -> str:
     return f"{version}_postseason_{origin_set}"
-
-
-def season_opener(frame: pd.DataFrame, vend: str | pd.Timestamp) -> pd.Timestamp:
-    """the first regular-season game date of the season that holds ``vend``."""
-    rows = frame
-    if COMPETITION_COL in rows.columns:
-        rows = rows[rows[COMPETITION_COL].isin(TRAINING_COMPETITIONS)]
-    dates = pd.to_datetime(rows["GAME_DATE"])
-    upto = dates <= pd.Timestamp(vend)
-    if not upto.any():
-        raise SystemExit(f"no regular-season game on or before {vend}; no opener to clamp to")
-    season = rows.loc[dates[upto].idxmax(), "SEASON"]
-    return pd.Timestamp(dates[rows["SEASON"] == season].min()).normalize()
-
-
-def clamp_to_opener(
-    frame: pd.DataFrame, origins: list[tuple[str, str, str]],
-) -> list[tuple[str, str, str]]:
-    """each window's start replaced by its season's opener as the data records it."""
-    out: list[tuple[str, str, str]] = []
-    for origin, vstart, vend in origins:
-        opener = season_opener(frame, vend)
-        if pd.Timestamp(vstart) != opener:
-            log.warning("origin %s: typed start %s is not the opener %s; using the opener",
-                        origin, vstart, opener.date())
-        out.append((origin, opener.strftime("%Y-%m-%d"), vend))
-    return out
 
 
 def phase_of(dates: pd.Series, start: pd.Timestamp) -> np.ndarray:

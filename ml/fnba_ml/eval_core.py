@@ -8,8 +8,10 @@ import numpy as np
 import pandas as pd
 
 from .config import (
+    COMPETITION_COL,
     EVENT_COHORTS,
     TIER_ORDER,
+    TRAINING_COMPETITIONS,
     V4_DESCRIPTIVE_COHORTS,
 )
 from .models import brier, mae
@@ -161,3 +163,30 @@ def split(df: pd.DataFrame, vstart, vend) -> tuple[pd.DataFrame, pd.DataFrame]:
     train = df[df["GAME_DATE"] < vstart]
     valid = df[(df["GAME_DATE"] >= vstart) & (df["GAME_DATE"] <= vend)]
     return train.copy(), valid.copy()
+
+
+def season_opener(frame: pd.DataFrame, vend: str | pd.Timestamp) -> pd.Timestamp:
+    """the first regular-season game date of the season that holds ``vend``."""
+    rows = frame
+    if COMPETITION_COL in rows.columns:
+        rows = rows[rows[COMPETITION_COL].isin(TRAINING_COMPETITIONS)]
+    dates = pd.to_datetime(rows["GAME_DATE"])
+    upto = dates <= pd.Timestamp(vend)
+    if not upto.any():
+        raise SystemExit(f"no regular-season game on or before {vend}; no opener to clamp to")
+    season = rows.loc[dates[upto].idxmax(), "SEASON"]
+    return pd.Timestamp(dates[rows["SEASON"] == season].min()).normalize()
+
+
+def clamp_to_opener(
+    frame: pd.DataFrame, origins: list[tuple[str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """each window's start replaced by its season's opener as the data records it."""
+    out: list[tuple[str, str, str]] = []
+    for origin, vstart, vend in origins:
+        opener = season_opener(frame, vend)
+        if pd.Timestamp(vstart) != opener:
+            log.warning("origin %s: typed start %s is not the opener %s; using the opener",
+                        origin, vstart, opener.date())
+        out.append((origin, opener.strftime("%Y-%m-%d"), vend))
+    return out

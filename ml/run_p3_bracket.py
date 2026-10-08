@@ -17,8 +17,10 @@ from fnba_ml.cli import add_common_args, load_dataset, setup_logging  # noqa: E4
 from fnba_ml.config import (  # noqa: E402
     CANDIDATE_FEATURE_SET_V5,
     CANDIDATE_FEATURE_SET_V6,
+    CANDIDATE_FEATURE_SET_V7,
     CANDIDATE_FEATURE_VERSION_V5,
     CANDIDATE_FEATURE_VERSION_V6,
+    CANDIDATE_FEATURE_VERSION_V7,
     CHAMPIONS,
     DATA_DIR,
     DEV_ORIGINS,
@@ -26,11 +28,18 @@ from fnba_ml.config import (  # noqa: E402
     FEATURE_VERSION,
     P3_COHORT_REGRESSION_TOLERANCE,
     P3_DECIDED_COMPARISONS,
+    P3_PRESEASON_PRIOR_GATED_ENDPOINTS,
     P3_PROMOTION_FLOOR,
     P3_RATE_GATED_ENDPOINTS,
     P3_RATE_V6_GATED_ENDPOINTS,
     P3_V5_GATED_ENDPOINTS,
     P3_V6_GATED_ENDPOINTS,
+    P3_V7_GATED_ENDPOINTS,
+    PRESEASON_ROLE_FEATURE_COLS,
+    PRESEASON_ROLE_FIRST_GAMES_SUFFIX,
+    PRESEASON_ROLE_ORIGINS,
+    PRESEASON_ROLE_PRIOR_GAMES,
+    PRESEASON_ROLE_PRIOR_WEIGHT,
     RATE_CONTEXT_COLS,
     RATE_CONTEXT_COLS_V6,
     RATE_MODEL_TARGETS,
@@ -41,7 +50,7 @@ from fnba_ml.config import (  # noqa: E402
     V5_STAKES_FEATURE_COLS,
     V6_CONTEXT_FEATURE_COLS,
 )
-from fnba_ml.eval_core import cohort_masks, split  # noqa: E402
+from fnba_ml.eval_core import clamp_to_opener, cohort_masks, split  # noqa: E402
 from fnba_ml.features import feature_set_columns  # noqa: E402
 from fnba_ml.models import (  # noqa: E402
     MIN_PRED,
@@ -64,6 +73,14 @@ from fnba_ml.promotion import (  # noqa: E402
     decision_table,
     paired_endpoint_bootstrap,
 )
+from fnba_ml.preseason_role import (  # noqa: E402
+    ROSTER_COHORT_COL,
+    SEASON_APPS_COL,
+    preseason_role_minutes_prior,
+    regular_season_apps_before,
+    roster_cohort_masks,
+    roster_cohorts,
+)
 from fnba_ml.rate_model import ResidualRateModel, residual_rate_estimates  # noqa: E402
 from fnba_ml.registry import git_commit  # noqa: E402
 
@@ -73,6 +90,17 @@ COMPARISON_V5 = CANDIDATE_FEATURE_SET_V5
 COMPARISON_RATE = "residual-rate"
 COMPARISON_V6 = CANDIDATE_FEATURE_SET_V6
 COMPARISON_RATE_V6 = "residual-rate-v6"
+COMPARISON_V7 = CANDIDATE_FEATURE_SET_V7
+COMPARISON_V6_SEASON_START = f"{CANDIDATE_FEATURE_SET_V6}@season-start"
+COMPARISON_PRIOR = "preseason-role-prior"
+
+# scored on PRESEASON_ROLE_ORIGINS only: by the fade, every v7 column is neutral by
+# December, so DEV_ORIGINS could not see either candidate.
+SEASON_START_COMPARISONS: tuple[str, ...] = (
+    COMPARISON_V7, COMPARISON_V6_SEASON_START, COMPARISON_PRIOR,
+)
+# a same-rows rerun of an already decided candidate, binding exactly as its parent is.
+REFERENCE_PARENTS: dict[str, str] = {COMPARISON_V6_SEASON_START: COMPARISON_V6}
 
 # feature-set comparisons: name -> the FEATURE_SETS entry refitted in place of the incumbent.
 FEATURE_SET_COMPARISONS: dict[str, str] = {
@@ -89,12 +117,18 @@ COMPARISON_GATES: dict[str, tuple[str, ...]] = {
     COMPARISON_RATE: P3_RATE_GATED_ENDPOINTS,
     COMPARISON_V6: P3_V6_GATED_ENDPOINTS,
     COMPARISON_RATE_V6: P3_RATE_V6_GATED_ENDPOINTS,
+    COMPARISON_V7: P3_V7_GATED_ENDPOINTS,
+    COMPARISON_V6_SEASON_START: P3_V6_GATED_ENDPOINTS,
+    COMPARISON_PRIOR: P3_PRESEASON_PRIOR_GATED_ENDPOINTS,
 }
 INCUMBENT_LABEL = {
     COMPARISON_V5: SERVED_FEATURE_SET,
     COMPARISON_RATE: "champion rate",
     COMPARISON_V6: SERVED_FEATURE_SET,
     COMPARISON_RATE_V6: "champion rate",
+    COMPARISON_V7: SERVED_FEATURE_SET,
+    COMPARISON_V6_SEASON_START: SERVED_FEATURE_SET,
+    COMPARISON_PRIOR: "champion minutes",
 }
 
 Losses = dict[str, tuple[np.ndarray, np.ndarray]]
@@ -106,14 +140,15 @@ def rate_endpoint(target: str, conditional: bool) -> str:
 
 def is_binding(name: str) -> bool:
     """False for a comparison that already had its one look (MODEL.md 13.6)."""
-    return name not in P3_DECIDED_COMPARISONS
+    return REFERENCE_PARENTS.get(name, name) not in P3_DECIDED_COMPARISONS
 
 
 def verdict_text(name: str, verdict: PromotionVerdict) -> str:
     if is_binding(name):
         return verdict.reason
+    decided_at = P3_DECIDED_COMPARISONS[REFERENCE_PARENTS.get(name, name)]
     return (
-        f"REFERENCE ONLY (decided at {P3_DECIDED_COMPARISONS[name]}; this rerun is "
+        f"REFERENCE ONLY (decided at {decided_at}; this rerun is "
         f"not a second look): {verdict.reason}"
     )
 
@@ -184,10 +219,14 @@ def rate_losses(
     return out
 
 
-def emit(origin: str, valid_all: pd.DataFrame, losses: Losses) -> list[pd.DataFrame]:
+def emit(
+    origin: str, valid_all: pd.DataFrame, losses: Losses,
+    masks: list[tuple[str, np.ndarray]] | None = None,
+) -> list[pd.DataFrame]:
     """long per-row loss frames: one block per (cohort, endpoint).
 
     a row belongs to several cohorts, so cohorts are extra rows rather than a column.
+    ``masks`` defaults to the dataset cohorts of ``cohort_masks``.
     """
     key = (
         valid_all["PLAYER_ID"].astype(str) + "|"
@@ -197,7 +236,8 @@ def emit(origin: str, valid_all: pd.DataFrame, losses: Losses) -> list[pd.DataFr
     dates = valid_all["GAME_DATE"].to_numpy()
     every_row = np.ones(len(valid_all), dtype=bool)
     out: list[pd.DataFrame] = []
-    for label, mask in (("ALL", every_row), *cohort_masks(valid_all)):
+    cohorts = cohort_masks(valid_all) if masks is None else masks
+    for label, mask in (("ALL", every_row), *cohorts):
         if not mask.any():
             continue
         for endpoint, (loss, selector) in losses.items():
@@ -325,6 +365,104 @@ def score_brackets(
         for name, (inc, cand) in blocks.items()
     }
     return BracketScores(losses, pd.DataFrame(clip_rows), coherence_inputs)
+
+
+def first_games_losses(losses: Losses, first: np.ndarray) -> Losses:
+    """the same losses restricted to rows inside each player's first prior games."""
+    return {
+        f"{endpoint}{PRESEASON_ROLE_FIRST_GAMES_SUFFIX}": (loss, selector & first)
+        for endpoint, (loss, selector) in losses.items()
+    }
+
+
+def with_first_games(losses: Losses, first: np.ndarray) -> Losses:
+    return {**losses, **first_games_losses(losses, first)}
+
+
+def minutes_and_points(losses: Losses) -> Losses:
+    """the two endpoints a minutes-only change can move; availability is untouched."""
+    return {e: losses[e] for e in (ENDPOINT_MINUTES, ENDPOINT_UNCOND_PTS)}
+
+
+def stamp_season_start(frame: pd.DataFrame) -> pd.DataFrame:
+    """the frame with the two evaluation-only helper columns the v7 look reads."""
+    out = frame.copy()
+    out[SEASON_APPS_COL] = regular_season_apps_before(out)
+    out[ROSTER_COHORT_COL] = roster_cohorts(out)
+    return out
+
+
+def score_season_start(
+    frame: pd.DataFrame, origins: list[tuple[str, str, str]],
+) -> dict[str, tuple[pd.DataFrame, pd.DataFrame]]:
+    """the v7 comparisons over identical rows, every season-start origin.
+
+    each origin fits the incumbent, v7-preseason-role and the v6-context reference;
+    the prior is the incumbent's minutes blended toward the preseason role.
+    """
+    frame = stamp_season_start(frame)
+    incumbent_feats = feature_set_columns(frame, SERVED_FEATURE_SET)
+    refits = {
+        COMPARISON_V7: feature_set_columns(frame, CANDIDATE_FEATURE_SET_V7),
+        COMPARISON_V6_SEASON_START: feature_set_columns(frame, CANDIDATE_FEATURE_SET_V6),
+    }
+    blocks: dict[str, tuple[list[pd.DataFrame], list[pd.DataFrame]]] = {
+        name: ([], []) for name in SEASON_START_COMPARISONS
+    }
+    for origin, vstart, vend in origins:
+        train_all, valid_all = split(frame, vstart, vend)
+        train_app = train_all[(train_all["PLAYED"] == 1) & (train_all["MIN"] > 0)]
+        if train_all.empty or valid_all.empty or train_app.empty:
+            log.warning("season-start origin %s has an empty side; skipped", origin)
+            continue
+        valid_all = valid_all.reset_index(drop=True)
+        cutoff = pd.Timestamp(valid_all["GAME_DATE"].min())
+        log.info("season-start origin %s: %d train / %d valid rows", origin,
+                 len(train_all), len(valid_all))
+        masks = [*cohort_masks(valid_all), *roster_cohort_masks(valid_all)]
+        first = (
+            valid_all[SEASON_APPS_COL].to_numpy(dtype=float) < PRESEASON_ROLE_PRIOR_GAMES
+        )
+        pts_rate = PerMinuteRate("PTS").fit(train_app)
+
+        incumbent = fit_and_score(train_all, valid_all, incumbent_feats, cutoff)
+        incumbent_losses = availability_minutes_losses(valid_all, incumbent, pts_rate)
+        incumbent_rows = emit(origin, valid_all,
+                              with_first_games(incumbent_losses, first), masks)
+        for name, feats in refits.items():
+            candidate = fit_and_score(train_all, valid_all, feats, cutoff)
+            blocks[name][0].extend(incumbent_rows)
+            blocks[name][1].extend(emit(
+                origin, valid_all,
+                with_first_games(
+                    availability_minutes_losses(valid_all, candidate, pts_rate), first
+                ),
+                masks,
+            ))
+
+        blended = incumbent.copy()
+        blended[MIN_PRED] = preseason_role_minutes_prior(
+            incumbent[MIN_PRED].to_numpy(dtype=float),
+            valid_all["pre_min_share"].to_numpy(dtype=float),
+            valid_all["pre_games_played"].to_numpy(dtype=float),
+            valid_all[SEASON_APPS_COL].to_numpy(dtype=float),
+        )
+        prior_losses = availability_minutes_losses(valid_all, blended, pts_rate)
+        blocks[COMPARISON_PRIOR][0].extend(emit(
+            origin, valid_all,
+            with_first_games(minutes_and_points(incumbent_losses), first), masks,
+        ))
+        blocks[COMPARISON_PRIOR][1].extend(emit(
+            origin, valid_all,
+            with_first_games(minutes_and_points(prior_losses), first), masks,
+        ))
+
+    if not blocks[COMPARISON_V7][0]:
+        raise SystemExit("no season-start origin produced results; check the dataset")
+    return {
+        name: (pd.concat(inc, ignore_index=True), pd.concat(cand, ignore_index=True))
+        for name, (inc, cand) in blocks.items()
+    }
 
 
 def pooled(frame: pd.DataFrame, endpoint: str) -> pd.DataFrame:
@@ -518,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
 
     frame = load_dataset(args.dataset)
     needed = [*V5_STAKES_FEATURE_COLS, *RATE_CONTEXT_COLS, *V6_CONTEXT_FEATURE_COLS,
-              *RATE_CONTEXT_COLS_V6]
+              *RATE_CONTEXT_COLS_V6, *PRESEASON_ROLE_FEATURE_COLS]
     missing = sorted({c for c in needed if c not in frame.columns})
     if missing:
         raise SystemExit(
@@ -529,6 +667,8 @@ def main(argv: list[str] | None = None) -> int:
     decided = ", ".join(
         f"{name} ({stem})" for name, stem in P3_DECIDED_COMPARISONS.items()
     )
+    season_start = clamp_to_opener(frame, PRESEASON_ROLE_ORIGINS)
+    windows = "; ".join(f"{name} {vstart}..{vend}" for name, vstart, vend in season_start)
     header = [
         f"- git commit: {git_commit() or 'unknown'}",
         f"- dataset: {args.dataset} ({len(frame):,} rows)",
@@ -545,9 +685,19 @@ def main(argv: list[str] | None = None) -> int:
         f"- candidate 4: {COMPARISON_RATE_V6}, the residual rate with "
         f"{len(RATE_CONTEXT_COLS_V6)} context columns and the residual set to 0 where "
         f"MIN_PRED < {RATE_RESIDUAL_MIN_MINUTES:g}",
+        f"- candidate 5: {CANDIDATE_FEATURE_SET_V7} (feature_version "
+        f"{CANDIDATE_FEATURE_VERSION_V7}), {CANDIDATE_FEATURE_SET_V6} + "
+        f"{len(PRESEASON_ROLE_FEATURE_COLS)} preseason-role columns, against "
+        f"{SERVED_FEATURE_SET}; {COMPARISON_V6_SEASON_START} is the same-rows reference",
+        f"- candidate 6: {COMPARISON_PRIOR}, the incumbent's E[MIN|plays] blended toward "
+        f"pre_min_share * 240 with weight {PRESEASON_ROLE_PRIOR_WEIGHT:g} * max(0, 1 - "
+        f"k / {PRESEASON_ROLE_PRIOR_GAMES}) over each player's first "
+        f"{PRESEASON_ROLE_PRIOR_GAMES} appearances",
         f"- already decided, rerun here as same-rows references that cannot promote: "
         f"{decided}",
-        f"- origins: {len(DEV_ORIGINS)} (config.DEV_ORIGINS)",
+        f"- origins: {len(DEV_ORIGINS)} (config.DEV_ORIGINS) for candidates 1-4; "
+        f"candidates 5-6 on config.PRESEASON_ROLE_ORIGINS, each start the season opener "
+        f"found in the data: {windows}",
         f"- bar (config P3 block, written before this ran): paired {BLOCK_DAYS}-day "
         f"moving-block bootstrap, {N_REPLICATES} replicates, 95% CI excluding zero, "
         f"AND >= {P3_PROMOTION_FLOOR:.0%} relative improvement on a gated endpoint, "
@@ -555,13 +705,16 @@ def main(argv: list[str] | None = None) -> int:
         f"{P3_COHORT_REGRESSION_TOLERANCE:.0%}",
         f"- gates: {CANDIDATE_FEATURE_SET_V5} and {CANDIDATE_FEATURE_SET_V6} "
         f"{' or '.join(P3_V5_GATED_ENDPOINTS)}; {COMPARISON_RATE} and "
-        f"{COMPARISON_RATE_V6} {' or '.join(P3_RATE_GATED_ENDPOINTS)}; everything "
-        f"else is reported only",
+        f"{COMPARISON_RATE_V6} {' or '.join(P3_RATE_GATED_ENDPOINTS)}; "
+        f"{COMPARISON_V7} {' or '.join(P3_V7_GATED_ENDPOINTS)}; {COMPARISON_PRIOR} "
+        f"{' or '.join(P3_PRESEASON_PRIOR_GATED_ENDPOINTS)}; everything else is "
+        f"reported only",
     ]
     for line in header:
         print(line)
 
     scores = score_brackets(frame, DEV_ORIGINS)
+    scores.losses.update(score_season_start(frame, season_start))
     verdicts = write_reports(scores, args.reports_dir, args.version, header)
 
     print()
