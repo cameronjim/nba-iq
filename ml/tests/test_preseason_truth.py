@@ -109,6 +109,39 @@ class TestPreseasonIsTruthOnly:
         assert config.PRESEASON_SEASON_TYPE in truth.season_types
 
 
+class TestTheNewSeasonsPreseasonIsTruthOnly:
+    def test_the_dataset_source_loads_2026_27_without_its_preseason(self):
+        # act
+        source = PostgresSource(database_url="postgresql://unused")
+        params = source._params()
+
+        # assert
+        assert "2026-27" in params["seasons"]
+        assert config.PRESEASON_SEASON_TYPE not in params["season_types"]
+        assert config.PRESEASON_SEASON_TYPE in config.TRUTH_SEASON_TYPES
+
+    def test_2026_27_preseason_rows_leave_the_status_universe_alone(
+        self, planted, positions, universe_status
+    ):
+        # arrange
+        def as_2026_27(frame: pd.DataFrame) -> pd.DataFrame:
+            out = frame.copy()
+            pre = _preseason_ids(out)
+            out.loc[pre, "SEASON"] = "2026-27"
+            out.loc[pre, "GAME_DATE"] = pd.to_datetime(out.loc[pre, "GAME_DATE"]) + pd.DateOffset(years=2)
+            return out
+
+        # act
+        universe = universe_from_status(
+            as_2026_27(planted["schedule"]), as_2026_27(planted["team_logs"]),
+            as_2026_27(planted["player_logs"]), planted["status"], positions,
+        )
+
+        # assert
+        assert not (universe["SEASON"] == "2026-27").any()
+        pd.testing.assert_frame_equal(universe, universe_status, check_exact=True)
+
+
 class TestPreseasonNeverReachesTheModel:
     def test_the_status_universe_is_unchanged_by_preseason_rows(
         self, planted, positions, universe_status

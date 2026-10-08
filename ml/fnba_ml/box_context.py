@@ -1,4 +1,4 @@
-"""the v6 candidate family: box-score details and expected starters out. never served.
+"""the v6 family: box-score details and expected starters out (served inside v7).
 
 every per-appearance window here is inclusive of its own game and reaches a
 scheduled row only through ``merge_asof(..., allow_exact_matches=False)``, the
@@ -137,6 +137,18 @@ def teammate_start_features(frame: pd.DataFrame) -> pd.DataFrame:
     out["exp_vacated_starts"] = _sum_excluding_self(team_game, rate * absent, everyone)
     out.index = original_index
     return out
+
+
+def attach_serving_box_history(
+    features: pd.DataFrame, box: pd.DataFrame, cutoff: pd.Timestamp
+) -> pd.DataFrame:
+    """the per-player v6 columns for unplayed rows from box lines dated before ``cutoff``.
+
+    the teammate columns are not built here: they read the override-adjusted p_j,
+    which only predict.rebuild_context has.
+    """
+    before = box[pd.to_datetime(box["GAME_DATE"]) < pd.Timestamp(cutoff)]
+    return attach_box_history(features, box_appearance_history(before))
 
 
 def attach_v6_features(features: pd.DataFrame, box: pd.DataFrame | None) -> pd.DataFrame:

@@ -48,6 +48,7 @@ from fnba_ml.config import (  # noqa: E402
     horizon_label,
     is_cold_start,
 )
+from fnba_ml.box_context import teammate_start_features  # noqa: E402
 from fnba_ml.features import attach_expected_context  # noqa: E402
 from fnba_ml.preseason import (  # noqa: E402
     PRESEASON_PRIOR_APPLIED,
@@ -274,6 +275,9 @@ def rebuild_context(
     rebuilt = attach_expected_context(
         features, probability, pd.Timestamp(base_model.cutoff)
     )
+    # the v6 teammate sums read the same corrected p_j as the v3 expected columns.
+    if "started_rate_10" in rebuilt.columns:
+        rebuilt = teammate_start_features(rebuilt)
     validate_out_of_fold(rebuilt, P_CONTEXT, P_CONTEXT_CUTOFF, "p_context")
 
     audit = pd.DataFrame({
@@ -309,6 +313,14 @@ def prepare_context(
         )
         return features, None
     return rebuild_context(features, base_model, statuses, as_of, policy)
+
+
+def missing_feature_columns(frame: pd.DataFrame, *models) -> list[str]:
+    """the fitted columns of ``models`` absent from ``frame``, in first-seen order."""
+    needed = dict.fromkeys(
+        column for fitted in models for column in getattr(fitted, "feature_cols", [])
+    )
+    return [column for column in needed if column not in frame.columns]
 
 
 def build_predictions(
@@ -641,6 +653,15 @@ def main(argv: list[str] | None = None) -> int:
             f"refusing to build context features: {exc}. the base availability "
             f"model was trained past the games it is being asked about."
         ) from exc
+
+    missing = missing_feature_columns(upcoming, model, minutes_model)
+    if missing:
+        raise SystemExit(
+            f"refusing to score: the frame lacks {len(missing)} column(s) the "
+            f"{artifact_feature_set(metadata)} artifact was fitted on: "
+            f"{', '.join(missing[:8])}. build the frame with the serving builders "
+            f"(daily_run.py), not a training dataset from another feature set"
+        )
 
     try:
         predictions = build_predictions(upcoming, model, minutes_model, metadata)

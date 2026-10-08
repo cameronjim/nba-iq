@@ -1318,6 +1318,545 @@
           "override_policy": null
         }
       ]
+    },
+    {
+      "model_version": "20261008-v7",
+      "feature_version": "v7",
+      "feature_set": "v7-preseason-role",
+      "created_at": "2026-10-08T06:52:55+00:00",
+      "git_commit": "b84d3376fb9b7aa07cb90b2617ab737ca7e615ea",
+      "universe_source": "status",
+      "training_window": {
+        "start": "2022-10-18",
+        "end": "2026-04-12",
+        "cutoff": "2026-04-13",
+        "cutoff_policy": "prediction-run timestamp; features use games strictly before it",
+        "rows": 170732,
+        "players": 899,
+        "played_rate": 0.615831
+      },
+      "champions": {
+        "availability": "lightgbm",
+        "minutes": "lightgbm",
+        "production": "ewma",
+        "composition": "decomposed_p_x_minutes_x_ppm"
+      },
+      "hyperparams": {
+        "availability": {
+          "n_estimators": 400,
+          "learning_rate": 0.05,
+          "num_leaves": 31,
+          "min_child_samples": 50,
+          "subsample": 0.8,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.8,
+          "random_state": 17,
+          "verbosity": -1,
+          "n_jobs": -1
+        },
+        "minutes": {
+          "n_estimators": 400,
+          "learning_rate": 0.05,
+          "num_leaves": 31,
+          "min_child_samples": 50,
+          "subsample": 0.8,
+          "subsample_freq": 1,
+          "colsample_bytree": 0.8,
+          "random_state": 17,
+          "verbosity": -1,
+          "n_jobs": -1
+        },
+        "production": {
+          "composition": "decomposed_p_x_minutes_x_ppm",
+          "estimator": "ewma_per_minute",
+          "halflife": 5.0,
+          "rate_halflives": {
+            "PTS": 5.0,
+            "AST": 5.0,
+            "REB": 20.0,
+            "STL": 20.0,
+            "BLK": 5.0,
+            "TOV": 20.0,
+            "FG3M": 20.0,
+            "FGM": 5.0,
+            "FGA": 5.0,
+            "FTM": 12.0,
+            "FTA": 12.0
+          },
+          "rate_estimators": {
+            "PTS": "ewma",
+            "AST": "ewma",
+            "REB": "ewma",
+            "STL": "expanding",
+            "BLK": "ewma",
+            "TOV": "ewma",
+            "FG3M": "ewma",
+            "FGM": "ewma",
+            "FGA": "ewma",
+            "FTM": "ewma",
+            "FTA": "ewma"
+          },
+          "rate_targets": [
+            "PTS",
+            "AST",
+            "REB",
+            "STL",
+            "BLK",
+            "TOV",
+            "FG3M",
+            "FGM",
+            "FGA",
+            "FTM",
+            "FTA"
+          ],
+          "coherence_constraints": [
+            [
+              "FGM",
+              "FGA"
+            ],
+            [
+              "FG3M",
+              "FGM"
+            ],
+            [
+              "FTM",
+              "FTA"
+            ]
+          ],
+          "rate_minutes_floor": 4.0,
+          "rate_fallbacks": {
+            "PTS": 0.474598,
+            "AST": 0.109015,
+            "REB": 0.181053,
+            "STL": 0.032502,
+            "BLK": 0.020199,
+            "TOV": 0.055524,
+            "FG3M": 0.053866,
+            "FGM": 0.17376,
+            "FGA": 0.36815,
+            "FTM": 0.073211,
+            "FTA": 0.093599
+          },
+          "fallbacks": {
+            "MIN": 22.572319,
+            "PTS": 10.712779,
+            "AST": 2.46072,
+            "FGA": 8.30999
+          },
+          "quantiles": {
+            "MIN": {
+              "target": "MIN",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -8.534283,
+                -0.496226,
+                7.890143
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "PTS": {
+              "target": "PTS",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -6.599375,
+                -0.234852,
+                8.335323
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "AST": {
+              "target": "AST",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -1.912427,
+                -0.19499,
+                2.512203
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "REB": {
+              "target": "REB",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -2.696667,
+                -0.320022,
+                3.159199
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "STL": {
+              "target": "STL",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -0.9177,
+                -0.193959,
+                1.290865
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "BLK": {
+              "target": "BLK",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -0.679447,
+                -0.13602,
+                0.860518
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "TOV": {
+              "target": "TOV",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -1.251867,
+                -0.21221,
+                1.542302
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "FG3M": {
+              "target": "FG3M",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -1.260149,
+                -0.084715,
+                1.708768
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "FGM": {
+              "target": "FGM",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -2.484983,
+                -0.10086,
+                3.231638
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "FGA": {
+              "target": "FGA",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -4.153916,
+                -0.179064,
+                4.909225
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "FTM": {
+              "target": "FTM",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -1.734318,
+                -0.29402,
+                2.383083
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            },
+            "FTA": {
+              "target": "FTA",
+              "levels": [
+                0.1,
+                0.5,
+                0.9
+              ],
+              "offsets": [
+                -2.134476,
+                -0.343455,
+                2.972359
+              ],
+              "n": 4722,
+              "window": [
+                "2026-03-16",
+                "2026-04-13"
+              ]
+            }
+          }
+        },
+        "context": {
+          "stage1_feature_cols": [
+            "roll3_MIN",
+            "roll5_MIN",
+            "roll10_MIN",
+            "roll3_PTS",
+            "roll5_PTS",
+            "roll10_PTS",
+            "roll3_AST",
+            "roll5_AST",
+            "roll10_AST",
+            "roll3_FGA",
+            "roll5_FGA",
+            "roll10_FGA",
+            "std_MIN",
+            "std_PTS",
+            "std_AST",
+            "std_FGA",
+            "ewma_MIN",
+            "ewma_PTS",
+            "ewma_AST",
+            "ewma_FGA",
+            "uncond_std_PTS",
+            "uncond_std_MIN",
+            "uncond_std_AST",
+            "n_appearances",
+            "days_since_last_app",
+            "games_since_last_app",
+            "avail_rate_10",
+            "avail_rate_20",
+            "avail_rate_std",
+            "TEAM_REST_DAYS",
+            "IS_B2B",
+            "IS_HOME",
+            "OPP_DEF_FORM",
+            "OPP_REST_DAYS",
+            "insufficient_history",
+            "has_history"
+          ],
+          "stage2_cross_fit_freq": "MS",
+          "stage2_min_train_rows": 5000,
+          "context_p_prior": 0.7,
+          "magnitude_window": 20,
+          "magnitude_shrink_k": 10.0,
+          "magnitude_priors": {
+            "MIN": 10.0,
+            "FGA": 6.0,
+            "USG": 15.0
+          },
+          "iterations": 1
+        }
+      },
+      "metrics": {
+        "holdout_start": "2026-03-16",
+        "holdout_rows": 7844,
+        "holdout_played_rate": 0.601989,
+        "brier": 0.127938,
+        "log_loss": 0.403811,
+        "brier_skill_vs_shifted_rate": 0.212565,
+        "minutes_mae": 5.12517,
+        "minutes_mae_ewma_baseline": 5.440697,
+        "pts_cond_mae": 4.709281,
+        "pts_cond_mae_rate_baseline": 4.829723,
+        "pts_cond_mae_ewma_baseline": 4.790503,
+        "ast_cond_mae": 1.40281,
+        "ast_cond_mae_rate_baseline": 1.416803,
+        "ast_cond_mae_ewma_baseline": 1.414073,
+        "reb_cond_mae": 1.882757,
+        "reb_cond_mae_rate_baseline": 1.899957,
+        "stl_cond_mae": 0.712523,
+        "stl_cond_mae_rate_baseline": 0.712523,
+        "blk_cond_mae": 0.501073,
+        "blk_cond_mae_rate_baseline": 0.503893,
+        "tov_cond_mae": 0.906984,
+        "tov_cond_mae_rate_baseline": 0.91203,
+        "fg3m_cond_mae": 0.880573,
+        "fg3m_cond_mae_rate_baseline": 0.88949,
+        "fgm_cond_mae": 1.805131,
+        "fgm_cond_mae_rate_baseline": 1.839464,
+        "fga_cond_mae": 2.846801,
+        "fga_cond_mae_rate_baseline": 2.964426,
+        "fga_cond_mae_ewma_baseline": 2.938864,
+        "ftm_cond_mae": 1.328342,
+        "ftm_cond_mae_rate_baseline": 1.345995,
+        "fta_cond_mae": 1.619899,
+        "fta_cond_mae_rate_baseline": 1.647605
+      },
+      "n_features": 73,
+      "feature_cols": [
+        "roll3_MIN",
+        "roll5_MIN",
+        "roll10_MIN",
+        "roll3_PTS",
+        "roll5_PTS",
+        "roll10_PTS",
+        "roll3_AST",
+        "roll5_AST",
+        "roll10_AST",
+        "roll3_FGA",
+        "roll5_FGA",
+        "roll10_FGA",
+        "std_MIN",
+        "std_PTS",
+        "std_AST",
+        "std_FGA",
+        "ewma_MIN",
+        "ewma_PTS",
+        "ewma_AST",
+        "ewma_FGA",
+        "uncond_std_PTS",
+        "uncond_std_MIN",
+        "uncond_std_AST",
+        "n_appearances",
+        "days_since_last_app",
+        "games_since_last_app",
+        "avail_rate_10",
+        "avail_rate_20",
+        "avail_rate_std",
+        "TEAM_REST_DAYS",
+        "IS_B2B",
+        "IS_HOME",
+        "OPP_DEF_FORM",
+        "OPP_REST_DAYS",
+        "insufficient_history",
+        "has_history",
+        "usg_ewma",
+        "exp_vacated_minutes",
+        "exp_vacated_fga",
+        "exp_vacated_usg",
+        "exp_vacated_minutes_pos",
+        "exp_depth_rank",
+        "exp_depth_rank_pos",
+        "p_star_out",
+        "exp_top3_usage_out",
+        "magnitude_ess",
+        "teammate_magnitude_ess",
+        "season_appearances",
+        "games_with_current_team",
+        "is_rookie",
+        "is_traded",
+        "team_games_remaining",
+        "team_win_pct",
+        "team_games_over_500",
+        "stakes_late_x_over500",
+        "stakes_x_minutes_share",
+        "stakes_x_veteran",
+        "minutes_share",
+        "started_rate_10",
+        "started_last",
+        "starts_streak",
+        "team_starters_out_exp",
+        "exp_vacated_starts",
+        "plus_minus_ewma_10",
+        "pf_per36_ewma",
+        "oreb_share_ewma",
+        "dreb_share_ewma",
+        "pre_started_rate",
+        "pre_min_share",
+        "pre_min_mean",
+        "pre_games_played",
+        "pre_dressed_for_current_team",
+        "pre_role_delta_min"
+      ],
+      "artifacts": [
+        {
+          "path": "availability_model.joblib",
+          "bytes": 1408630,
+          "sha256": "f280c611c58e9e49d761139d235b614680f187ad2cb9392bff53921186e60dde"
+        },
+        {
+          "path": "base_availability_model.joblib",
+          "bytes": 1403206,
+          "sha256": "2595ac02db55547c5241ffa5512473a78693ec5dc427db49221349a991d39459"
+        },
+        {
+          "path": "ewma_state.parquet",
+          "bytes": 229922,
+          "sha256": "21da67caa610e402ad785d88ce896038d1c99b9e4b3e2fb8b86dd0b986e60b3a"
+        },
+        {
+          "path": "feature_gain.csv",
+          "bytes": 2380,
+          "sha256": "74f563d66d5d465598d39c75d2eab5383007edbaa8250153994572d74e4b1035"
+        },
+        {
+          "path": "metadata.json",
+          "bytes": 10584,
+          "sha256": "fdaac64e97e1a7ae4d6f63272e99f3d1933075d39a1477be22f29e1f8b9ca606"
+        },
+        {
+          "path": "minutes_model.joblib",
+          "bytes": 1169669,
+          "sha256": "b30e0a1c920eef49bc2207c105a4720911ada17e96574073a04b18016b3e5a93"
+        }
+      ]
     }
   ]
 }

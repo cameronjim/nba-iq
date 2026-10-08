@@ -8,7 +8,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from .config import DATA_DIR, MODELS_DIR, SEASONS, SERVED_FEATURE_SET, resolve_cutoff
+from .config import (
+    DATA_DIR,
+    MODELS_DIR,
+    PROSPECTIVE_FEATURE_SET,
+    SEASONS,
+    SERVED_FEATURE_SET,
+    resolve_cutoff,
+)
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -63,8 +70,8 @@ def version_dir(model_version: str, models_dir: Path | None = None) -> Path:
 
 
 def feature_set_version(model_version: str, feature_set: str) -> str:
-    """the artifact name for a feature set: the served set keeps the bare version."""
-    if feature_set == SERVED_FEATURE_SET:
+    """the artifact name for a feature set: a champion set keeps the bare version."""
+    if feature_set in (SERVED_FEATURE_SET, PROSPECTIVE_FEATURE_SET):
         return model_version
     return f"{model_version}-{feature_set}"
 

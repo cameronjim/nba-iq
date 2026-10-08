@@ -29,6 +29,7 @@ from fnba_ml.config import (  # noqa: E402
     PROSPECTIVE_PROTOCOL_VERSION,
     REPORTS_DIR,
 )
+from fnba_ml.box_context import teammate_start_features  # noqa: E402
 from fnba_ml.features import attach_expected_context  # noqa: E402
 from fnba_ml.models import MIN_PRED, P_PLAY  # noqa: E402
 from fnba_ml.registry import sha256_file  # noqa: E402
@@ -97,6 +98,9 @@ def score(features: pd.DataFrame, model, minutes_model, base_model) -> pd.DataFr
     # the artifact cutoff, so the guard would raise on all of them.
     base_p = base_model.predict_proba(features)
     rebuilt = attach_expected_context(features, base_p, pd.Timestamp(base_model.cutoff))
+    # the v6 teammate sums read the same p_j at serving (predict.rebuild_context).
+    if "started_rate_10" in rebuilt.columns:
+        rebuilt = teammate_start_features(rebuilt)
     scored = minutes_model.attach(model.attach(rebuilt))
     scored["P_CONTEXT_BASE"] = base_p
     return scored

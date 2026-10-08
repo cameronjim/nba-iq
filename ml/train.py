@@ -1,4 +1,4 @@
-"""train the availability model and snapshot the EWMA production state."""
+"""train the availability and minutes models and snapshot the EWMA production state."""
 
 from __future__ import annotations
 
@@ -25,12 +25,16 @@ from fnba_ml.cli import (  # noqa: E402
 )
 from fnba_ml.config import (  # noqa: E402
     BASE_FEATURE_COLS,
+    CANDIDATE_FEATURE_SET_V7,
+    CANDIDATE_FEATURE_VERSION_V7,
     CHAMPIONS,
     COHERENCE_CONSTRAINTS,
+    COMPETITION_COL,
     CONTEXT_P_PRIOR,
     CROSS_FIT_FREQ,
     CROSS_FIT_MIN_TRAIN_ROWS,
     CUTOFF_POLICY,
+    FEATURE_SETS,
     FEATURE_VERSION,
     LGBM_PARAMS,
     MAGNITUDE_PRIORS,
@@ -38,12 +42,15 @@ from fnba_ml.config import (  # noqa: E402
     MAGNITUDE_WINDOW,
     MINUTES_TARGET,
     MODELS_DIR,
-    PROSPECTIVE_SHADOW_FEATURE_SETS,
+    PROSPECTIVE_FEATURE_SET,
+    PROSPECTIVE_SHADOW_ARTIFACTS,
     RATE_ESTIMATORS,
     RATE_HALFLIVES,
     RATE_MINUTES_FLOOR,
     RATE_TARGETS,
     SERVED_FEATURE_SET,
+    TEAMMATE_FEATURE_COLS,
+    TRAINING_COMPETITIONS,
     resolve_cutoff,
 )
 from fnba_ml.features import available_features, feature_set_columns  # noqa: E402
@@ -76,7 +83,15 @@ BASE_MODEL_FILE = "base_availability_model.joblib"
 EWMA_FILE = "ewma_state.parquet"
 META_FILE = "metadata.json"
 DEFAULT_HOLDOUT_DAYS = 28
-TRAINABLE_FEATURE_SETS: tuple[str, ...] = (SERVED_FEATURE_SET, *PROSPECTIVE_SHADOW_FEATURE_SETS)
+V1_FEATURE_SET = "v1"
+TRAINABLE_FEATURE_SETS: tuple[str, ...] = (
+    SERVED_FEATURE_SET, V1_FEATURE_SET, PROSPECTIVE_FEATURE_SET,
+)
+FEATURE_VERSIONS: dict[str, str] = {CANDIDATE_FEATURE_SET_V7: CANDIDATE_FEATURE_VERSION_V7}
+
+# the served v7 artifact takes the cutoff of the v3 shadow it is compared with, so
+# daily_run's shadow check (same cutoff) holds and both saw the same history.
+WINDOW_REFERENCE_VERSION = str(PROSPECTIVE_SHADOW_ARTIFACTS["v3"]["model_version"])
 
 
 def appearances(frame: pd.DataFrame) -> pd.DataFrame:
@@ -92,8 +107,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                              "--feature-set is written to models/<version>-<set>/")
     parser.add_argument("--feature-set", choices=TRAINABLE_FEATURE_SETS,
                         default=SERVED_FEATURE_SET,
-                        help="v1 is the no-teammate shadow comparator (MODEL.md 13.4c); "
-                             "it skips the two-stage context pipeline")
+                        help="v1 is the no-teammate comparator (MODEL.md 13.4c) and skips "
+                             "the two-stage context pipeline; v7-preseason-role is the "
+                             "prospective_2026_27_v4 champion (MODEL.md 24)")
     parser.add_argument("--cutoff", default=None,
                         help=f"training cutoff. policy: {CUTOFF_POLICY}")
     parser.add_argument("--holdout-days", type=int, default=DEFAULT_HOLDOUT_DAYS)
@@ -107,10 +123,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def training_columns(features: pd.DataFrame, feature_set: str) -> list[str]:
-    """the columns both models are fitted on for this feature set."""
+    """the columns both models are fitted on; every column of a non-legacy set is required."""
     if feature_set == SERVED_FEATURE_SET:
         return available_features(features)
+    absent = [c for c in FEATURE_SETS[feature_set] if c not in features.columns]
+    if absent:
+        raise SystemExit(
+            f"the dataset lacks {len(absent)} column(s) of {feature_set}: "
+            f"{', '.join(absent[:8])}. rebuild it with build_dataset.py and no "
+            f"--no-v*-candidate flag"
+        )
     return feature_set_columns(features, feature_set)
+
+
+def feature_version_of(feature_set: str) -> str:
+    return FEATURE_VERSIONS.get(feature_set, FEATURE_VERSION)
+
+
+def uses_context(feature_set: str) -> bool:
+    """whether the set reads teammate context, which needs the stage-1 base model."""
+    return bool(set(FEATURE_SETS[feature_set]) & set(TEAMMATE_FEATURE_COLS))
+
+
+def assert_training_rows_only(train: pd.DataFrame) -> None:
+    """refuse a frame holding a preseason or postseason row: they are truth only (20.5)."""
+    if COMPETITION_COL not in train.columns:
+        return
+    other = sorted(set(train[COMPETITION_COL].dropna()) - set(TRAINING_COMPETITIONS))
+    if other:
+        raise SystemExit(
+            f"the training frame holds {', '.join(other)} rows; only "
+            f"{', '.join(TRAINING_COMPETITIONS)} games are training rows (MODEL.md 20.5)"
+        )
 
 
 def companion_cutoff(version: str, models_dir: Path) -> pd.Timestamp | None:
@@ -126,16 +170,20 @@ def companion_cutoff(version: str, models_dir: Path) -> pd.Timestamp | None:
 def resolve_training_cutoff(
     args: argparse.Namespace, features: pd.DataFrame, base_version: str
 ) -> tuple[pd.Timestamp, str]:
-    """(cutoff, where it came from). a shadow inherits its served companion's cutoff."""
+    """(cutoff, where it came from). v1 and v7 inherit a companion artifact's cutoff."""
     if args.cutoff:
         return resolve_cutoff(args.cutoff), "--cutoff"
     if args.feature_set != SERVED_FEATURE_SET:
-        inherited = companion_cutoff(base_version, args.models_dir)
+        companion = (
+            WINDOW_REFERENCE_VERSION if args.feature_set == PROSPECTIVE_FEATURE_SET
+            else base_version
+        )
+        inherited = companion_cutoff(companion, args.models_dir)
         if inherited is not None:
-            return inherited, f"models/{base_version}/{META_FILE}"
+            return inherited, f"models/{companion}/{META_FILE}"
         log.warning(
-            "no served artifact models/%s to inherit a cutoff from; using the "
-            "dataset default", base_version,
+            "no artifact models/%s to inherit a cutoff from; using the dataset "
+            "default", companion,
         )
     return features["GAME_DATE"].max() + pd.Timedelta(days=1), "dataset max + 1 day"
 
@@ -273,16 +321,23 @@ def main(argv: list[str] | None = None) -> int:
 
     features = load_dataset(args.dataset)
     feature_set = args.feature_set
-    with_context = feature_set == SERVED_FEATURE_SET
+    with_context = uses_context(feature_set)
     feature_cols = training_columns(features, feature_set)
+    feature_version = feature_version_of(feature_set)
 
     base_version = args.version or pd.Timestamp.now("UTC").strftime("%Y%m%d")
     version = feature_set_version(base_version, feature_set)
+    if version == WINDOW_REFERENCE_VERSION:
+        raise SystemExit(
+            f"models/{version} is the frozen v3 shadow artifact and is never refitted; "
+            f"pass a new --version (MODEL.md 24)"
+        )
     cutoff, cutoff_source = resolve_training_cutoff(args, features, base_version)
     log.info("feature set %s, cutoff %s (from %s)", feature_set, cutoff.date(), cutoff_source)
     train = features[features["GAME_DATE"] < cutoff]
     if train.empty:
         raise SystemExit(f"no training rows before cutoff {cutoff.date()}")
+    assert_training_rows_only(features)
 
     out_dir = version_dir(version, args.models_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -367,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
 
     metadata: dict[str, object] = {
         "model_version": version,
-        "feature_version": FEATURE_VERSION,
+        "feature_version": feature_version,
         "feature_set": feature_set,
         "git_commit": registry.git_commit(),
         "artifact_checksum": registry.sha256_file(out_dir / MODEL_FILE),
@@ -375,8 +430,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     if with_context:
         metadata["base_artifact_checksum"] = registry.sha256_file(out_dir / BASE_MODEL_FILE)
-    else:
+    if feature_set == V1_FEATURE_SET:
         metadata["shadow_of"] = base_version
+    if feature_set != SERVED_FEATURE_SET:
         metadata["cutoff_source"] = cutoff_source
     metadata.update({
         "context": context,
@@ -412,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
         universe_source=universe_source,
         feature_cols=feature_cols,
         feature_set=feature_set,
+        feature_version=feature_version,
     )
     registry.upsert(entry, args.models_dir / "registry.json")
 
@@ -432,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
           f"(denominator floor {RATE_MINUTES_FLOOR:g}m) - snapshot only, "
           f"{len(ewma_state):,} players")
     print(f"composition      : {CHAMPIONS['composition']}")
-    print(f"feature version  : {FEATURE_VERSION}")
+    print(f"feature version  : {feature_version} ({len(feature_cols)} columns)")
     print(f"artifact sha256  : {metadata['artifact_checksum'][:16]}... (availability), "
           f"{metadata['minutes_artifact_checksum'][:16]}... (minutes)")
     for target, fallback in production["rate_fallbacks"].items():

@@ -282,6 +282,40 @@ def build_prospective_features(
     ).reset_index(drop=True)
 
 
+def attach_serving_v7_columns(
+    features: pd.DataFrame,
+    history: pd.DataFrame,
+    team_logs: pd.DataFrame,
+    box: pd.DataFrame | None,
+    preseason: pd.DataFrame | None,
+    cutoff: pd.Timestamp,
+) -> pd.DataFrame:
+    """the v7-preseason-role columns build_features does not make, for unplayed rows.
+
+    the stakes subset, the per-player box history and the preseason role, each read
+    from rows dated strictly before ``cutoff``. the two v6 teammate columns are left
+    to predict.rebuild_context, which owns the override-adjusted p_j they sum.
+    """
+    from .box_context import attach_serving_box_history  # noqa: PLC0415
+    from .matchup import attach_serving_stakes  # noqa: PLC0415
+    from .preseason_role import attach_serving_preseason_role  # noqa: PLC0415
+
+    if box is None or box.empty:
+        raise ValueError(
+            "no box-score details: the served v7 contract needs the v6 start and box "
+            "form columns, and a frame without them cannot be scored"
+        )
+    out = attach_serving_stakes(features, team_logs, cutoff)
+    out = attach_serving_box_history(out, box, cutoff)
+    out = attach_serving_preseason_role(out, history, preseason, cutoff)
+    if len(out) != len(features):
+        raise ValueError(
+            f"attaching the serving v7 columns changed the row count ({len(features)} "
+            f"-> {len(out)})"
+        )
+    return out
+
+
 def postseason_sidecar_path(dataset_path: Path) -> Path:
     """where build_dataset.py writes the postseason appearances beside a dataset."""
     return dataset_path.with_name(f"{dataset_path.stem}_postseason.parquet")

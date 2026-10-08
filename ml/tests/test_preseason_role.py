@@ -509,3 +509,71 @@ def test_the_first_ten_endpoints_are_broken_out_by_roster_cohort(
         for endpoint in config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS:
             cohorts = set(gated.loc[gated["endpoint"] == endpoint, "cohort"])
             assert {COHORT_NEW_TEAM, COHORT_NO_HISTORY, COHORT_SAME_TEAM} <= cohorts, name
+
+
+def _two_origins(season_start: dict[str, tuple[pd.DataFrame, pd.DataFrame]]) -> pd.DataFrame:
+    """the saved rows of one fixture origin, relabelled S1, plus a doubled-loss S2 copy."""
+    rows = p3.season_start_rows(season_start)
+    s1 = rows.assign(origin="S1 valid=fixture")
+    s2 = rows.assign(origin="S2 valid=fixture", loss=rows["loss"] * 2.0)
+    return pd.concat([s1, s2], ignore_index=True)
+
+
+def test_the_saved_rows_hold_v7_and_its_reference_on_both_sides(
+    season_start: dict[str, tuple[pd.DataFrame, pd.DataFrame]],
+) -> None:
+    # act
+    rows = p3.season_start_rows(season_start)
+
+    # assert
+    assert set(rows["comparison"]) == set(p3.SUBSET_COMPARISONS)
+    assert set(rows["side"]) == {"incumbent", "candidate"}
+    assert {"origin", "endpoint", "row_key", "GAME_DATE", "cohort", "loss"} <= set(rows.columns)
+
+
+def test_the_subset_decision_reads_only_the_named_origins(
+    season_start: dict[str, tuple[pd.DataFrame, pd.DataFrame]],
+) -> None:
+    # arrange
+    rows = _two_origins(season_start)
+    incumbent, candidate = season_start[p3.COMPARISON_V7]
+    single, _ = p3.decide_comparison(incumbent, candidate, p3.COMPARISON_GATES[p3.COMPARISON_V7])
+
+    # act
+    only_s1, per_origin = p3.subset_decisions(rows, ("S1",))
+    both, _ = p3.subset_decisions(rows, ("S1", "S2"))
+
+    # assert
+    v7 = only_s1[only_s1["comparison"] == p3.COMPARISON_V7].set_index("endpoint")
+    expected = p3.decision_table(single).set_index("endpoint")
+    np.testing.assert_allclose(v7.loc[expected.index, "incumbent"], expected["incumbent"])
+    np.testing.assert_allclose(v7.loc[expected.index, "candidate"], expected["candidate"])
+    assert set(per_origin["origin"]) == {"S1 valid=fixture"}
+    assert only_s1["verdict"].str.startswith("SENSITIVITY ONLY").all()
+    both_v7 = both[both["comparison"] == p3.COMPARISON_V7].set_index("endpoint")
+    assert both_v7.loc["minutes_mae", "incumbent"] > v7.loc["minutes_mae", "incumbent"]
+
+
+def test_the_subset_mode_writes_its_csvs_and_fits_nothing(
+    season_start: dict[str, tuple[pd.DataFrame, pd.DataFrame]], tmp_path,
+) -> None:
+    # arrange
+    _two_origins(season_start).to_parquet(tmp_path / f"stem{p3.ROWS_SUFFIX}", index=False)
+
+    # act
+    code = p3.main([
+        "--version", "stem", "--reports-dir", str(tmp_path), "--origins-subset", "S1,S2",
+        "--dataset", str(tmp_path / "no_dataset_is_read.parquet"),
+    ])
+
+    # assert
+    assert code == 0
+    assert (tmp_path / "stem_p3_subset_S1-S2.csv").exists()
+    assert (tmp_path / "stem_p3_subset_S1-S2_per_origin.csv").exists()
+
+
+def test_without_saved_rows_the_subset_mode_refuses_rather_than_refits(tmp_path) -> None:
+    # act + assert
+    with pytest.raises(SystemExit, match="second look"):
+        p3.main(["--version", "p3-v7-2026-10-08", "--reports-dir", str(tmp_path),
+                 "--origins-subset", "S1,S2"])

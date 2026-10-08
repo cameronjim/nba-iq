@@ -93,9 +93,9 @@ class TestCompanionCutoff:
         assert cutoff.date() == pd.Timestamp("2025-01-01").date()
         assert source == "--cutoff"
 
-    def test_the_pinned_artifact_cutoff_is_what_a_real_shadow_inherits(self) -> None:
+    def test_the_v3_artifact_cutoff_is_what_a_real_v7_fit_inherits(self) -> None:
         # act
-        cutoff = train.companion_cutoff(config.PROSPECTIVE_MODEL_VERSION, config.MODELS_DIR)
+        cutoff = train.companion_cutoff(train.WINDOW_REFERENCE_VERSION, config.MODELS_DIR)
 
         # assert
         assert cutoff is not None
@@ -215,3 +215,311 @@ class TestPreseasonPriorPredict:
         assert on.loc[moved, "E_MIN"].to_numpy() == pytest.approx(
             (on.loc[moved, "P_PLAY"] * on.loc[moved, "E_MIN_COND"]).to_numpy()
         )
+
+
+@pytest.fixture(scope="module")
+def v7_artifact(
+    features_status: pd.DataFrame, team_logs: pd.DataFrame, box_details: pd.DataFrame,
+    preseason_logs: pd.DataFrame, tmp_path_factory,
+) -> dict[str, Path]:
+    """one v7-preseason-role fit on the fixture dataset with every family attached."""
+    from fnba_ml.box_context import attach_v6_features
+    from fnba_ml.matchup import attach_v4_features
+    from fnba_ml.preseason_role import attach_preseason_role_features
+
+    root = tmp_path_factory.mktemp("v7")
+    frame = attach_v6_features(attach_v4_features(features_status, team_logs), box_details)
+    frame = attach_preseason_role_features(frame, preseason_logs)
+    dataset = root / "dataset.parquet"
+    frame.to_parquet(dataset, index=False)
+    models_dir = root / "models"
+    code = train.main([
+        "--dataset", str(dataset),
+        "--feature-set", config.PROSPECTIVE_FEATURE_SET,
+        "--version", "testver-v7",
+        "--cutoff", CUTOFF,
+        "--models-dir", str(models_dir),
+    ])
+    assert code == 0
+    return {"dataset": dataset, "models_dir": models_dir, "dir": models_dir / "testver-v7"}
+
+
+class TestV7Args:
+    def test_the_served_v7_set_is_trainable(self) -> None:
+        # act
+        args = train.parse_args(["--feature-set", "v7-preseason-role"])
+
+        # assert
+        assert args.feature_set == config.PROSPECTIVE_FEATURE_SET
+
+    def test_the_v7_artifact_keeps_the_version_it_is_given(self) -> None:
+        # act + assert
+        assert feature_set_version("20261008-v7", "v7-preseason-role") == "20261008-v7"
+
+    def test_a_v7_fit_inherits_the_v3_shadow_cutoff(self, tmp_path: Path) -> None:
+        # arrange
+        reference = tmp_path / train.WINDOW_REFERENCE_VERSION
+        reference.mkdir()
+        (reference / train.META_FILE).write_text(
+            json.dumps({"training_window": {"cutoff": "2026-04-13"}}), encoding="utf-8"
+        )
+        args = train.parse_args([
+            "--feature-set", "v7-preseason-role", "--models-dir", str(tmp_path),
+        ])
+        frame = pd.DataFrame({"GAME_DATE": pd.to_datetime(["2026-06-01"])})
+
+        # act
+        cutoff, source = train.resolve_training_cutoff(args, frame, "20261008-v7")
+
+        # assert
+        assert train.WINDOW_REFERENCE_VERSION == "20260818"
+        assert cutoff.date() == pd.Timestamp("2026-04-13").date()
+        assert train.WINDOW_REFERENCE_VERSION in source
+
+    def test_a_dataset_missing_a_v7_column_is_refused(
+        self, features_status: pd.DataFrame
+    ) -> None:
+        # act + assert
+        with pytest.raises(SystemExit, match="lacks 22 column"):
+            train.training_columns(features_status, config.PROSPECTIVE_FEATURE_SET)
+
+    def test_a_preseason_training_row_is_refused(self) -> None:
+        # arrange
+        frame = pd.DataFrame({config.COMPETITION_COL: ["regular", "preseason"]})
+
+        # act + assert
+        with pytest.raises(SystemExit, match="preseason"):
+            train.assert_training_rows_only(frame)
+
+
+class TestV7Fit:
+    def test_metadata_names_the_feature_set_and_73_columns(self, v7_artifact) -> None:
+        # act
+        metadata = json.loads((v7_artifact["dir"] / train.META_FILE).read_text("utf-8"))
+
+        # assert
+        assert metadata["model_version"] == "testver-v7"
+        assert metadata["feature_set"] == "v7-preseason-role"
+        assert metadata["feature_version"] == "v7"
+        assert metadata["feature_cols"] == config.FEATURE_SETS["v7-preseason-role"]
+        assert len(metadata["feature_cols"]) == 73
+        assert metadata["training_window"]["cutoff"] == CUTOFF
+        assert metadata["cutoff_source"] == "--cutoff"
+        assert "base_artifact_checksum" in metadata
+        assert metadata["context"]["stage1_feature_cols"] == config.BASE_FEATURE_COLS
+        assert metadata["production"]["rate_estimators"]["STL"] == "expanding"
+
+    def test_the_artifact_holds_the_six_files_the_freeze_pins(self, v7_artifact) -> None:
+        # act
+        files = {p.name for p in v7_artifact["dir"].iterdir()}
+
+        # assert
+        assert files == set(config.PROSPECTIVE_ARTIFACT_CHECKSUMS)
+
+    def test_both_models_read_the_73_columns(self, v7_artifact) -> None:
+        # act
+        model, minutes, base, _ = predict.load_version("testver-v7", v7_artifact["models_dir"])
+
+        # assert
+        assert base is not None
+        assert base.feature_cols == config.BASE_FEATURE_COLS
+        for fitted in (model, minutes):
+            assert fitted.feature_cols == config.FEATURE_SETS["v7-preseason-role"]
+
+    def test_the_registry_entry_records_v7_and_verifies(self, v7_artifact) -> None:
+        # arrange
+        models_dir = v7_artifact["models_dir"]
+
+        # act
+        entry = registry.find("testver-v7", models_dir / "registry.json")
+
+        # assert
+        assert entry is not None
+        assert entry["feature_set"] == "v7-preseason-role"
+        assert entry["feature_version"] == "v7"
+        assert entry["n_features"] == 73
+        assert registry.verify_artifacts("testver-v7", models_dir) == []
+
+    def test_predict_rebuilds_context_and_scores_the_v7_artifact(
+        self, v7_artifact, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # arrange
+        out = tmp_path / "predictions.parquet"
+        caplog.set_level(logging.INFO, logger="predict")
+
+        # act
+        code = predict.main([
+            "--dataset", str(v7_artifact["dataset"]),
+            "--version", "testver-v7",
+            "--models-dir", str(v7_artifact["models_dir"]),
+            "--out", str(out),
+            "--statuses-as-of", "2024-12-01T12:00:00Z",
+        ])
+
+        # assert
+        assert code == 0
+        assert "context rebuilt from base p" in caplog.text
+        predictions = pd.read_parquet(out)
+        assert len(predictions) > 0
+        assert set(predictions["FEATURE_VERSION"]) == {"v7"}
+
+    def test_predict_refuses_a_frame_without_the_v7_columns(
+        self, v7_artifact, features_status: pd.DataFrame, tmp_path: Path
+    ) -> None:
+        # arrange
+        dataset = tmp_path / "v3_only.parquet"
+        features_status.to_parquet(dataset, index=False)
+
+        # act + assert
+        with pytest.raises(SystemExit, match="refusing to score"):
+            predict.main([
+                "--dataset", str(dataset), "--version", "testver-v7",
+                "--models-dir", str(v7_artifact["models_dir"]),
+                "--out", str(tmp_path / "p.parquet"),
+                "--statuses-as-of", "2024-12-01T12:00:00Z",
+            ])
+
+
+class TestFrozenArtifactGuard:
+    def test_the_v3_shadow_artifact_is_never_refitted(
+        self, features_status: pd.DataFrame, tmp_path: Path
+    ) -> None:
+        # arrange
+        dataset = tmp_path / "dataset.parquet"
+        features_status.to_parquet(dataset, index=False)
+
+        # act + assert
+        with pytest.raises(SystemExit, match="frozen v3 shadow"):
+            train.main([
+                "--dataset", str(dataset), "--version", train.WINDOW_REFERENCE_VERSION,
+                "--cutoff", CUTOFF, "--models-dir", str(tmp_path / "models"),
+            ])
+
+
+class TestEvaluateWorkflow:
+    WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/ml_evaluate.yml"
+
+    def _input_block(self, text: str, name: str) -> dict[str, str]:
+        lines = text.splitlines()
+        start = lines.index(f"      {name}:")
+        block: dict[str, str] = {}
+        for line in lines[start + 1:]:
+            if not line.startswith("        "):
+                break
+            key, _, value = line.strip().partition(":")
+            block[key] = value.strip()
+        return block
+
+    def test_train_feature_set_is_an_optional_string_input(self) -> None:
+        # arrange
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        # act
+        block = self._input_block(text, "train_feature_set")
+
+        # assert
+        assert block["type"] == "string"
+        assert block["default"] == '""'
+        assert block["required"] == "false"
+
+    def test_the_input_trains_and_uploads_the_version_directory(self) -> None:
+        # arrange
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        # act
+        guarded = text.count("if: inputs.train_feature_set != ''")
+
+        # assert
+        assert guarded == 3
+        assert 'python ml/train.py --feature-set "$FEATURE_SET" --version "$VERSION"' in text
+        assert "ml/models/${{ inputs.version }}/**" in text
+        assert text.index("name: Build dataset") < text.index("name: Train feature-set artifact")
+
+    def test_every_input_has_a_type_and_a_default(self) -> None:
+        # arrange
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        start = lines.index("    inputs:") + 1
+        names = [
+            line.strip().rstrip(":") for line in lines[start:]
+            if line.startswith("      ") and not line.startswith("        ")
+            and line.strip().endswith(":")
+        ]
+        names = names[:names.index("group")] if "group" in names else names
+
+        # act
+        blocks = {name: self._input_block(text, name) for name in names}
+
+        # assert
+        assert "train_feature_set" in blocks
+        assert len(blocks) <= 25
+        for name, block in blocks.items():
+            assert "type" in block and "default" in block, name
+
+
+ADDED_SEASON_CUTOFF = "2024-07-01"
+
+
+@pytest.fixture(scope="module")
+def season_added(fixture_dir: Path, tmp_path_factory) -> dict[str, dict[str, Path]]:
+    """the same v7 fit from a build of one season and a build with the next appended."""
+    import build_dataset
+
+    root = tmp_path_factory.mktemp("season_added")
+    out: dict[str, dict[str, Path]] = {}
+    for name, seasons in (("before", ["2023-24"]), ("after", ["2023-24", "2024-25"])):
+        dataset = root / f"{name}.parquet"
+        assert build_dataset.main([
+            "--source", "parquet", "--data-dir", str(fixture_dir),
+            "--seasons", *seasons, "--out", str(dataset),
+        ]) == 0
+        models_dir = root / f"models_{name}"
+        assert train.main([
+            "--dataset", str(dataset), "--feature-set", config.PROSPECTIVE_FEATURE_SET,
+            "--version", "added", "--cutoff", ADDED_SEASON_CUTOFF,
+            "--models-dir", str(models_dir),
+        ]) == 0
+        out[name] = {"dataset": dataset, "dir": models_dir / "added"}
+    return out
+
+
+class TestAnAddedSeasonLeavesTraining:
+    def test_the_season_list_reaches_2026_27(self) -> None:
+        # act + assert
+        assert config.SEASONS[-1] == "2026-27"
+        assert train.WINDOW_REFERENCE_VERSION == "20260818"
+
+    def test_the_training_rows_before_the_cutoff_are_identical(self, season_added) -> None:
+        # arrange
+        columns = [
+            "PLAYER_ID", "GAME_ID", "GAME_DATE", "PLAYED", "MIN",
+            *config.FEATURE_SETS[config.PROSPECTIVE_FEATURE_SET],
+        ]
+        cutoff = pd.Timestamp(ADDED_SEASON_CUTOFF)
+
+        # act
+        frames = {}
+        for name, paths in season_added.items():
+            frame = pd.read_parquet(paths["dataset"])
+            rows = frame[pd.to_datetime(frame["GAME_DATE"]) < cutoff][columns]
+            frames[name] = rows.sort_values(["GAME_DATE", "GAME_ID", "PLAYER_ID"]).reset_index(
+                drop=True
+            )
+        appended = pd.read_parquet(season_added["after"]["dataset"])
+
+        # assert
+        assert (pd.to_datetime(appended["GAME_DATE"]) >= cutoff).any()
+        pd.testing.assert_frame_equal(frames["before"], frames["after"], check_dtype=False)
+
+    def test_the_fit_records_the_same_window_and_holdout(self, season_added) -> None:
+        # act
+        meta = {
+            name: json.loads((paths["dir"] / train.META_FILE).read_text("utf-8"))
+            for name, paths in season_added.items()
+        }
+
+        # assert
+        assert meta["before"]["training_window"] == meta["after"]["training_window"]
+        assert meta["before"]["metrics"] == meta["after"]["metrics"]
+        assert meta["before"]["feature_cols"] == meta["after"]["feature_cols"]
+        assert meta["before"]["production"] == meta["after"]["production"]
