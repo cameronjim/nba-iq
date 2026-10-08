@@ -5334,12 +5334,34 @@ not a pass: `test_no_pinned_checksum_is_a_placeholder` and every checksum test i
 
 | File | sha256 |
 |---|---|
-| `availability_model.joblib` | `FILL-AFTER-TRAINING` |
-| `base_availability_model.joblib` | `FILL-AFTER-TRAINING` |
-| `ewma_state.parquet` | `FILL-AFTER-TRAINING` |
-| `feature_gain.csv` | `FILL-AFTER-TRAINING` |
-| `metadata.json` | `FILL-AFTER-TRAINING` |
-| `minutes_model.joblib` | `FILL-AFTER-TRAINING` |
+| `availability_model.joblib` | `f280c611c58e9e49d761139d235b614680f187ad2cb9392bff53921186e60dde` |
+| `base_availability_model.joblib` | `2595ac02db55547c5241ffa5512473a78693ec5dc427db49221349a991d39459` |
+| `ewma_state.parquet` | `21da67caa610e402ad785d88ce896038d1c99b9e4b3e2fb8b86dd0b986e60b3a` |
+| `feature_gain.csv` | `74f563d66d5d465598d39c75d2eab5383007edbaa8250153994572d74e4b1035` |
+| `metadata.json` | `fdaac64e97e1a7ae4d6f63272e99f3d1933075d39a1477be22f29e1f8b9ca606` |
+| `minutes_model.joblib` | `b30e0a1c920eef49bc2207c105a4720911ada17e96574073a04b18016b3e5a93` |
+
+#### 24.8.1 The same-universe comparison (2026-10-08, ML Evaluate runs 37739766889 and 37740171033)
+
+The new artifact's holdout Brier (0.1279) is not comparable with `20260818`'s (0.0860):
+the box-details backfill added inactive and active-DNP status rows to every season, so the
+universe grew from 147,413 to 170,732 training rows and the holdout's played rate fell
+from 0.697 to 0.602. To compare like with like, the `v3-honest` feature set was trained
+on the same rows with the same 2026-04-13 cutoff (`20261008-v3same`, not committed).
+Holdout 2026-03-16 to 2026-04-12, 7,844 rows, both artifacts:
+
+| Endpoint | v3-honest, same rows | v7-preseason-role | v7 relative |
+|---|---|---|---|
+| availability Brier | 0.13139 | 0.12794 | +2.63% |
+| availability log loss | 0.41511 | 0.40381 | +2.72% |
+| minutes MAE (EWMA baseline 5.4407) | 5.2485 | 5.1252 | +2.35% |
+| conditional PTS MAE | 4.7536 | 4.7093 | +0.93% |
+| conditional FGA MAE | 2.8813 | 2.8468 | +1.20% |
+
+A late-season holdout is where 22.5 measured the v6 family at under 1%; the same-universe
+gain here is larger because the v7 artifact also carries the box-detail columns the
+backfill made available for every season. The preseason columns are neutral on these
+rows by the 10-appearance fade, so this table is the floor, not the season-start effect.
 
 ### 24.9 What remains frozen, and the new literals
 

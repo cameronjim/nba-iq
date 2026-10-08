@@ -17,12 +17,12 @@ PROSPECTIVE_PROTOCOL_VERSION = "prospective_2026_27_v4"
 # preflight refuses to serve.
 PROSPECTIVE_CHECKSUM_PLACEHOLDER = "FILL-AFTER-TRAINING"
 PROSPECTIVE_ARTIFACT_CHECKSUMS: dict[str, str] = {
-    "availability_model.joblib": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
-    "base_availability_model.joblib": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
-    "ewma_state.parquet": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
-    "feature_gain.csv": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
-    "metadata.json": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
-    "minutes_model.joblib": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
+    "availability_model.joblib": "f280c611c58e9e49d761139d235b614680f187ad2cb9392bff53921186e60dde",
+    "base_availability_model.joblib": "2595ac02db55547c5241ffa5512473a78693ec5dc427db49221349a991d39459",
+    "ewma_state.parquet": "21da67caa610e402ad785d88ce896038d1c99b9e4b3e2fb8b86dd0b986e60b3a",
+    "feature_gain.csv": "74f563d66d5d465598d39c75d2eab5383007edbaa8250153994572d74e4b1035",
+    "metadata.json": "fdaac64e97e1a7ae4d6f63272e99f3d1933075d39a1477be22f29e1f8b9ca606",
+    "minutes_model.joblib": "b30e0a1c920eef49bc2207c105a4720911ada17e96574073a04b18016b3e5a93",
 }
 
 # the v3 champion, now the shadow: artifact 20260818 byte for byte, as v1 to v3 pinned it.
