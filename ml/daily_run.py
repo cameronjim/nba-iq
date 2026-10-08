@@ -1098,6 +1098,8 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
                 "--source", "postgres",
                 "--out", str(dataset_path),
                 "--no-v4-candidate",
+                # evaluation only (MODEL.md 23): serving never reads Pre Season.
+                "--no-v7-candidate",
             ])
             if code != 0:
                 raise PhaseFailure("dataset", f"build_dataset exited {code}")

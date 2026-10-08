@@ -4888,3 +4888,222 @@ with its own look. Nothing served changes; `prospective_2026_27_v3` stands.
 - **`position` and `dnp_reason` are still unread.** The box position is set for starters
   only and `players.position` already feeds `POS_GROUP`; neither seemed worth a column
   ahead of the start flag.
+
+
+## 23. v7-preseason-role (2026-10-07): pre-registered, unmeasured
+
+**Verdict first: three new challengers exist, `v7-preseason-role`,
+`preseason-role-prior` and `preseason-role-prior-newcomers`, and none has a number.**
+Everything in this section was written before `run_p3_bracket.py` had scored any of
+them. `prospective_2026_27_v3`
+serves exactly as section 21 froze it: artifact `20260818`, the 51 `FEATURE_COLS`
+(digest `914cdc17…`), `FEATURE_VERSION = "v3"`, the 13.1 champions.
+`tests/test_prospective_freeze.py` is green and sections 13, 17, 18, 21 and 22 are not
+edited. `daily_run.py` builds its dataset with `--no-v7-candidate`, so the served path
+never reads a Pre Season row.
+
+### 23.1 The question, and what preseason cannot tell us
+
+The question as asked: preseason has had a couple of games; can that hindsight help
+the regular-season numbers? The honest framing has two halves.
+
+**What preseason cannot tell us, already measured.** Levels and rates. 20.6 read four
+seasons of preseason box scores (8,174 player-games) and found that preseason minutes
+do not line up with regular-season minutes by tier: stars play 21.65 against a usual
+33.55, the fringe 13.99 against 5.96, and anyone who starts plays about 22 whatever
+his tier. The minutes are compressed toward the middle on purpose, by coaches. Rates
+are worse: the opponent can be a G League roster or an overseas club, the lineups are
+auditions, and 21.2 measured what mixing a different regime into the career rate
+history costs (the playoff switch made nine rate-driven endpoints slightly worse with
+CIs excluding zero). Preseason is further from the regular season than the playoffs
+are, which is why 20.5 made it truth only. None of that changes here: no preseason
+game enters a rate history, a rolling window, an EWMA or a training row.
+
+**What it might tell us, untested.** Order, not level. Who started, how the minutes
+were split in the last two exhibition games when rotations tighten, and which team a
+player actually dressed for. The first games of a season are served off last season's
+EWMA, which is the wrong number for exactly the players whose role moved: a new
+signing on a new team, a rookie with no history, a position battle won in camp. The
+v6 start family (22.2) reads the regular-season start flag and has nothing to read
+until a player has appeared. If preseason role carries information, it lives there
+and nowhere else.
+
+### 23.2 The six columns (`fnba_ml/preseason_role.py`, `config.PRESEASON_ROLE_FEATURE_COLS`)
+
+For a regular-season row (player i, team T, season s, game date d), the window is the
+last `PRESEASON_ROLE_GAMES = 2` preseason games **team T** played in season s, dated
+strictly before d. "Team T" is the team the row is predicted for, not the team the
+player last played for.
+
+| Column | Definition |
+|---|---|
+| `pre_started_rate` | share of the window games he started; a game he is absent from is a known non-start, a null `started` flag is unknown |
+| `pre_min_share` | mean over the window games of his minutes over the team's player-minutes sum in that game; absent is 0 |
+| `pre_min_mean` | mean minutes over the window games he played (minutes > 0); null if none |
+| `pre_games_played` | how many of the window games he played (minutes > 0) |
+| `pre_dressed_for_current_team` | 1 if his last preseason box line of season s before d was for T, 0 if for another team, null if he has none |
+| `pre_role_delta_min` | `pre_min_share * 240 - ewma_MIN`: how far the preseason role sits from what his history says; null without either |
+
+**Neutral values.** A team with no preseason game in the window gives
+`pre_games_played = 0` and the other columns null. A team that played without him
+gives share 0, started rate 0, played 0, minutes mean null: a known zero role, which is
+information about a roster spot, not missingness.
+
+**Leakage contract.** Windows are keyed by `SEASON`, so a row never reads a previous
+season's preseason; a game dated on or after d is outside the window (the guard is
+`searchsorted(..., side="left")` on the team's preseason dates and `merge_asof(...,
+allow_exact_matches=False)` for the dressed flag). `ewma_MIN` is the as-of column
+`build_features` already produces. Nothing reads a regular-season outcome of game d.
+
+**The fade, written in config before any result:**
+
+```
+PRESEASON_ROLE_GAMES: int = 2
+PRESEASON_ROLE_FADE_GAMES: int = 10
+```
+
+A hard cut, not a linear decay: from the row where the player already has 10
+regular-season appearances that season (scheduled rows he did not play do not count),
+every column takes the no-preseason value (`pre_games_played = 0`, the other five
+null). A tree reading a column whose scale shrinks with games played would be reading
+games played; the linear decay is tested once, in the prior below, where its meaning
+is plain.
+
+`v7-preseason-role` = the 67 `v6-context` columns, unchanged and in order, plus these
+six (73). `CANDIDATE_FEATURE_VERSION_V7 = "v7"`.
+
+### 23.3 The prior: `preseason-role-prior`
+
+The second use needs no refit. On the incumbent's out-of-fold minutes:
+
+```
+E[MIN|plays]' = (1 - w_k) * MIN_PRED + w_k * pre_min_share * 240
+w_k           = PRESEASON_ROLE_PRIOR_WEIGHT * max(0, 1 - k / PRESEASON_ROLE_PRIOR_GAMES)
+PRESEASON_ROLE_PRIOR_GAMES: int = 10
+PRESEASON_ROLE_PRIOR_WEIGHT: float = 0.5
+PRESEASON_ROLE_PRIOR_MIN_GAMES: int = 1
+```
+
+k is the player's regular-season appearances so far that season, so the first game
+blends at 0.5 and the eleventh at 0. A player who played none of the window games
+(`pre_games_played < 1`) keeps the model's minutes: a star rested through camp is not
+evidence of a zero role. `P_PLAY` is untouched; the unconditional PTS is `P_PLAY *
+E[MIN|plays]' * rate` through the same `minutes_propagated_estimate`.
+
+**A stated risk, not a hedge.** 20.6 says preseason minutes are compressed, so
+`pre_min_share * 240` pulls stars down and the fringe up. The prior can only help where
+the change in role outweighs the compression, which is the new-team and no-history
+cohorts; on returning stars it will cost minutes MAE. The cohort rule below blocks it
+if that cost exceeds 1%, and this is the prior as Cameron asked for it, not a
+calibrated one. A tier-calibrated version would be a new candidate.
+
+**The second variant, `preseason-role-prior-newcomers`, registered with the first and
+before any look.** The same blend, weights, fade and played-at-least-one rule, applied
+only to rows in the roster cohorts (23.5) named in config:
+
+```
+PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS: tuple[str, ...] = (
+    "season start: new team",
+    "season start: no history",
+)
+```
+
+A returning same-team player keeps the champion minutes exactly, so the compression
+cost above cannot reach him. Both variants are kept so the look separates the two
+questions: whether the preseason role helps at all, and whether restricting it to the
+players whose role is actually unknown is what makes the difference. Restricting a
+prior to the cohorts where it should help is also restricting where it can show a
+gain, so the newcomer variant's pooled first-10 number is diluted by the untouched
+same-team rows; the gate is still the pooled number.
+
+### 23.4 The origins
+
+`config.PRESEASON_ROLE_ORIGINS`:
+
+| Origin | Window (start clamped to the opener in the data) | Training seasons | Season starts in training with v7 values |
+|---|---|---:|---:|
+| S0 | 2023-10-24 to 2023-11-30 | 1 (2022-23) | 1 |
+| S1 | 2024-10-22 to 2024-11-30 | 2 | 2 |
+| S2 | 2025-10-21 to 2025-11-30 | 3 | 3 |
+
+S1 and S2 are the 20.1 season-start windows, reused as they are. S0 is added because
+preseason box scores exist from 2022-23 and the dataset holds the full 2022-23 season
+before it; it has one season of training where 20.1 asked for two, and its v7 model
+sees exactly one prior season start with the columns populated. That is thin, and it
+is recorded rather than hidden: S0's per-origin row is read with that in mind. Each
+start goes through `eval_core.clamp_to_opener`, the 20.1 path (moved out of
+`run_postseason_bracket.py` so both brackets share it). Training is every row strictly
+before the clamped start, as for every other origin. The `DEV_ORIGINS` are not used:
+the fade makes every v7 column neutral by December, so a mid-season origin could not
+see either candidate.
+
+**Power, stated in advance.** Three windows of about 40 days are 17 or so 7-day
+blocks. The rows where the columns are live are each player's first ten appearances,
+roughly half of each window. A real effect concentrated in new-team players could be
+large in its cohort and still under 1% pooled. The pooled endpoint is the gate anyway;
+the cohorts say where an effect is.
+
+### 23.5 Cohorts, bars and the look
+
+Every comparison reports the five tiers, the event cohorts and three roster cohorts
+defined on the dataset's own rows (`preseason_role.roster_cohorts`), against the team
+of the player's last scheduled row in the most recent earlier season the dataset holds:
+
+- `season start: new team`: that team differs from the row's team;
+- `season start: no history`: no earlier-season row (rookies, and anyone new to the
+  league in the data);
+- `season start: same team`: returning to the same team.
+
+Every loss is also reported restricted to the rows inside each player's first ten
+appearances (endpoint suffix `_first10`).
+
+```
+P3_PROMOTION_FLOOR: float = 0.01
+P3_COHORT_REGRESSION_TOLERANCE: float = 0.01
+P3_V7_GATED_ENDPOINTS = P3_V6_GATED_ENDPOINTS     # availability_brier, minutes_mae
+P3_PRESEASON_PRIOR_GATED_ENDPOINTS = ("minutes_mae_first10", "uncond_pts_mae_first10")
+```
+
+| Candidate | Against | Gates | Reported only |
+|---|---|---|---|
+| `v7-preseason-role` | `v3-honest` | availability Brier, minutes MAE (whole window) | unconditional PTS MAE, every `_first10` endpoint |
+| `preseason-role-prior` | champion minutes (`v3-honest` E[MIN\|plays]) | minutes MAE and unconditional PTS MAE on the first-10 rows | the same two over the whole window |
+| `preseason-role-prior-newcomers` | champion minutes | the same two first-10 endpoints | the same two over the whole window |
+| `v6-context@season-start` | `v3-honest` | none: `REFERENCE ONLY` | all |
+
+The bar is the P3 bar applied by the same `promotion.decide`: paired 7-day moving-block
+bootstrap, 95% CI excluding zero and at least 1% relative improvement on a gated
+endpoint, and no cohort on a gated endpoint regressing by more than 1%. The
+`v6-context@season-start` row is there because v7 contains v6, and v6 had its one look
+(22.5): v7 minus the reference, on identical rows, is the part preseason added. It is
+registered as non-binding through its parent. Both priors are binding, each its own
+candidate under the same bar. For both, the report also writes the two gated first-10
+endpoints within each of the three roster cohorts (`<stem>_p3_prior_roster_cohorts.csv`
+and a section of the markdown); those rows are reported only, beyond the cohort rule
+that already applies to every gated endpoint. `v6-context` and `residual-rate-v6` join
+`config.P3_DECIDED_COMPARISONS` against `p3-v6-2026-10-02`, so the same invocation
+reruns them on `DEV_ORIGINS` as `REFERENCE ONLY` and no rerun is a second v6 look.
+
+**The look:** ML Evaluate on prod with `challengers: true` and `challenger_version:
+p3-v7-<date>`. `build_dataset.py` attaches the six columns by default (from
+`PostgresSource.load_preseason_logs`, its own parameterised query on Pre Season rows,
+so the source's history types never widen) and `run_p3_bracket.py` scores the
+season-start comparisons in the same run and writes them into the same
+`<stem>_p3*` reports. The workflow needs no new input. One look per candidate: a v7
+that disappoints is the result, and a fix is `v8`. A pass is a recommendation to
+re-freeze, not a promotion. If both pass, the feature set is read first, as in 18.4,
+because the prior blends `v3-honest` minutes and its verdict describes a composition
+that would no longer ship.
+
+### 23.6 Open items
+
+- **Serving cannot build the v7 columns.** `predict.py` and `daily_run.py` never load
+  preseason logs. A promotion of either candidate needs that load at serving and is a
+  13.2 re-freeze in any case (item 6 for the feature set, item 7 for the prior, which
+  changes an emitted number of run A).
+- **Fixture-only so far.** The suite exercises the family on three synthetic
+  exhibition games per team with a late starting-job change, a player who dresses for
+  another team, and a team with no preseason. Real preseason lines may carry null
+  `started` flags for early seasons; those count as unknown, not as bench games.
+- **2022-23 has no history before it.** Every `ewma_MIN` at the 2022-23 opener is null,
+  so `pre_role_delta_min` is null across the first season start S0 trains on.

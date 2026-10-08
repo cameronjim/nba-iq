@@ -345,6 +345,8 @@ def test_the_bracket_registers_both_v6_candidates_at_their_parents_bars() -> Non
     assert p3.INCUMBENT_LABEL[p3.COMPARISON_RATE_V6] == "champion rate"
     assert config.P3_PROMOTION_FLOOR == 0.01
     assert config.P3_COHORT_REGRESSION_TOLERANCE == 0.01
-    assert p3.is_binding(p3.COMPARISON_V6) and p3.is_binding(p3.COMPARISON_RATE_V6)
+    # both had their one look at p3-v6-2026-10-02 (MODEL.md 22.5)
+    assert not p3.is_binding(p3.COMPARISON_V6)
+    assert not p3.is_binding(p3.COMPARISON_RATE_V6)
     assert not p3.is_binding(p3.COMPARISON_V5)
     assert not p3.is_binding(p3.COMPARISON_RATE)

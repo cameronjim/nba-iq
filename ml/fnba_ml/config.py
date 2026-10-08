@@ -516,6 +516,48 @@ FEATURE_COLS_V6_CONTEXT: list[str] = FEATURE_COLS_V5_STAKES + V6_CONTEXT_FEATURE
 CANDIDATE_FEATURE_VERSION_V6 = "v6"
 CANDIDATE_FEATURE_SET_V6 = "v6-context"
 
+# ---- the v7 candidate contract (feature_version v7), not served ----
+# v6-context plus the player's role in his team's last preseason games of the same
+# season (MODEL.md 23). written before any result.
+PRESEASON_ROLE_GAMES: int = 2
+
+# a hard cut, not a linear decay: from the row where the player already has this
+# many regular-season appearances that season, every column is the no-preseason
+# value (pre_games_played 0, the other five null). the linear decay is the prior's.
+PRESEASON_ROLE_FADE_GAMES: int = 10
+
+# player-minutes in a regulation game; pre_min_share * this is minutes per game.
+PRESEASON_ROLE_TEAM_MINUTES: float = 240.0
+
+PRESEASON_ROLE_FEATURE_COLS: list[str] = [
+    "pre_started_rate",
+    "pre_min_share",
+    "pre_min_mean",
+    "pre_games_played",
+    "pre_dressed_for_current_team",
+    "pre_role_delta_min",
+]
+FEATURE_COLS_V7_PRESEASON_ROLE: list[str] = (
+    FEATURE_COLS_V6_CONTEXT + PRESEASON_ROLE_FEATURE_COLS
+)
+CANDIDATE_FEATURE_VERSION_V7 = "v7"
+CANDIDATE_FEATURE_SET_V7 = "v7-preseason-role"
+
+# the serving-side prior: E[MIN|plays] blended toward pre_min_share * 240 with weight
+# PRESEASON_ROLE_PRIOR_WEIGHT * max(0, 1 - k / PRESEASON_ROLE_PRIOR_GAMES), k the
+# player's regular-season appearances so far that season. a player who played none
+# of the window games keeps the model's minutes.
+PRESEASON_ROLE_PRIOR_GAMES: int = 10
+PRESEASON_ROLE_PRIOR_WEIGHT: float = 0.5
+PRESEASON_ROLE_PRIOR_MIN_GAMES: int = 1
+
+# the second prior variant blends only these roster cohorts (preseason_role labels);
+# a returning same-team player keeps the champion minutes.
+PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS: tuple[str, ...] = (
+    "season start: new team",
+    "season start: no history",
+)
+
 # ---- the evaluation bracket: feature sets over identical rows ----
 # v1 is the no-teammate-context floor, v2-oracle is what perfect pre-tipoff
 # lineup information buys, v3-honest is what ships.
@@ -526,6 +568,7 @@ FEATURE_SETS: dict[str, list[str]] = {
     "v4": list(FEATURE_COLS_V4),
     "v5-stakes": list(FEATURE_COLS_V5_STAKES),
     "v6-context": list(FEATURE_COLS_V6_CONTEXT),
+    "v7-preseason-role": list(FEATURE_COLS_V7_PRESEASON_ROLE),
 }
 SERVED_FEATURE_SET = "v3-honest"
 ORACLE_FEATURE_SET = "v2-oracle"
@@ -690,6 +733,13 @@ SEASON_START_ORIGINS: list[tuple[str, str, str]] = [
     ("S2 valid=2025-10/11", "2025-10-21", "2025-11-30"),
 ]
 
+# the v7 look (MODEL.md 23): the season-start windows plus the 2023-24 start, the
+# first season with a preseason and a full season of training before it.
+PRESEASON_ROLE_ORIGINS: list[tuple[str, str, str]] = [
+    ("S0 valid=2023-10/11", "2023-10-24", "2023-11-30"),
+    *SEASON_START_ORIGINS,
+]
+
 RANDOM_STATE = 17
 
 LGBM_PARAMS: dict[str, object] = {
@@ -778,7 +828,20 @@ RATE_RESIDUAL_MIN_MINUTES: float = 10.0
 P3_DECIDED_COMPARISONS: dict[str, str] = {
     CANDIDATE_FEATURE_SET_V5: "p3-2026-10-02",
     "residual-rate": "p3-2026-10-02",
+    CANDIDATE_FEATURE_SET_V6: "p3-v6-2026-10-02",
+    "residual-rate-v6": "p3-v6-2026-10-02",
 }
+
+# ---- the v7 challengers' pre-registered rule, written before any result ----
+# the P3 floor and tolerance unchanged. the feature set inherits its parents' gates;
+# the prior moves minutes only inside each player's first PRESEASON_ROLE_PRIOR_GAMES
+# appearances, so it is gated on those rows and the whole-window numbers are reported.
+P3_V7_GATED_ENDPOINTS: tuple[str, ...] = P3_V6_GATED_ENDPOINTS
+PRESEASON_ROLE_FIRST_GAMES_SUFFIX: str = f"_first{PRESEASON_ROLE_PRIOR_GAMES}"
+P3_PRESEASON_PRIOR_GATED_ENDPOINTS: tuple[str, ...] = (
+    f"minutes_mae{PRESEASON_ROLE_FIRST_GAMES_SUFFIX}",
+    f"uncond_pts_mae{PRESEASON_ROLE_FIRST_GAMES_SUFFIX}",
+)
 
 
 def season_tag(season: str) -> str:

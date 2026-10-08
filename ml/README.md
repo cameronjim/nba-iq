@@ -260,6 +260,9 @@ data; none has one yet. Promoting any of them changes an emitted number and is a
 | residual rate | `fnba_ml/rate_model.py` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
 | `v6-context` | `config.FEATURE_SETS["v6-context"]`, `fnba_ml/box_context.py` | `run_p3_bracket.py` | availability Brier or minutes MAE |
 | `residual-rate-v6` | `RATE_CONTEXT_COLS_V6`, `RATE_RESIDUAL_MIN_MINUTES` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
+| `v7-preseason-role` | `config.FEATURE_SETS["v7-preseason-role"]`, `fnba_ml/preseason_role.py` | `run_p3_bracket.py` (season-start origins) | availability Brier or minutes MAE |
+| `preseason-role-prior` | `PRESEASON_ROLE_PRIOR_*` | `run_p3_bracket.py` (season-start origins) | minutes or unconditional PTS MAE over each player's first 10 appearances |
+| `preseason-role-prior-newcomers` | `PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS` | `run_p3_bracket.py` (season-start origins) | the same, blending new-team and no-history rows only |
 | count models | `fnba_ml/count_model.py` | `report_counts.py` | report-only |
 | tiered intervals | `train.py --tiered-quantiles` | `report_counts.py` | report-only |
 | v1 shadow | `train.py --feature-set v1`, `daily_run.py --shadow-feature-set v1` | `score_runs.py` | ladder rung (c), MODEL.md 13.4 |
@@ -314,7 +317,22 @@ csv. A pass is a recommendation to re-freeze, not a promotion.
 attaches them from `load_box_details` unless `--no-v6-candidate`. `residual-rate-v6`
 adds the four start columns to the rate context and zeroes the residual where
 `MIN_PRED < 10`. The bracket runs all four comparisons on the same rows; the two
-parents are labelled `REFERENCE ONLY` and can never promote.
+parents are labelled `REFERENCE ONLY` and can never promote. Both v6 candidates had
+their look at `p3-v6-2026-10-02` and are now references too.
+
+**`v7-preseason-role` and `preseason-role-prior` (MODEL.md 23).** Six columns from the
+last two preseason games of the row's team in the same season (`pre_started_rate`,
+`pre_min_share`, `pre_min_mean`, `pre_games_played`, `pre_dressed_for_current_team`,
+`pre_role_delta_min`), neutral once the player has 10 regular-season appearances;
+`build_dataset.py` attaches them from `load_preseason_logs` unless
+`--no-v7-candidate` (`daily_run.py` always passes it, so serving never reads a Pre
+Season row). The prior blends the incumbent's minutes toward `pre_min_share * 240`
+with weight `0.5 * max(0, 1 - k/10)`; `preseason-role-prior-newcomers` applies the same
+blend to new-team and no-history rows only, and both priors' gated endpoints are also
+written per roster cohort (`<stem>_p3_prior_roster_cohorts.csv`). All are scored in the same bracket run on
+`config.PRESEASON_ROLE_ORIGINS` (the 2023, 2024 and 2025 season starts), with
+`v6-context@season-start` as a same-rows reference and new-team, no-history and
+same-team cohorts.
 
 **Count models and tiered intervals (`report_counts.py`).** LightGBM Poisson
 boosters for STL/BLK/FG3M/TOV with a `log E[MIN]` offset plus the league log rate,
@@ -663,7 +681,7 @@ Nothing in them is served.
 ## Tests
 
 ```powershell
-python -m pytest tests -q      # 991 tests
+python -m pytest tests -q      # 1013 tests
 ```
 
 | File | Covers |
@@ -673,6 +691,7 @@ python -m pytest tests -q      # 991 tests
 | `tests/test_prospective.py` | the future-game universe and its one-date-at-a-time feature build. Outcome-derived columns (`avail_rate_*`, rolls, EWMAs) of a future row are identical whether or not other future dates exist, with the naive whole-week build kept as a negative control that does leak. Schedule-derived columns read the whole known schedule: a future back-to-back has `TEAM_REST_DAYS == 1` and `IS_B2B == 1`, the first future game's rest is measured from the last played game, `OPP_REST_DAYS` follows the opponent's own future games, a new season's second game reads rest from its opener, and a future row's `OPP_DEF_FORM` is the mean of the opponent's last played games, not diluted by unplayed ones |
 | `tests/test_rate_model.py` | the residual rate: its target by hand, the cutoff refusal, a permutation control (shuffled context buys nothing) next to a planted +0.1 home effect that is recovered, box-score flip invariance on a rebuilt feature frame with a counter-assertion on later rows, the shared-cutoff guard, and the v5-stakes column list |
 | `tests/test_box_context.py` | the v6 family: start rate with fewer than 10 and exactly 10 prior appearances, a null flag, a box line flipped on game g moving no row on or before g (with a counter-assertion on later rows) by hand and on the fixture, teammate starters out with a star at the OUT override probability, rebound shares and the foul floor, the contract, the fringe guard leaving the champion rate exactly below 10 projected minutes, and the bracket's v6 registration |
+| `tests/test_preseason_role.py` | the v7 family: the last-two-games window, the share and the null start flag by hand, a row reading only its own season's preseason, a preseason game on or after the row moving nothing before it (with a counter-assertion after), a known zero role for a player the team played without, the dressed-for-current-team flag, the hard fade at 10 appearances, the prior's weights and blend, the roster cohorts, the contract and bars, the bracket registration, the fixture's late starter and moved player, and the season-start comparisons on identical rows with the prior moving no row past the first 10 appearances |
 | `tests/test_p3_bracket.py` | the P3 bar as written, identical rows across both comparisons, appearance-only conditional rows, the decision logic on a synthetic win, loss, sub-floor win and cohort regression, and `main` end to end on the fixture including the one-look refusal |
 | `tests/test_universe.py` | status-based preferred; fallback labeled and warns; approximation over-states availability and truncates long absences; schedule symmetry |
 | `tests/test_models.py` | composition math; out-of-fold discipline for **both** multiplied quantities including deliberately constructed in-fold failures and a mismatched-cutoff pair; the minutes-propagation regression test (double the predicted minutes → double both estimates, checked through the fitted serving path); per-minute rate behaviour and the cameo floor; metric helpers |

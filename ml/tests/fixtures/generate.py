@@ -42,6 +42,14 @@ POSTSEASON_PLAYING_SLOTS = range(5)
 POSTSEASON_MINUTES = 38.0
 POSTSEASON_PTS_PER_MIN = 0.9
 
+# exhibition games before each opener, read only by the v7 preseason-role family.
+PRESEASON_OFFSETS_DAYS = (9, 6, 3)
+PRESEASON_GAMES = len(PRESEASON_OFFSETS_DAYS)
+PRESEASON_STARTER_MINUTES = 22.0
+PRESEASON_BENCH_MINUTES = 18.0
+PRESEASON_FRINGE_MINUTES = 12.0
+PRESEASON_LATE_STARTER_SLOT = 7
+
 SLOT_POSITIONS: dict[int, str] = {
     0: "PG,SG", 1: "SG,SF", 2: "SF,PF", 3: "PF,C", 4: "C",
     5: "PG,SG", 6: "SF,PF", 7: "C", 8: "SG,SF", 9: "PF,C",
@@ -373,6 +381,48 @@ def _postseason(frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     return out
 
 
+def _preseason_minutes(slot: int, game_index: int) -> tuple[float, bool]:
+    """(minutes, started) for one preseason line. slot 7 wins a starting job late."""
+    if slot == PRESEASON_LATE_STARTER_SLOT and game_index >= PRESEASON_GAMES - 2:
+        return PRESEASON_STARTER_MINUTES, True
+    if slot < 5 and not (slot == 4 and game_index >= PRESEASON_GAMES - 2):
+        return PRESEASON_STARTER_MINUTES, True
+    return (PRESEASON_BENCH_MINUTES if slot < 10 else PRESEASON_FRINGE_MINUTES), False
+
+
+def _preseason_logs() -> pd.DataFrame:
+    """three exhibition games per team before each season, no rng.
+
+    the last team plays none in the first season, and in the second the first
+    newcomer of team 0 dresses for team 1 in its last game.
+    """
+    teams = _team_ids()
+    rosters = _rosters()
+    rows: list[dict] = []
+    for season in SEASON_STARTS:
+        opener = pd.Timestamp(SEASON_STARTS[season])
+        for game_index, offset in enumerate(PRESEASON_OFFSETS_DAYS):
+            game_date = opener - pd.Timedelta(days=offset)
+            for t_idx, team in enumerate(teams):
+                if season == "2023-24" and team == teams[-1]:
+                    continue
+                game_id = f"001{int(season[:4]) % 100:02d}{game_index:02d}{t_idx:03d}"
+                roster = list(rosters[(season, team)])
+                if season == LONG_ABSENCE_SEASON and game_index == PRESEASON_GAMES - 1:
+                    if team == teams[0]:
+                        roster.remove(rosters[(season, teams[0])][RETURNING_PER_TEAM])
+                    elif team == teams[1]:
+                        roster.append(rosters[(season, teams[0])][RETURNING_PER_TEAM])
+                for slot, player_id in enumerate(roster):
+                    minutes, started = _preseason_minutes(slot, game_index)
+                    rows.append({
+                        "PLAYER_ID": player_id, "GAME_ID": game_id, "TEAM_ID": team,
+                        "GAME_DATE": game_date, "MIN": minutes, "STARTED": started,
+                        "SEASON_KEY": season,
+                    })
+    return pd.DataFrame(rows)
+
+
 def _box_details(
     logs: pd.DataFrame, status: pd.DataFrame, seed: int
 ) -> pd.DataFrame:
@@ -413,6 +463,7 @@ def generate(
     frames["box_details"] = _box_details(
         frames["player_logs"], frames["player_game_status"], seed
     )
+    frames["preseason_logs"] = _preseason_logs()
 
     # positions are reference data: one file, no season split
     frames.pop("player_positions").to_parquet(

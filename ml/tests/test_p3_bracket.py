@@ -16,6 +16,7 @@ from fnba_ml import config  # noqa: E402
 from fnba_ml.box_context import attach_v6_features  # noqa: E402
 from fnba_ml.matchup import attach_v4_features  # noqa: E402
 from fnba_ml.models import PerMinuteRate, conditional_estimate  # noqa: E402
+from fnba_ml.preseason_role import attach_preseason_role_features  # noqa: E402
 from fnba_ml.promotion import ENDPOINT_AVAILABILITY, ENDPOINT_MINUTES  # noqa: E402
 
 FIXTURE_ORIGINS = [
@@ -26,10 +27,12 @@ FIXTURE_ORIGINS = [
 
 @pytest.fixture(scope="module")
 def v4_frame(
-    features_status: pd.DataFrame, team_logs: pd.DataFrame, box_details: pd.DataFrame
+    features_status: pd.DataFrame, team_logs: pd.DataFrame, box_details: pd.DataFrame,
+    preseason_logs: pd.DataFrame,
 ) -> pd.DataFrame:
-    # the v4 and v6 families both attached, as build_dataset.py writes them
-    return attach_v6_features(attach_v4_features(features_status, team_logs), box_details)
+    # the v4, v6 and v7 families attached, as build_dataset.py writes them
+    frame = attach_v6_features(attach_v4_features(features_status, team_logs), box_details)
+    return attach_preseason_role_features(frame, preseason_logs)
 
 
 @pytest.fixture(scope="module")
@@ -219,6 +222,8 @@ def test_main_writes_every_report_and_refuses_a_second_look(
     dataset = tmp_path / "dataset_v4.parquet"
     v4_frame.to_parquet(dataset)
     monkeypatch.setattr(p3, "DEV_ORIGINS", FIXTURE_ORIGINS)
+    monkeypatch.setattr(p3, "PRESEASON_ROLE_ORIGINS",
+                        [("FS valid=2024-11", "2024-10-20", "2024-11-30")])
     argv = ["--dataset", str(dataset), "--reports-dir", str(tmp_path),
             "--version", "fx"]
 
@@ -233,12 +238,22 @@ def test_main_writes_every_report_and_refuses_a_second_look(
     decision = pd.read_csv(tmp_path / "fx_p3_decision.csv")
     assert set(decision["comparison"]) == {
         p3.COMPARISON_V5, p3.COMPARISON_RATE, p3.COMPARISON_V6, p3.COMPARISON_RATE_V6,
+        *p3.SEASON_START_COMPARISONS,
     }
     assert set(decision.loc[decision["gate"], "endpoint"]) == {
         *config.P3_V5_GATED_ENDPOINTS, *config.P3_RATE_GATED_ENDPOINTS,
+        *config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS,
     }
     decided = decision[~decision["binding"]]
-    assert set(decided["comparison"]) == set(config.P3_DECIDED_COMPARISONS)
+    assert set(decided["comparison"]) == {
+        *config.P3_DECIDED_COMPARISONS, p3.COMPARISON_V6_SEASON_START,
+    }
+    assert set(decision.loc[decision["binding"], "comparison"]) == {
+        p3.COMPARISON_V7, p3.COMPARISON_PRIOR, p3.COMPARISON_PRIOR_NEWCOMERS,
+    }
+    roster = pd.read_csv(tmp_path / "fx_p3_prior_roster_cohorts.csv")
+    assert set(roster["comparison"]) <= set(p3.PRIOR_COMPARISONS)
+    assert set(roster["endpoint"]) <= set(config.P3_PRESEASON_PRIOR_GATED_ENDPOINTS)
     assert not decided["promoted"].any()
     assert decided["verdict"].str.startswith("REFERENCE ONLY").all()
     markdown = (tmp_path / "fx_p3.md").read_text(encoding="utf-8")
