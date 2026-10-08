@@ -192,8 +192,9 @@ class TestRunNotes:
         note = daily_run.run_notes([])
         assert note == (
             f"{config.PROSPECTIVE_RUN_NOTE_LABEL}; "
-            f"feature_set={config.SERVED_FEATURE_SET}; channel=production"
+            f"feature_set={config.PROSPECTIVE_FEATURE_SET}; channel=production"
         )
+        assert "feature_set=v7-preseason-role" in note
 
     def test_a_disqualified_run_never_carries_the_label(self) -> None:
         note = daily_run.run_notes(["horizon lock is not gameday"])
@@ -208,7 +209,7 @@ class TestRunNotes:
     def test_the_feature_set_and_channel_flags_are_always_present(self) -> None:
         for reasons in ([], ["something"]):
             note = daily_run.run_notes(reasons)
-            assert f"feature_set={config.SERVED_FEATURE_SET}" in note
+            assert f"feature_set={config.PROSPECTIVE_FEATURE_SET}" in note
             assert "channel=production" in note
             assert "shadow=" not in note
 
@@ -378,15 +379,52 @@ class TestVerifyPinnedArtifact:
             config.PROSPECTIVE_ARTIFACT_CHECKSUMS
         )
 
-    def test_an_extra_file_in_the_served_directory_is_caught(self, tmp_path) -> None:
-        real = config.MODELS_DIR / config.PROSPECTIVE_MODEL_VERSION
+    def test_an_extra_file_in_a_pinned_directory_is_caught(self, tmp_path) -> None:
+        # arrange
+        target = tmp_path / "pinned"
+        target.mkdir()
+        checksums = {}
+        for name in ("a.joblib", "metadata.json"):
+            (target / name).write_bytes(name.encode())
+            checksums[name] = registry.sha256_file(target / name)
+
+        # act
+        clean = daily_run.artifact_mismatches(target, checksums)
+        (target / "second_model.joblib").write_bytes(b"surprise")
+        extra = daily_run.artifact_mismatches(target, checksums)
+
+        # assert
+        assert clean == []
+        assert extra == ["second_model.joblib"]
+
+    def test_placeholder_checksums_never_verify(self, tmp_path) -> None:
+        # arrange
         target = tmp_path / config.PROSPECTIVE_MODEL_VERSION
         target.mkdir()
         for name in config.PROSPECTIVE_ARTIFACT_CHECKSUMS:
-            (target / name).write_bytes((real / name).read_bytes())
-        assert daily_run.verify_pinned_artifact(tmp_path) == []
-        (target / "second_model.joblib").write_bytes(b"surprise")
-        assert daily_run.verify_pinned_artifact(tmp_path) == ["second_model.joblib"]
+            (target / name).write_bytes(b"any bytes at all")
+        placeholders = {
+            name: config.PROSPECTIVE_CHECKSUM_PLACEHOLDER
+            for name in config.PROSPECTIVE_ARTIFACT_CHECKSUMS
+        }
+
+        # act
+        bad = daily_run.artifact_mismatches(target, placeholders)
+
+        # assert
+        assert sorted(bad) == sorted(placeholders)
+
+    def test_the_v3_shadow_on_disk_matches_its_frozen_checksums(self) -> None:
+        # arrange
+        frozen = config.PROSPECTIVE_SHADOW_ARTIFACTS["v3"]
+
+        # act
+        bad = daily_run.artifact_mismatches(
+            config.MODELS_DIR / str(frozen["model_version"]), dict(frozen["checksums"])
+        )
+
+        # assert
+        assert bad == []
 
 
 class TestPhaseContract:
@@ -535,7 +573,7 @@ class TestExtendedNotes:
         )
         assert "horizon=" not in note
         assert "Pre Season" in note
-        assert f"feature_set={config.SERVED_FEATURE_SET}; channel=production" in note
+        assert f"feature_set={config.PROSPECTIVE_FEATURE_SET}; channel=production" in note
 
     def test_staleness_is_appended(self) -> None:
         note = daily_run.extended_notes(7, [], "STALE truth layer")
@@ -601,31 +639,41 @@ class TestPredictArgv:
 class TestShadowNotes:
     def test_a_qualifying_shadow_carries_the_label_on_the_shadow_channel(self) -> None:
         # act
-        note = daily_run.shadow_notes([], "v1")
+        note = daily_run.shadow_notes([], "v3-honest")
 
         # assert
         assert note == (
-            f"{config.PROSPECTIVE_RUN_NOTE_LABEL}; feature_set=v1; channel=shadow"
+            f"{config.PROSPECTIVE_RUN_NOTE_LABEL}; feature_set=v3-honest; channel=shadow"
         )
 
     def test_a_disqualified_shadow_never_carries_the_label(self) -> None:
         # act
-        note = daily_run.shadow_notes(["horizon lock is not gameday"], "v1")
+        note = daily_run.shadow_notes(["horizon lock is not gameday"], "v3-honest")
 
         # assert
         assert config.PROSPECTIVE_RUN_NOTE_LABEL not in note
         assert note.startswith("NOT PROSPECTIVE")
-        assert note.endswith("feature_set=v1; channel=shadow")
+        assert note.endswith("feature_set=v3-honest; channel=shadow")
 
     def test_the_served_note_is_unchanged_by_the_new_parameters(self) -> None:
         # act + assert
         assert daily_run.run_notes([]) == daily_run.run_notes(
-            [], None, config.SERVED_FEATURE_SET, "production"
+            [], None, config.PROSPECTIVE_FEATURE_SET, "production"
         )
 
-    def test_the_shadow_version_pairs_with_the_pinned_artifact(self) -> None:
+    def test_the_v3_shadow_is_the_previous_champion(self) -> None:
+        # act
+        version = daily_run.shadow_version("v3")
+        feature_set = daily_run.shadow_feature_set("v3")
+
+        # assert
+        assert version == "20260818" != config.PROSPECTIVE_MODEL_VERSION
+        assert feature_set == "v3-honest"
+
+    def test_an_unfrozen_shadow_name_still_pairs_with_the_pinned_artifact(self) -> None:
         # act + assert
         assert daily_run.shadow_version("v1") == f"{config.PROSPECTIVE_MODEL_VERSION}-v1"
+        assert daily_run.shadow_feature_set("v1") == "v1"
 
 
 def _write_metadata(directory: Path, **fields: object) -> None:
@@ -634,25 +682,27 @@ def _write_metadata(directory: Path, **fields: object) -> None:
 
 
 def _shadow_models_dir(
-    root: Path, shadow_cutoff: str = "2026-04-13", register: bool = True
+    root: Path, served_cutoff: str = "2026-04-13", register: bool = True
 ) -> Path:
-    """a models dir holding the served metadata and a v1 shadow next to it."""
+    """a models dir holding the served metadata and the real v3 shadow next to it."""
     models_dir = root / "models"
     _write_metadata(
         models_dir / config.PROSPECTIVE_MODEL_VERSION,
-        training_window={"cutoff": "2026-04-13"},
+        feature_set=config.PROSPECTIVE_FEATURE_SET,
+        training_window={"cutoff": served_cutoff},
     )
-    version = daily_run.shadow_version("v1")
-    _write_metadata(
-        models_dir / version, feature_set="v1", training_window={"cutoff": shadow_cutoff}
-    )
+    version = daily_run.shadow_version("v3")
+    target = models_dir / version
+    target.mkdir(parents=True)
+    for source in (config.MODELS_DIR / version).iterdir():
+        (target / source.name).write_bytes(source.read_bytes())
     if register:
         registry.upsert(
             registry.build_entry(
-                model_version=version, version_dir=models_dir / version,
-                training_window={"cutoff": shadow_cutoff}, hyperparams={}, metrics={},
+                model_version=version, version_dir=target,
+                training_window={"cutoff": "2026-04-13"}, hyperparams={}, metrics={},
                 champions={}, universe_source="status",
-                feature_cols=list(config.BASE_FEATURE_COLS), feature_set="v1",
+                feature_cols=list(config.FEATURE_COLS), feature_set="v3-honest",
             ),
             models_dir / "registry.json",
         )
@@ -662,49 +712,53 @@ def _shadow_models_dir(
 class TestShadowArtifactConditions:
     def test_an_absent_artifact_is_none_not_a_reason(self, tmp_path: Path) -> None:
         # act + assert
-        assert daily_run.shadow_artifact_conditions("v1", tmp_path) is None
+        assert daily_run.shadow_artifact_conditions("v3", tmp_path) is None
 
-    def test_a_matching_registered_artifact_qualifies(self, tmp_path: Path) -> None:
+    def test_the_committed_v3_artifact_qualifies(self, tmp_path: Path) -> None:
         # arrange
         models_dir = _shadow_models_dir(tmp_path)
 
         # act
-        reasons = daily_run.shadow_artifact_conditions("v1", models_dir)
+        reasons = daily_run.shadow_artifact_conditions("v3", models_dir)
 
         # assert
         assert reasons == []
 
-    def test_a_different_cutoff_disqualifies(self, tmp_path: Path) -> None:
+    def test_a_served_artifact_with_another_cutoff_disqualifies(self, tmp_path: Path) -> None:
         # arrange
-        models_dir = _shadow_models_dir(tmp_path, shadow_cutoff="2026-05-01")
+        models_dir = _shadow_models_dir(tmp_path, served_cutoff="2026-05-01")
 
         # act
-        reasons = daily_run.shadow_artifact_conditions("v1", models_dir) or []
+        reasons = daily_run.shadow_artifact_conditions("v3", models_dir) or []
 
         # assert
-        assert any("cutoff 2026-05-01" in r for r in reasons)
+        assert any("cutoff 2026-04-13 is not the served cutoff 2026-05-01" in r
+                   for r in reasons)
 
     def test_an_unregistered_artifact_disqualifies(self, tmp_path: Path) -> None:
         # arrange
         models_dir = _shadow_models_dir(tmp_path, register=False)
 
         # act
-        reasons = daily_run.shadow_artifact_conditions("v1", models_dir) or []
+        reasons = daily_run.shadow_artifact_conditions("v3", models_dir) or []
 
         # assert
         assert any("no registry entry" in r for r in reasons)
 
-    def test_an_edited_artifact_disqualifies(self, tmp_path: Path) -> None:
+    def test_an_edited_artifact_disqualifies_on_registry_and_freeze(
+        self, tmp_path: Path
+    ) -> None:
         # arrange
         models_dir = _shadow_models_dir(tmp_path)
-        meta = models_dir / daily_run.shadow_version("v1") / "metadata.json"
+        meta = models_dir / daily_run.shadow_version("v3") / "metadata.json"
         meta.write_text(meta.read_text(encoding="utf-8") + " ", encoding="utf-8")
 
         # act
-        reasons = daily_run.shadow_artifact_conditions("v1", models_dir) or []
+        reasons = daily_run.shadow_artifact_conditions("v3", models_dir) or []
 
         # assert
         assert any("checksums not verified" in r for r in reasons)
+        assert any("does not match the freeze (metadata.json)" in r for r in reasons)
 
 
 class TestShadowArgs:
@@ -714,14 +768,15 @@ class TestShadowArgs:
 
     def test_the_flag_is_restricted_to_the_frozen_shadow_sets(self) -> None:
         # act
-        args = daily_run.parse_args(["--shadow-feature-set", "v1"])
+        args = daily_run.parse_args(["--shadow-feature-set", "v3"])
 
         # assert
-        assert args.shadow_feature_sets == ["v1"]
-        with pytest.raises(SystemExit):
-            daily_run.parse_args(["--shadow-feature-set", "v3-honest"])
+        assert args.shadow_feature_sets == ["v3"]
+        for refused in ("v1", "v3-honest"):
+            with pytest.raises(SystemExit):
+                daily_run.parse_args(["--shadow-feature-set", refused])
 
-    def test_the_workflow_requests_the_v1_shadow(self) -> None:
+    def test_the_workflow_requests_the_v3_shadow(self) -> None:
         # arrange
         workflow = Path(__file__).resolve().parents[2] / ".github/workflows/predictions.yml"
 
@@ -729,7 +784,8 @@ class TestShadowArgs:
         text = workflow.read_text(encoding="utf-8")
 
         # assert
-        assert "daily_run.py --shadow-feature-set v1" in text
+        assert "daily_run.py --shadow-feature-set v3" in text
+        assert "--shadow-feature-set v1" not in text
 
 
 def _without(argv: list[str], *flags: str) -> list[str]:
@@ -765,13 +821,13 @@ class TestShadowPredictArgv:
 
         # act
         served = daily_run.predict_argv(**common)
-        shadow = daily_run.predict_argv(**common, version="20260818-v1", channel="shadow")
+        shadow = daily_run.predict_argv(**common, version="20260818", channel="shadow")
 
         # assert
         assert _flag(served, "--channel") == "production"
         assert _flag(served, "--version") == config.PROSPECTIVE_MODEL_VERSION
         assert _flag(shadow, "--channel") == "shadow"
-        assert _flag(shadow, "--version") == "20260818-v1"
+        assert _flag(shadow, "--version") == "20260818"
         assert _without(served, "--channel", "--version") == _without(
             shadow, "--channel", "--version"
         )
@@ -784,6 +840,7 @@ def _drive(
     extra: list[str],
     failing_version: str | None = None,
     overrides: dict[str, object] | None = None,
+    prebuilt: bool = True,
 ) -> tuple[int, list[list[str]]]:
     """daily_run.main end to end, with every database read and predict.py faked."""
     games = ["0022600501", "0022600502"]
@@ -816,6 +873,7 @@ def _drive(
         "history_from_dataset": lambda frame: frame,
         "prospective_universe": lambda *_, **__: None,
         "build_prospective_features": lambda *_: features,
+        "attach_serving_columns": lambda frame, *_: frame,
         "load_statuses": lambda *_: pd.DataFrame(),
         "_rows_per_player_game": lambda *_: 1,
         **(overrides or {}),
@@ -838,7 +896,7 @@ def _drive(
     monkeypatch.setattr(daily_run.predict_script, "main", fake_predict)
     code = daily_run.main([
         "--dry-run", "--window-start", "2027-01-10",
-        "--dataset", str(tmp_path / "unused.parquet"),
+        *(["--dataset", str(tmp_path / "unused.parquet")] if prebuilt else []),
         "--out-dir", str(tmp_path / "out"),
         "--models-dir", str(models_dir),
         *extra,
@@ -854,16 +912,16 @@ class TestShadowRun:
         models_dir = _shadow_models_dir(tmp_path)
 
         # act
-        code, calls = _drive(tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v1"])
+        code, calls = _drive(tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v3"])
 
         # assert
         assert code == 0
         run_a, shadow, run_b = calls
         assert _flag(shadow, "--channel") == "shadow"
-        assert _flag(shadow, "--version") == daily_run.shadow_version("v1")
+        assert _flag(shadow, "--version") == daily_run.shadow_version("v3") == "20260818"
         notes = _flag(shadow, "--notes")
         assert notes.startswith(config.PROSPECTIVE_RUN_NOTE_LABEL)
-        assert "feature_set=v1; channel=shadow" in notes
+        assert "feature_set=v3-honest; channel=shadow" in notes
         for flag in ("--dataset", "--statuses-as-of", "--run-at", "--horizon",
                      "--history-through"):
             assert _flag(shadow, flag) == _flag(run_a, flag)
@@ -876,7 +934,7 @@ class TestShadowRun:
         models_dir = _shadow_models_dir(tmp_path)
 
         # act
-        _, calls = _drive(tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v1"])
+        _, calls = _drive(tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v3"])
 
         # assert
         shadows = [c for c in calls if _flag(c, "--channel") == "shadow"]
@@ -897,13 +955,13 @@ class TestShadowRun:
 
         # act
         code, calls = _drive(
-            tmp_path, monkeypatch, empty_models, ["--shadow-feature-set", "v1"]
+            tmp_path, monkeypatch, empty_models, ["--shadow-feature-set", "v3"]
         )
 
         # assert
         assert code == 0
         assert len(calls) == 2
-        assert "shadow shadow-v1 skipped: no artifact" in caplog.text
+        assert "shadow shadow-v3 skipped: no artifact" in caplog.text
         for got, expected in zip(calls, baseline):
             assert _without(got, "--statuses-as-of") == _without(
                 expected, "--statuses-as-of"
@@ -917,14 +975,83 @@ class TestShadowRun:
 
         # act
         code, calls = _drive(
-            tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v1"],
-            failing_version=daily_run.shadow_version("v1"),
+            tmp_path, monkeypatch, models_dir, ["--shadow-feature-set", "v3"],
+            failing_version=daily_run.shadow_version("v3"),
         )
 
         # assert
         assert len(calls) == 3
         assert _flag(calls[-1], "--channel") == "production"
         assert code == 1
+
+
+class TestServingPhase:
+    def test_both_runs_score_the_frame_the_serving_builders_returned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        seen: list[tuple[object, object]] = []
+
+        def serving(frame, history, schedule, window_start):
+            seen.append((window_start, sorted(schedule["SEASON"].unique())))
+            return frame.assign(pre_games_played=1.0)
+
+        empty_models = tmp_path / "empty_models"
+        empty_models.mkdir()
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, empty_models, [],
+            overrides={"attach_serving_columns": serving},
+        )
+
+        # assert
+        assert code == 0
+        assert seen == [(date(2027, 1, 10), ["2026-27"])]
+        for argv in calls:
+            frame = pd.read_parquet(_flag(argv, "--dataset"))
+            assert (frame["pre_games_played"] == 1.0).all()
+
+    def test_a_serving_failure_names_its_phase_and_publishes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # arrange
+        def broken(*_):
+            raise ValueError("no box-score details")
+
+        # act
+        code, calls = _drive(
+            tmp_path, monkeypatch, tmp_path, [], overrides={"attach_serving_columns": broken},
+        )
+
+        # assert
+        assert code == 1
+        assert calls == []
+        assert "FAILED in phase 'serving'" in capsys.readouterr().out
+
+    def test_the_dataset_rebuild_no_longer_skips_the_v7_family(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # arrange
+        argvs: list[list[str]] = []
+
+        def fake_build(argv: list[str]) -> int:
+            argvs.append(list(argv))
+            return 0
+
+        monkeypatch.setattr(daily_run.build_dataset, "main", fake_build)
+        empty_models = tmp_path / "empty_models"
+        empty_models.mkdir()
+
+        # act
+        code, _ = _drive(tmp_path, monkeypatch, empty_models, [], prebuilt=False)
+
+        # assert
+        assert code == 0
+        assert len(argvs) == 1
+        assert "--no-v7-candidate" not in argvs[0]
+        assert "--no-v6-candidate" not in argvs[0]
 
 
 class TestPreseasonPriorFlag:
@@ -1284,7 +1411,7 @@ class TestRescoreWorkflow:
         # assert
         assert f'- cron: "{self.CRON}"' in text
         assert f'"{self.CRON}")' in text
-        assert "daily_run.py --if-status-changed --shadow-feature-set v1" in text
+        assert "daily_run.py --if-status-changed --shadow-feature-set v3" in text
 
     def test_the_scheduled_lane_is_unchanged(self) -> None:
         # act

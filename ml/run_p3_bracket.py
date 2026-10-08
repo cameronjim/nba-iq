@@ -172,7 +172,89 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="replace an existing decision csv. one look per version: use a new "
              "--version instead unless the previous run crashed",
     )
+    parser.add_argument(
+        "--origins-subset", default=None,
+        help="sensitivity only, never a look: recompute the season-start decisions on "
+             "these origin labels (comma-separated prefixes, e.g. S1,S2) from the "
+             "per-row results a previous run saved under --version; fits nothing",
+    )
+    parser.add_argument(
+        "--from-rows", type=Path, default=None,
+        help="the saved per-row parquet for --origins-subset (default: "
+             "<reports-dir>/<version>_p3_season_start_rows.parquet)",
+    )
     return parser.parse_args(argv)
+
+
+SUBSET_COMPARISONS: tuple[str, ...] = (COMPARISON_V7, COMPARISON_V6_SEASON_START)
+ROWS_SUFFIX = "_p3_season_start_rows.parquet"
+
+
+def season_start_rows(losses: dict[str, tuple[pd.DataFrame, pd.DataFrame]]) -> pd.DataFrame:
+    """the per-row losses of the subset comparisons, one frame, for a later sensitivity."""
+    frames = [
+        side_frame.assign(comparison=name, side=side)
+        for name in SUBSET_COMPARISONS if name in losses
+        for side, side_frame in zip(("incumbent", "candidate"), losses[name])
+    ]
+    return pd.concat(frames, ignore_index=True)
+
+
+def subset_decisions(
+    rows: pd.DataFrame, prefixes: tuple[str, ...]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(decision table, per-origin table) on the origins whose label starts with a prefix."""
+    keep = rows["origin"].astype(str).str.split().str[0].isin(prefixes)
+    subset = rows[keep]
+    if subset.empty:
+        raise SystemExit(
+            f"no saved row belongs to an origin starting {', '.join(prefixes)}; "
+            f"the saved origins are {', '.join(sorted(rows['origin'].unique()))}"
+        )
+    decisions, origins = [], []
+    for name in SUBSET_COMPARISONS:
+        part = subset[subset["comparison"] == name]
+        if part.empty:
+            continue
+        sides = {
+            side: part[part["side"] == side].drop(columns=["comparison", "side"])
+            for side in ("incumbent", "candidate")
+        }
+        verdict, _ = decide_comparison(
+            sides["incumbent"], sides["candidate"], COMPARISON_GATES[name]
+        )
+        decisions.append(decision_table(verdict).assign(
+            comparison=name, origins="+".join(prefixes),
+            verdict=f"SENSITIVITY ONLY, not a look: {verdict.reason}",
+        ))
+        for endpoint in endpoints_of(sides["incumbent"]):
+            origins.append(per_origin_table(
+                sides["incumbent"], sides["candidate"], endpoint
+            ).assign(comparison=name, endpoint=endpoint))
+    return pd.concat(decisions, ignore_index=True), pd.concat(origins, ignore_index=True)
+
+
+def run_origins_subset(args: argparse.Namespace) -> int:
+    """the sensitivity mode: read saved per-row losses, decide on the subset, write csvs."""
+    prefixes = tuple(p.strip() for p in str(args.origins_subset).split(",") if p.strip())
+    path = args.from_rows or args.reports_dir / f"{args.version}{ROWS_SUFFIX}"
+    if not path.exists():
+        raise SystemExit(
+            f"{path} does not exist: the run for {args.version} saved no per-row "
+            f"results, so the subset cannot be recomputed without refitting, which "
+            f"would be a second look. the per-origin numbers are in its _per_origin.csv "
+            f"and in MODEL.md 24"
+        )
+    decisions, per_origin = subset_decisions(pd.read_parquet(path), prefixes)
+    tag = "-".join(prefixes)
+    args.reports_dir.mkdir(parents=True, exist_ok=True)
+    decisions.to_csv(args.reports_dir / f"{args.version}_p3_subset_{tag}.csv", index=False)
+    per_origin.to_csv(
+        args.reports_dir / f"{args.version}_p3_subset_{tag}_per_origin.csv", index=False
+    )
+    print(f"sensitivity only, origins {', '.join(prefixes)} of {args.version}:")
+    print(decisions.to_string(index=False))
+    return 0
 
 
 def fit_and_score(
@@ -684,6 +766,8 @@ def write_reports(
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     setup_logging(args.verbose)
+    if args.origins_subset:
+        return run_origins_subset(args)
 
     decision_path = args.reports_dir / f"{args.version}_p3_decision.csv"
     if decision_path.exists() and not args.allow_overwrite:
@@ -757,6 +841,9 @@ def main(argv: list[str] | None = None) -> int:
     scores = score_brackets(frame, DEV_ORIGINS)
     scores.losses.update(score_season_start(frame, season_start))
     verdicts = write_reports(scores, args.reports_dir, args.version, header)
+    season_start_rows(scores.losses).to_parquet(
+        args.reports_dir / f"{args.version}{ROWS_SUFFIX}", index=False
+    )
 
     print()
     for name, verdict in verdicts.items():

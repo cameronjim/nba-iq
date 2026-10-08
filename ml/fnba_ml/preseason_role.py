@@ -1,4 +1,4 @@
-"""the v7 candidate family: a player's role in his team's last preseason games. never served.
+"""the v7 family: a player's preseason role, served since prospective_2026_27_v4.
 
 a regular-season row reads only preseason games of its own SEASON, dated strictly
 before its game, and only the last ``PRESEASON_ROLE_GAMES`` of them played by the
@@ -212,6 +212,54 @@ def attach_preseason_role_features(
         out[col] = role[col].to_numpy()
     seen = int((out["pre_games_played"] > 0).sum())
     log.info("v7 preseason role: %d of %d rows read a preseason appearance", seen, len(out))
+    return out
+
+
+def neutral_role_columns(features: pd.DataFrame) -> pd.DataFrame:
+    """the frame with every v7 column at its no-preseason value."""
+    out = features.copy()
+    for col in PRESEASON_ROLE_FEATURE_COLS:
+        out[col] = 0.0 if col == "pre_games_played" else np.nan
+    return out
+
+
+def attach_serving_preseason_role(
+    features: pd.DataFrame,
+    history: pd.DataFrame,
+    pre: pd.DataFrame | None,
+    cutoff: pd.Timestamp,
+) -> pd.DataFrame:
+    """the v7 columns for unplayed rows, as the dataset build gives them, row order kept.
+
+    the fade counts regular-season appearances, which live in ``history``, so the
+    unplayed rows are scored on a frame that holds that season's played rows too.
+    only preseason lines of the rows' own seasons dated before ``cutoff`` are read.
+    """
+    seasons = set(features["SEASON"].astype(str))
+    if pre is None or pre.empty:
+        log.warning("no preseason logs; the %d v7 columns take their no-preseason "
+                    "values", len(PRESEASON_ROLE_FEATURE_COLS))
+        return neutral_role_columns(features)
+    window = pre[
+        pre["SEASON"].astype(str).isin(seasons)
+        & (pd.to_datetime(pre["GAME_DATE"]) < pd.Timestamp(cutoff))
+    ]
+    if window.empty:
+        log.warning("no preseason line of season(s) %s before %s; the v7 columns take "
+                    "their no-preseason values", ", ".join(sorted(seasons)),
+                    pd.Timestamp(cutoff).date())
+        return neutral_role_columns(features)
+    keys = ["PLAYER_ID", "TEAM_ID", "SEASON", "GAME_ID", "GAME_DATE", "PLAYED"]
+    played = history[history["SEASON"].astype(str).isin(seasons)][keys].copy()
+    played["ewma_MIN"] = np.nan
+    upcoming = features[[*keys, "ewma_MIN"]].copy()
+    combined = pd.concat([played, upcoming], ignore_index=True)
+    combined["GAME_DATE"] = pd.to_datetime(combined["GAME_DATE"])
+    role = preseason_role_features(combined, window).iloc[len(played):]
+    out = features.drop(columns=[c for c in PRESEASON_ROLE_FEATURE_COLS
+                                 if c in features.columns])
+    for col in PRESEASON_ROLE_FEATURE_COLS:
+        out[col] = role[col].to_numpy()
     return out
 
 

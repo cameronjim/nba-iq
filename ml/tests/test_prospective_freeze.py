@@ -10,7 +10,9 @@ import pytest
 from fnba_ml import config, frozen, overrides
 
 ML_ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT_DIR = ML_ROOT / "models" / "20260818"
+ARTIFACT_DIR = ML_ROOT / "models" / config.PROSPECTIVE_MODEL_VERSION
+SHADOW = config.PROSPECTIVE_SHADOW_ARTIFACTS["v3"]
+SHADOW_DIR = ML_ROOT / "models" / str(SHADOW["model_version"])
 REGISTRY = ML_ROOT / "models" / "registry.json"
 
 
@@ -20,6 +22,25 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def test_no_pinned_checksum_is_a_placeholder() -> None:
+    # arrange
+    placeholder = config.PROSPECTIVE_CHECKSUM_PLACEHOLDER
+
+    # act
+    unfilled = sorted(
+        name for name, digest in config.PROSPECTIVE_ARTIFACT_CHECKSUMS.items()
+        if digest == placeholder or len(digest) != 64
+    )
+
+    # assert
+    assert not unfilled, (
+        f"{', '.join(unfilled)} still carry the {placeholder!r} placeholder. train "
+        f"models/{config.PROSPECTIVE_MODEL_VERSION}/ (ML Evaluate, train_feature_set "
+        f"{config.PROSPECTIVE_FEATURE_SET}), commit it, and copy each file's sha256 "
+        "into frozen.PROSPECTIVE_ARTIFACT_CHECKSUMS (MODEL.md 24)"
+    )
 
 
 def test_frozen_artifact_directory_exists() -> None:
@@ -52,7 +73,12 @@ def test_checksum_set_covers_the_whole_artifact_directory() -> None:
 def test_pinned_checksums_agree_with_the_registry() -> None:
     entries = json.loads(REGISTRY.read_text())["entries"]
     entry = next(
-        e for e in entries if e["model_version"] == config.PROSPECTIVE_MODEL_VERSION
+        (e for e in entries if e["model_version"] == config.PROSPECTIVE_MODEL_VERSION),
+        None,
+    )
+    assert entry is not None, (
+        f"registry.json has no entry for {config.PROSPECTIVE_MODEL_VERSION}; merge the "
+        "one the training run uploaded"
     )
     recorded = {a["path"]: a["sha256"] for a in entry["artifacts"]}
     assert recorded == config.PROSPECTIVE_ARTIFACT_CHECKSUMS
@@ -62,11 +88,64 @@ def test_frozen_metadata_matches_the_protocol() -> None:
     meta = json.loads((ARTIFACT_DIR / "metadata.json").read_text())
     assert meta["model_version"] == config.PROSPECTIVE_MODEL_VERSION
     assert meta["feature_version"] == config.PROSPECTIVE_FEATURE_VERSION
+    assert meta["feature_set"] == config.PROSPECTIVE_FEATURE_SET
+    assert meta["training_window"]["cutoff"] == "2026-04-13"
+    assert "base_artifact_checksum" in meta
     assert meta["champions"] == config.PROSPECTIVE_CHAMPIONS
     assert meta["production"]["rate_halflives"] == config.PROSPECTIVE_RATE_HALFLIVES
     assert meta["production"]["rate_estimators"] == config.PROSPECTIVE_RATE_ESTIMATORS
     assert tuple(meta["production"]["rate_targets"]) == config.PROSPECTIVE_RATE_TARGETS
-    assert tuple(meta["feature_cols"]) == tuple(config.FEATURE_COLS)
+    assert tuple(meta["feature_cols"]) == tuple(
+        config.FEATURE_SETS[config.PROSPECTIVE_FEATURE_SET]
+    )
+
+
+@pytest.mark.parametrize("filename", sorted(config.PROSPECTIVE_V3_ARTIFACT_CHECKSUMS))
+def test_the_v3_shadow_artifact_is_still_byte_for_byte_20260818(filename: str) -> None:
+    # arrange
+    path = SHADOW_DIR / filename
+
+    # act
+    digest = _sha256(path)
+
+    # assert
+    assert SHADOW["checksums"] is config.PROSPECTIVE_V3_ARTIFACT_CHECKSUMS
+    assert digest == config.PROSPECTIVE_V3_ARTIFACT_CHECKSUMS[filename]
+
+
+def test_the_v3_shadow_checksums_agree_with_the_registry() -> None:
+    # arrange
+    entries = json.loads(REGISTRY.read_text())["entries"]
+
+    # act
+    entry = next(e for e in entries if e["model_version"] == SHADOW["model_version"])
+
+    # assert
+    recorded = {a["path"]: a["sha256"] for a in entry["artifacts"]}
+    assert recorded == config.PROSPECTIVE_V3_ARTIFACT_CHECKSUMS
+
+
+def test_the_v3_shadow_directory_holds_nothing_else() -> None:
+    # act
+    on_disk = {p.name for p in SHADOW_DIR.iterdir() if p.is_file()}
+
+    # assert
+    assert on_disk == set(config.PROSPECTIVE_V3_ARTIFACT_CHECKSUMS)
+
+
+def test_the_v3_shadow_metadata_names_the_v3_contract() -> None:
+    # arrange
+    meta = json.loads((SHADOW_DIR / "metadata.json").read_text())
+
+    # act
+    feature_cols = tuple(meta["feature_cols"])
+
+    # assert
+    assert meta["model_version"] == SHADOW["model_version"] == "20260818"
+    assert meta["feature_version"] == SHADOW["feature_version"] == "v3"
+    assert SHADOW["feature_set"] == "v3-honest" == config.SERVED_FEATURE_SET
+    assert feature_cols == tuple(config.FEATURE_COLS)
+    assert meta["training_window"]["cutoff"] == "2026-04-13"
 
 
 def test_champions_have_not_drifted() -> None:
@@ -103,24 +182,70 @@ def test_steals_still_ships_the_expanding_baseline() -> None:
 
 
 def test_feature_contract_has_not_drifted() -> None:
-    digest = hashlib.sha256("\n".join(config.FEATURE_COLS).encode()).hexdigest()
-    assert len(config.FEATURE_COLS) == config.PROSPECTIVE_N_FEATURES
+    served = config.FEATURE_SETS[config.PROSPECTIVE_FEATURE_SET]
+    digest = hashlib.sha256("\n".join(served).encode()).hexdigest()
+    assert config.PROSPECTIVE_FEATURE_SET == "v7-preseason-role"
+    assert len(served) == config.PROSPECTIVE_N_FEATURES == 73
     assert digest == config.PROSPECTIVE_FEATURE_COLS_SHA256, (
-        "FEATURE_COLS changed after the freeze. any change to the feature list - "
-        "an addition, a removal, a reordering - invalidates the pinned artifact, "
-        "which was fitted against this exact contract"
+        "the served feature set changed after the freeze. any change to the feature "
+        "list - an addition, a removal, a reordering - invalidates the pinned "
+        "artifact, which was fitted against this exact contract"
     )
-    assert config.FEATURE_VERSION == config.PROSPECTIVE_FEATURE_VERSION
+    assert config.CANDIDATE_FEATURE_VERSION_V7 == config.PROSPECTIVE_FEATURE_VERSION
+
+
+def test_the_v3_contract_the_shadow_reads_has_not_drifted() -> None:
+    # act
+    digest = hashlib.sha256("\n".join(config.FEATURE_COLS).encode()).hexdigest()
+
+    # assert
+    assert len(config.FEATURE_COLS) == config.PROSPECTIVE_V3_N_FEATURES == 51
+    assert digest == config.PROSPECTIVE_V3_FEATURE_COLS_SHA256
+    assert config.FEATURE_VERSION == "v3"
     assert config.SERVED_FEATURE_SET == "v3-honest"
 
 
+def test_the_served_contract_is_v6_context_plus_the_six_preseason_columns() -> None:
+    # act
+    served = config.FEATURE_SETS[config.PROSPECTIVE_FEATURE_SET]
+
+    # assert
+    assert served == [*config.FEATURE_COLS_V6_CONTEXT, *config.PRESEASON_ROLE_FEATURE_COLS]
+    assert served[:51] == config.FEATURE_COLS
+    assert not set(config.TEAMMATE_ORACLE_COLS) & set(served)
+    assert not set(config.TARGET_COLS) & set(served)
+
+
+def test_the_v7_construction_constants_have_not_drifted() -> None:
+    # arrange
+    frozen_values = config.PROSPECTIVE_V7_CONSTANTS
+
+    # act
+    live = {
+        "v6_start_window": config.V6_START_WINDOW,
+        "v6_usual_starter_rate": config.V6_USUAL_STARTER_RATE,
+        "v6_box_ewma_halflife": config.V6_BOX_EWMA_HALFLIFE,
+        "preseason_role_games": config.PRESEASON_ROLE_GAMES,
+        "preseason_role_fade_games": config.PRESEASON_ROLE_FADE_GAMES,
+        "preseason_role_team_minutes": config.PRESEASON_ROLE_TEAM_MINUTES,
+    }
+
+    # assert
+    assert live == frozen_values
+
+
 def test_shadow_comparator_feature_sets_exist() -> None:
-    for name in config.PROSPECTIVE_SHADOW_FEATURE_SETS:
-        assert name in config.FEATURE_SETS
-    assert config.FEATURE_SETS["v1"] == config.BASE_FEATURE_COLS
-    # the v1 comparator must remain free of teammate context
-    assert not set(config.TEAMMATE_FEATURE_COLS) & set(config.FEATURE_SETS["v1"])
-    assert not set(config.TEAMMATE_ORACLE_COLS) & set(config.FEATURE_SETS["v1"])
+    # act
+    shadows = config.PROSPECTIVE_SHADOW_FEATURE_SETS
+
+    # assert
+    assert shadows == ("v3",)
+    for name in shadows:
+        artifact = config.PROSPECTIVE_SHADOW_ARTIFACTS[name]
+        assert artifact["feature_set"] in config.FEATURE_SETS
+    assert config.PROSPECTIVE_SHADOW_ARTIFACTS["v3"]["model_version"] != (
+        config.PROSPECTIVE_MODEL_VERSION
+    )
 
 
 def test_override_constants_have_not_drifted() -> None:
@@ -177,14 +302,14 @@ def test_cohort_definitions_have_not_drifted() -> None:
 
 
 def test_protocol_version_string() -> None:
-    assert config.PROSPECTIVE_PROTOCOL_VERSION == "prospective_2026_27_v3"
-    assert config.PROSPECTIVE_RUN_NOTE_LABEL == "prospective_2026_27_v3"
+    assert config.PROSPECTIVE_PROTOCOL_VERSION == "prospective_2026_27_v4"
+    assert config.PROSPECTIVE_RUN_NOTE_LABEL == "prospective_2026_27_v4"
     assert config.PROSPECTIVE_2026_27["protocol_version"] == (
         config.PROSPECTIVE_PROTOCOL_VERSION
     )
 
 
-def test_v3_records_what_it_was_refrozen_from() -> None:
+def test_v4_records_what_it_was_refrozen_from() -> None:
     # arrange
     bundle = config.PROSPECTIVE_2026_27
 
@@ -192,9 +317,10 @@ def test_v3_records_what_it_was_refrozen_from() -> None:
     version = config.PROSPECTIVE_PROTOCOL_VERSION
 
     # assert
-    assert version.endswith("_v3")
-    assert bundle["refrozen_from"] == "prospective_2026_27_v2"
-    assert bundle["frozen_at"] == "2026-10-02"
+    assert version.endswith("_v4")
+    assert bundle["refrozen_from"] == "prospective_2026_27_v3"
+    assert bundle["frozen_at"] == "2026-10-08"
+    assert bundle["feature_set"] == "v7-preseason-role"
     # the re-freeze must land before opening night, or it is a mid-season change
     assert bundle["frozen_at"] < "2026-10-20"
 
@@ -208,7 +334,7 @@ def test_the_scorer_pools_every_refreeze_by_the_bare_prefix() -> None:
 
     # assert
     assert prefix == "prospective_2026_27"
-    for version in ("v1", "v2", "v3"):
+    for version in ("v1", "v2", "v3", "v4"):
         assert prefix in f"prospective_2026_27_{version}; channel=production"
 
 
@@ -410,7 +536,7 @@ def test_block_standard_deviations_are_present_where_a_threshold_was_derived() -
 
 def test_bundle_is_json_serialisable() -> None:
     text = json.dumps(config.PROSPECTIVE_2026_27, sort_keys=True, default=list)
-    assert json.loads(text)["protocol_version"] == "prospective_2026_27_v3"
+    assert json.loads(text)["protocol_version"] == "prospective_2026_27_v4"
 
 
 def test_bundle_agrees_with_its_components() -> None:
@@ -425,7 +551,11 @@ def test_bundle_agrees_with_its_components() -> None:
     assert bundle["rate_halflives"] == config.PROSPECTIVE_RATE_HALFLIVES
     assert bundle["rate_estimators"] == config.PROSPECTIVE_RATE_ESTIMATORS
     assert bundle["falsification"] == config.PROSPECTIVE_FALSIFICATION
-    assert bundle["artifact_dir"] == "models/20260818"
+    assert bundle["artifact_dir"] == f"models/{config.PROSPECTIVE_MODEL_VERSION}"
+    assert bundle["feature_set"] == config.PROSPECTIVE_FEATURE_SET
+    assert bundle["shadow_artifacts"] == config.PROSPECTIVE_SHADOW_ARTIFACTS
+    assert bundle["v3_feature_cols_sha256"] == config.PROSPECTIVE_V3_FEATURE_COLS_SHA256
+    assert bundle["v7_constants"] == config.PROSPECTIVE_V7_CONSTANTS
     assert bundle["report_max_age_hours"] == frozen.PROSPECTIVE_REPORT_MAX_AGE_HOURS
     assert bundle["passthrough_statuses"] == frozen.PROSPECTIVE_PASSTHROUGH_STATUSES
     assert bundle["expire_unavailable_statuses"] is (
@@ -447,10 +577,13 @@ def test_model_md_section_13_exists_and_declares_the_same_protocol() -> None:
     assert "## 13. `prospective_2026_27_v1` (FROZEN)" in text
     assert "## 17. Phase 0 correctness and the `prospective_2026_27_v2` re-freeze" in text
     assert "## 21. The `prospective_2026_27_v3` re-freeze (2026-10-02)" in text
+    assert "## 24. The `prospective_2026_27_v4` re-freeze (2026-10-08)" in text
     assert config.PROSPECTIVE_PROTOCOL_VERSION in text
     assert config.PROSPECTIVE_MODEL_VERSION in text
     assert config.PROSPECTIVE_COLD_START_FLAG in text
     for date in config.PROSPECTIVE_LOOK_DATES:
         assert date in text, f"look date {date} is in config and not in MODEL.md 13"
+    for checksum in config.PROSPECTIVE_V3_ARTIFACT_CHECKSUMS.values():
+        assert checksum[:16] in text, "section 13.1 must show each v3 checksum"
     for checksum in config.PROSPECTIVE_ARTIFACT_CHECKSUMS.values():
-        assert checksum[:16] in text, "section 13.1 must show each pinned checksum"
+        assert checksum[:16] in text, "section 24 must show each pinned checksum"

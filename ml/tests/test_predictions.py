@@ -13,7 +13,12 @@ from fnba_ml.intervals import (
     fit_residual_quantiles,
     quantile_columns,
 )
-from fnba_ml.config import HORIZONS, MODELS_DIR, PROSPECTIVE_MODEL_VERSION
+from fnba_ml.config import (
+    HORIZONS,
+    MODELS_DIR,
+    PROSPECTIVE_MODEL_VERSION,
+    PROSPECTIVE_SHADOW_ARTIFACTS,
+)
 from fnba_ml.models import P_PLAY, P_PLAY_CUTOFF
 from fnba_ml.overrides import (
     OVERRIDE_REASON,
@@ -624,11 +629,13 @@ class TestFeatureSetContext:
         assert predict.uses_teammate_context({"feature_set": "v3-honest"}) is True
         assert predict.uses_teammate_context({"feature_set": "v1"}) is False
 
-    def test_the_pinned_artifact_still_loads_its_base_model(self) -> None:
+    @pytest.mark.parametrize("version", [
+        PROSPECTIVE_MODEL_VERSION,
+        str(PROSPECTIVE_SHADOW_ARTIFACTS["v3"]["model_version"]),
+    ])
+    def test_the_pinned_and_shadow_artifacts_load_their_base_model(self, version) -> None:
         # act
-        _, _, base, metadata = predict.load_version(
-            PROSPECTIVE_MODEL_VERSION, MODELS_DIR
-        )
+        _, _, base, metadata = predict.load_version(version, MODELS_DIR)
 
         # assert
         assert base is not None

@@ -101,8 +101,8 @@ def _synthetic_team_logs(records: list[tuple[str, int, int, int]]) -> pd.DataFra
 def test_the_frozen_feature_contract_did_not_move() -> None:
     digest = hashlib.sha256("\n".join(config.FEATURE_COLS).encode()).hexdigest()
     assert len(config.FEATURE_COLS) == 51
-    assert digest == config.PROSPECTIVE_FEATURE_COLS_SHA256
-    assert config.FEATURE_VERSION == "v3" == config.PROSPECTIVE_FEATURE_VERSION
+    assert digest == config.PROSPECTIVE_V3_FEATURE_COLS_SHA256
+    assert config.FEATURE_VERSION == "v3"
 
 
 def test_the_candidate_is_additive_and_is_not_the_served_contract() -> None:

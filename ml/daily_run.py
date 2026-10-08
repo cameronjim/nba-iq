@@ -31,9 +31,10 @@ PROSPECTIVE by construction and says so in its notes, and it carries no horizon
 because a seven-day run has no single bucket (MODEL.md 16.7).
 
 SHADOWS RIDE ON RUN A. Each ``--shadow-feature-set`` adds one ``channel='shadow'`` run
-of ``models/<pinned>-<set>/`` scored from run A's frame at run A's boundary (13.4 rung
-(c), MODEL.md 17.7). An absent shadow artifact is a warning, a failed shadow is
-recorded, and neither stops run B.
+of the artifact the freeze names for it (``v3``: the previous champion, models/20260818)
+scored from run A's frame at run A's boundary (13.4 rung (c), MODEL.md 17.7, 24). An
+absent shadow artifact is a warning, a failed shadow is recorded, and neither stops
+run B.
 
 THE RESCORE LANE. ``--if-status-changed`` gates the same pipeline on news: before any
 heavy phase it compares each slate player's resolved designation class (available,
@@ -98,14 +99,15 @@ from fnba_ml.config import (  # noqa: E402
     MODELS_DIR,
     PROSPECTIVE_2026_27,
     PROSPECTIVE_ARTIFACT_CHECKSUMS,
+    PROSPECTIVE_FEATURE_SET,
     PROSPECTIVE_FEATURE_VERSION,
     PROSPECTIVE_MODEL_VERSION,
     PROSPECTIVE_RUN_NOTE_LABEL,
     PROSPECTIVE_SERVING_HORIZON,
+    PROSPECTIVE_SHADOW_ARTIFACTS,
     PROSPECTIVE_SHADOW_FEATURE_SETS,
     SEASON_TYPES,
     SEASONS,
-    SERVED_FEATURE_SET,
 )
 from fnba_ml.overrides import (  # noqa: E402
     DEFAULT_POLICY,
@@ -118,6 +120,7 @@ from fnba_ml.preseason import PRESEASON_PRIOR_OFF, PRESEASON_PRIOR_ON  # noqa: E
 from fnba_ml.store import PRODUCTION_CHANNEL, SHADOW_CHANNEL  # noqa: E402
 from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
+    attach_serving_v7_columns,
     build_prospective_features,
     history_from_dataset,
     load_postseason_sidecar,
@@ -170,6 +173,7 @@ PHASES: tuple[str, ...] = (
     "rescore",
     "dataset",
     "prospective",
+    "serving",
     "statuses",
     "predict",
 )
@@ -414,14 +418,14 @@ def prospective_conditions(
 def run_notes(
     reasons: list[str],
     stale: str | None = None,
-    feature_set: str = SERVED_FEATURE_SET,
+    feature_set: str = PROSPECTIVE_FEATURE_SET,
     channel: str = PRODUCTION_CHANNEL,
     rescore: str | None = None,
 ) -> str:
     """``prediction_runs.notes`` for this run.
 
-    The qualifying form follows 13.4: the label, then ``feature_set=v3-honest``,
-    then ``channel=production``. The channel token is derived from the same
+    The qualifying form follows 13.4: the label, then ``feature_set=<the frozen
+    set>``, then ``channel=production``. The channel token is derived from the same
     constant written to ``prediction_runs.channel``, so notes and column cannot
     disagree; it replaces 13.4's ``shadow=false``. The non-qualifying form must
     NOT contain the label anywhere - a substring match is how a look report will
@@ -480,21 +484,32 @@ def shadow_notes(
     )
 
 
-def shadow_version(feature_set: str) -> str:
-    """the shadow artifact paired with the pinned one, e.g. ``20260818-v1``."""
-    return feature_set_version(PROSPECTIVE_MODEL_VERSION, feature_set)
+def shadow_version(shadow: str) -> str:
+    """the artifact a shadow name scores: the frozen one, else ``<pinned>-<set>``."""
+    frozen = PROSPECTIVE_SHADOW_ARTIFACTS.get(shadow)
+    if frozen is not None:
+        return str(frozen["model_version"])
+    return feature_set_version(PROSPECTIVE_MODEL_VERSION, shadow)
+
+
+def shadow_feature_set(shadow: str) -> str:
+    """the feature set a shadow name scores, as its notes and its metadata name it."""
+    frozen = PROSPECTIVE_SHADOW_ARTIFACTS.get(shadow)
+    return str(frozen["feature_set"]) if frozen is not None else shadow
 
 
 def shadow_artifact_conditions(
-    feature_set: str, models_dir: Path = MODELS_DIR
+    shadow: str, models_dir: Path = MODELS_DIR
 ) -> list[str] | None:
     """reasons the shadow artifact disqualifies its run; None when it is absent.
 
     None means skip the shadow and serve as usual. The checks pin what 13.4 needs
     for a like-for-like comparison: the feature set it claims, its own registry
-    checksums, and the served artifact's training cutoff.
+    checksums, the frozen checksums where the freeze pins it, and the served
+    artifact's training cutoff.
     """
-    version = shadow_version(feature_set)
+    version = shadow_version(shadow)
+    feature_set = shadow_feature_set(shadow)
     directory = models_dir / version
     if not (directory / "metadata.json").is_file():
         return None
@@ -502,7 +517,7 @@ def shadow_artifact_conditions(
     served_meta = _read_metadata(models_dir / PROSPECTIVE_MODEL_VERSION)
 
     reasons: list[str] = []
-    trained_on = str(shadow_meta.get("feature_set", ""))
+    trained_on = predict_script.artifact_feature_set(shadow_meta)
     if trained_on != feature_set:
         reasons.append(f"shadow artifact feature_set {trained_on or 'unset'} is not "
                        f"{feature_set}")
@@ -518,6 +533,13 @@ def shadow_artifact_conditions(
     else:
         if bad:
             reasons.append(f"shadow artifact checksums not verified ({', '.join(bad)})")
+    frozen = PROSPECTIVE_SHADOW_ARTIFACTS.get(shadow)
+    if frozen is not None:
+        drifted = artifact_mismatches(directory, dict(frozen["checksums"]))
+        if drifted:
+            reasons.append(
+                f"shadow artifact does not match the freeze ({', '.join(drifted)})"
+            )
     return reasons
 
 
@@ -703,12 +725,18 @@ def verify_pinned_artifact(models_dir: Path = MODELS_DIR) -> list[str]:
     Set equality is part of it: an EXTRA file in the served directory passes every
     per-file digest while changing what "the artifact" means.
     """
-    directory = models_dir / PROSPECTIVE_MODEL_VERSION
+    return artifact_mismatches(
+        models_dir / PROSPECTIVE_MODEL_VERSION, PROSPECTIVE_ARTIFACT_CHECKSUMS
+    )
+
+
+def artifact_mismatches(directory: Path, checksums: dict[str, str]) -> list[str]:
+    """the files of ``directory`` that differ from ``checksums``, extra or missing too."""
     if not directory.is_dir():
         return [f"{directory} (missing)"]
     on_disk = {p.name for p in directory.iterdir() if p.is_file()}
-    bad = sorted(on_disk.symmetric_difference(PROSPECTIVE_ARTIFACT_CHECKSUMS))
-    for name, expected in sorted(PROSPECTIVE_ARTIFACT_CHECKSUMS.items()):
+    bad = sorted(on_disk.symmetric_difference(checksums))
+    for name, expected in sorted(checksums.items()):
         path = directory / name
         if path.is_file() and registry.sha256_file(path) != expected:
             bad.append(name)
@@ -845,6 +873,38 @@ def load_statuses(as_of: pd.Timestamp) -> pd.DataFrame:
     )
 
 
+def attach_serving_columns(
+    features: pd.DataFrame,
+    history: pd.DataFrame,
+    schedule: pd.DataFrame,
+    window_start: date,
+) -> pd.DataFrame:
+    """the served v7 columns build_features does not make, read from before the window.
+
+    Team logs and box details span the training seasons plus the slate's own, so a
+    season-scoped window sees the current season; preseason lines are the slate's
+    season only, because a row never reads another season's preseason (MODEL.md 23.2).
+    """
+    from fnba_ml.data.postgres_source import PostgresSource  # noqa: PLC0415
+
+    cutoff = pd.Timestamp(window_start)
+    current = sorted(set(schedule["SEASON"].astype(str)))
+    seasons = sorted(set(SEASONS) | set(current))
+    source = PostgresSource(seasons=seasons, cutoff=cutoff)
+    team_logs = source.load_team_game_logs()
+    box = source.load_box_details()
+    preseason = PostgresSource(seasons=current, cutoff=cutoff).load_preseason_logs()
+    log.info(
+        "serving inputs  : %d team-log rows, %s box lines, %s preseason lines of %s, "
+        "all before %s", len(team_logs), "no" if box is None else f"{len(box):,}",
+        "no" if preseason is None else f"{len(preseason):,}", ", ".join(current),
+        cutoff.date(),
+    )
+    return attach_serving_v7_columns(
+        features, history, team_logs, box, preseason, cutoff
+    )
+
+
 def with_status_scope_columns(statuses: pd.DataFrame) -> pd.DataFrame:
     """the statuses frame with nba_game_id and source present, so the parquet
     predict.py reads always carries the columns game-scoped resolution needs."""
@@ -911,7 +971,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--shadow-feature-set", dest="shadow_feature_sets", action="append",
         choices=PROSPECTIVE_SHADOW_FEATURE_SETS, default=[],
         help="after run A, also publish a shadow run (channel 'shadow', never served) "
-             "of models/<pinned>-<set>/ on the same frame and boundary (MODEL.md 13.4c). "
+             "of the artifact the freeze names for it (v3: models/20260818, the "
+             "previous champion) on the same frame and boundary (MODEL.md 13.4c, 24). "
              "repeatable; skipped with a warning when the artifact is absent",
     )
     parser.add_argument(
@@ -1090,16 +1151,13 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             dataset_path = args.out_dir / "dataset.parquet"
             log.info("rebuilding the historical dataset from postgres -> %s",
                      dataset_path)
-            # --no-v4-candidate: the served feature contract is v3 (51 columns, the
-            # frozen digest) and the P2 candidate family is not in it, so building it
-            # would buy nothing and cost an extra LightGBM cross-fit over every
-            # team-game. MODEL.md 15 is why the candidate is not served.
+            # --no-v4-candidate: only the played universe is read back from this
+            # file and the served stakes columns are rebuilt for the unplayed rows in
+            # the serving phase, so the blowout cross-fit would buy nothing.
             code = build_dataset.main([
                 "--source", "postgres",
                 "--out", str(dataset_path),
                 "--no-v4-candidate",
-                # evaluation only (MODEL.md 23): serving never reads Pre Season.
-                "--no-v7-candidate",
             ])
             if code != 0:
                 raise PhaseFailure("dataset", f"build_dataset exited {code}")
@@ -1124,13 +1182,19 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             schedule, rosters, window_start, extended_end, positions=positions
         )
         features = build_prospective_features(history, future, postseason)
+        log.info(
+            "prospective     : %d rows, %d games, %d players",
+            len(features), features["GAME_ID"].nunique(),
+            features["PLAYER_ID"].nunique(),
+        )
+
+    # ---- serving --------------------------------------------------------
+    with phase("serving"):
+        features = attach_serving_columns(features, history, schedule, window_start)
         extended_path = args.out_dir / "prospective_extended.parquet"
         features.to_parquet(extended_path, index=False)
-        log.info(
-            "prospective     : %d rows, %d games, %d players -> %s",
-            len(features), features["GAME_ID"].nunique(),
-            features["PLAYER_ID"].nunique(), extended_path,
-        )
+        log.info("serving columns : %s contract -> %s", PROSPECTIVE_FEATURE_SET,
+                 extended_path)
 
     # ---- statuses -------------------------------------------------------
     with phase("statuses"):
@@ -1254,7 +1318,8 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
     print(f"extended  : {window_start} .. {extended_end}  "
           f"({', '.join(SLATE_SEASON_TYPES)})")
     print(f"artifact  : {PROSPECTIVE_MODEL_VERSION}  "
-          f"(feature_version {PROSPECTIVE_FEATURE_VERSION}, "
+          f"(feature_set {PROSPECTIVE_FEATURE_SET}, "
+          f"feature_version {PROSPECTIVE_FEATURE_VERSION}, "
           f"horizon {PROSPECTIVE_SERVING_HORIZON})")
     print(f"rosters   : {roster_source}")
     print(f"trigger   : {_trigger(args)}" + (f" ({rescore})" if rescore else ""))
@@ -1419,16 +1484,16 @@ def publish_shadows(
     so the served runs are published whatever happens here.
     """
     runs: list[dict[str, object]] = []
-    for feature_set in args.shadow_feature_sets:
-        name = f"shadow-{feature_set}"
-        version = shadow_version(feature_set)
-        artifact_reasons = shadow_artifact_conditions(feature_set, args.models_dir)
+    for shadow in args.shadow_feature_sets:
+        name = f"shadow-{shadow}"
+        version = shadow_version(shadow)
+        feature_set = shadow_feature_set(shadow)
+        artifact_reasons = shadow_artifact_conditions(shadow, args.models_dir)
         if artifact_reasons is None:
             log.warning(
-                "shadow %s skipped: no artifact at %s. train it with train.py "
-                "--feature-set %s --version %s and commit it; the served run is "
-                "unaffected", name, args.models_dir / version, feature_set,
-                PROSPECTIVE_MODEL_VERSION,
+                "shadow %s skipped: no artifact at %s (feature set %s); commit it to "
+                "publish the shadow. the served run is unaffected",
+                name, args.models_dir / version, feature_set,
             )
             runs.append({
                 "name": name, "skipped": True,
@@ -1440,7 +1505,7 @@ def publish_shadows(
         try:
             run = _publish_run(
                 args, name, prospective_path,
-                args.out_dir / f"predictions_shadow_{feature_set}.parquet", notes,
+                args.out_dir / f"predictions_shadow_{shadow}.parquet", notes,
                 PROSPECTIVE_SERVING_HORIZON, window_start, statuses_as_of,
                 statuses_path, history_through,
                 version=version, channel=SHADOW_CHANNEL,

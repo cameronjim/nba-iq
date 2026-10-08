@@ -1,4 +1,4 @@
-"""the frozen `prospective_2026_27_v3` pre-registration, machine-readable half.
+"""the frozen `prospective_2026_27_v4` pre-registration, machine-readable half.
 
 every value here is a hand-copied snapshot of the served configuration, never a
 read of the live constant: a mirror that reads the live value can never fail.
@@ -9,9 +9,24 @@ from __future__ import annotations
 
 import pandas as pd
 
-PROSPECTIVE_PROTOCOL_VERSION = "prospective_2026_27_v3"
+PROSPECTIVE_PROTOCOL_VERSION = "prospective_2026_27_v4"
 
+# the served artifact (MODEL.md 24) is trained by ML Evaluate's train_feature_set
+# input against prod and committed by hand. until its six sha256 literals replace
+# these placeholders, tests/test_prospective_freeze.py fails and the daily run's
+# preflight refuses to serve.
+PROSPECTIVE_CHECKSUM_PLACEHOLDER = "FILL-AFTER-TRAINING"
 PROSPECTIVE_ARTIFACT_CHECKSUMS: dict[str, str] = {
+    "availability_model.joblib": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
+    "base_availability_model.joblib": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
+    "ewma_state.parquet": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
+    "feature_gain.csv": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
+    "metadata.json": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
+    "minutes_model.joblib": PROSPECTIVE_CHECKSUM_PLACEHOLDER,
+}
+
+# the v3 champion, now the shadow: artifact 20260818 byte for byte, as v1 to v3 pinned it.
+PROSPECTIVE_V3_ARTIFACT_CHECKSUMS: dict[str, str] = {
     "availability_model.joblib":
         "aa62f880f6774537ab58ba52d0aa4e641c96964ca3d26691e9ab7dd52180f06c",
     "base_availability_model.joblib":
@@ -37,7 +52,7 @@ PROSPECTIVE_LOOK_DATES: tuple[str, ...] = tuple(d for _, d, _ in PROSPECTIVE_LOO
 
 # the label stamped into prediction_runs.notes; a run without it is not part of
 # the prospective test.
-PROSPECTIVE_RUN_NOTE_LABEL = "prospective_2026_27_v3"
+PROSPECTIVE_RUN_NOTE_LABEL = "prospective_2026_27_v4"
 
 # a secondary reporting axis, not a filter: flagged rows stay in every endpoint.
 PROSPECTIVE_COLD_START_FLAG = "cold_start"
@@ -45,19 +60,46 @@ PROSPECTIVE_COLD_START_THROUGH = "2026-11-30"
 
 PROSPECTIVE_OCTOBER_REPLAY_WINDOW: tuple[str, str] = ("2025-10-01", "2025-10-31")
 
-PROSPECTIVE_SHADOW_FEATURE_SETS: tuple[str, ...] = ("v1",)
+# the shadow is the previous champion: `--shadow-feature-set v3` scores artifact
+# 20260818 (feature set v3-honest) on run A's frame and boundary.
+PROSPECTIVE_SHADOW_FEATURE_SETS: tuple[str, ...] = ("v3",)
+PROSPECTIVE_SHADOW_ARTIFACTS: dict[str, dict[str, object]] = {
+    "v3": {
+        "model_version": "20260818",
+        "feature_set": "v3-honest",
+        "feature_version": "v3",
+        "checksums": PROSPECTIVE_V3_ARTIFACT_CHECKSUMS,
+    },
+}
 
 PROSPECTIVE_SERVING_HORIZON = "gameday"
 
-PROSPECTIVE_FEATURE_VERSION = "v3"
-PROSPECTIVE_MODEL_VERSION = "20260818"
+PROSPECTIVE_FEATURE_SET = "v7-preseason-role"
+PROSPECTIVE_FEATURE_VERSION = "v7"
+PROSPECTIVE_MODEL_VERSION = "20261008-v7"
 
-# sha256 of "\n".join(FEATURE_COLS); any addition, removal or reordering of that
-# list invalidates the pinned artifact.
+# sha256 of "\n".join(FEATURE_SETS[PROSPECTIVE_FEATURE_SET]); any addition, removal
+# or reordering of that list invalidates the pinned artifact.
 PROSPECTIVE_FEATURE_COLS_SHA256 = (
+    "8646628e44369782ec83b7e54fa2aa8767415847c0ca5e7394ff99e34ecda08d"
+)
+PROSPECTIVE_N_FEATURES = 73
+
+# the v3 contract the shadow artifact was fitted on: config.FEATURE_COLS.
+PROSPECTIVE_V3_FEATURE_COLS_SHA256 = (
     "914cdc17c25ee9cb32b072f254691a625472b43ecb37b3da0c23483f165e1b6e"
 )
-PROSPECTIVE_N_FEATURES = 51
+PROSPECTIVE_V3_N_FEATURES = 51
+
+# the construction constants the v6 and v7 columns are built with (MODEL.md 22.2, 23.2).
+PROSPECTIVE_V7_CONSTANTS: dict[str, float] = {
+    "v6_start_window": 10,
+    "v6_usual_starter_rate": 0.5,
+    "v6_box_ewma_halflife": 10.0,
+    "preseason_role_games": 2,
+    "preseason_role_fade_games": 10,
+    "preseason_role_team_minutes": 240.0,
+}
 
 PROSPECTIVE_CHAMPIONS: dict[str, str] = {
     "availability": "lightgbm",
@@ -102,7 +144,7 @@ PROSPECTIVE_PASSTHROUGH_STATUSES: frozenset[str] = frozenset(
     {"available", "day_to_day", "cleared", "unknown"}
 )
 
-# the v3 switches (MODEL.md 21): out-class designations no longer expire, and each
+# the v3 switches, unchanged in v4 (MODEL.md 21): out-class designations no longer expire, and each
 # (player, game) resolves official over cbs unless cbs is more than 6 hours newer.
 PROSPECTIVE_EXPIRE_UNAVAILABLE_STATUSES = False
 PROSPECTIVE_GAME_SCOPED_STATUS_RESOLUTION = True
@@ -197,12 +239,13 @@ PROSPECTIVE_OCTOBER_GATE: dict[str, float] = {
 
 PROSPECTIVE_2026_27: dict[str, object] = {
     "protocol_version": PROSPECTIVE_PROTOCOL_VERSION,
-    "frozen_at": "2026-10-02",
-    "refrozen_from": "prospective_2026_27_v2",
+    "frozen_at": "2026-10-08",
+    "refrozen_from": "prospective_2026_27_v3",
     "season": "2026-27",
     "model_version": PROSPECTIVE_MODEL_VERSION,
     "feature_version": PROSPECTIVE_FEATURE_VERSION,
-    "artifact_dir": "models/20260818",
+    "feature_set": PROSPECTIVE_FEATURE_SET,
+    "artifact_dir": f"models/{PROSPECTIVE_MODEL_VERSION}",
     "artifact_checksums": PROSPECTIVE_ARTIFACT_CHECKSUMS,
     "looks": PROSPECTIVE_LOOKS,
     "look_dates": PROSPECTIVE_LOOK_DATES,
@@ -212,6 +255,7 @@ PROSPECTIVE_2026_27: dict[str, object] = {
     "october_replay_window": PROSPECTIVE_OCTOBER_REPLAY_WINDOW,
     "october_gate": PROSPECTIVE_OCTOBER_GATE,
     "shadow_feature_sets": PROSPECTIVE_SHADOW_FEATURE_SETS,
+    "shadow_artifacts": PROSPECTIVE_SHADOW_ARTIFACTS,
     "serving_horizon": PROSPECTIVE_SERVING_HORIZON,
     "champions": PROSPECTIVE_CHAMPIONS,
     "rate_targets": PROSPECTIVE_RATE_TARGETS,
@@ -228,6 +272,9 @@ PROSPECTIVE_2026_27: dict[str, object] = {
     "horizon_windows": PROSPECTIVE_HORIZON_WINDOWS,
     "feature_cols_sha256": PROSPECTIVE_FEATURE_COLS_SHA256,
     "n_features": PROSPECTIVE_N_FEATURES,
+    "v3_feature_cols_sha256": PROSPECTIVE_V3_FEATURE_COLS_SHA256,
+    "v3_n_features": PROSPECTIVE_V3_N_FEATURES,
+    "v7_constants": PROSPECTIVE_V7_CONSTANTS,
     "falsification": PROSPECTIVE_FALSIFICATION,
 }
 

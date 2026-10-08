@@ -920,8 +920,12 @@ def information_boundary(runs: pd.DataFrame) -> pd.Series:
 
 
 def is_shadow_comparator(runs: pd.DataFrame) -> pd.Series:
+    """a v1 shadow; a shadow of any other feature set is not F2 to F4's comparator."""
     notes = runs["notes"].fillna("").astype(str)
-    return (channel_of(runs) == "shadow") | notes.str.contains(SHADOW_FEATURE_TOKEN, regex=False)
+    v1 = notes.str.contains(f"{SHADOW_FEATURE_TOKEN};", regex=False) | notes.str.endswith(
+        SHADOW_FEATURE_TOKEN
+    )
+    return (channel_of(runs) == "shadow") & v1
 
 
 def pair_runs(
@@ -940,10 +944,11 @@ def pair_runs(
         "run_id": runs["id"].to_numpy(),
         "boundary": information_boundary(runs).to_numpy(),
         "shadow": is_shadow_comparator(runs).to_numpy(),
+        "production": (channel_of(runs) == "production").to_numpy(),
         "prospective": is_prospective(runs).to_numpy(),
     })
     meta = meta[meta["run_id"].isin(slates.index)]
-    served = meta[~meta["shadow"]]
+    served = meta[meta["production"] & ~meta["shadow"]]
     pairs: list[dict[str, object]] = []
     taken: set[object] = set()
     for _, shadow in meta[meta["shadow"]].sort_values("run_id").iterrows():

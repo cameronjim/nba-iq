@@ -88,9 +88,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r ml/requirements.txt
 
-      # --shadow-feature-set v1 adds the 13.4 rung (c) shadow run (channel 'shadow',
-      # never served). until ml/models/20260818-v1/ is committed it is skipped with
-      # a warning and the served runs are unchanged.
+      # --shadow-feature-set v3 adds the shadow run of the previous champion,
+      # models/20260818 (channel 'shadow', never served; MODEL.md 24). the served
+      # artifact is pinned in fnba_ml/frozen.py and preflight refuses any other.
       #
       # github.event.schedule carries the cron expression that fired. each pattern
       # below must match its cron line above character for character; an unknown
@@ -104,8 +104,8 @@ jobs:
         run: |
           case "$SCHEDULE" in
             "0 16 * * *" | "")
-              python ml/daily_run.py --shadow-feature-set v1 $DRY_RUN ;;
+              python ml/daily_run.py --shadow-feature-set v3 $DRY_RUN ;;
             "45 15,19,20,21,22,23,0,1,2 * * *")
-              python ml/daily_run.py --if-status-changed --shadow-feature-set v1 $DRY_RUN ;;
+              python ml/daily_run.py --if-status-changed --shadow-feature-set v3 $DRY_RUN ;;
             *) echo "unknown schedule '$SCHEDULE'" >&2; exit 1 ;;
           esac

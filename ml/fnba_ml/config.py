@@ -14,11 +14,13 @@ from .frozen import (  # noqa: F401
     PROSPECTIVE_2026_27,
     PROSPECTIVE_ARTIFACT_CHECKSUMS,
     PROSPECTIVE_CHAMPIONS,
+    PROSPECTIVE_CHECKSUM_PLACEHOLDER,
     PROSPECTIVE_COHERENCE_CONSTRAINTS,
     PROSPECTIVE_COLD_START_FLAG,
     PROSPECTIVE_COLD_START_THROUGH,
     PROSPECTIVE_FALSIFICATION,
     PROSPECTIVE_FEATURE_COLS_SHA256,
+    PROSPECTIVE_FEATURE_SET,
     PROSPECTIVE_FEATURE_VERSION,
     PROSPECTIVE_HORIZON_WINDOWS,
     PROSPECTIVE_LOOK_DATES,
@@ -34,7 +36,12 @@ from .frozen import (  # noqa: F401
     PROSPECTIVE_RATE_TARGETS,
     PROSPECTIVE_RUN_NOTE_LABEL,
     PROSPECTIVE_SERVING_HORIZON,
+    PROSPECTIVE_SHADOW_ARTIFACTS,
     PROSPECTIVE_SHADOW_FEATURE_SETS,
+    PROSPECTIVE_V3_ARTIFACT_CHECKSUMS,
+    PROSPECTIVE_V3_FEATURE_COLS_SHA256,
+    PROSPECTIVE_V3_N_FEATURES,
+    PROSPECTIVE_V7_CONSTANTS,
     is_cold_start,
 )
 
@@ -463,7 +470,7 @@ FEATURE_COLS: list[str] = BASE_FEATURE_COLS + TEAMMATE_FEATURE_COLS
 # readable. nothing in the serving path reads this.
 FEATURE_COLS_V4: list[str] = FEATURE_COLS + V4_FEATURE_COLS
 
-# ---- the P3 candidate contract (feature_version v5), not served ----
+# ---- the P3 candidate contract (feature_version v5); served inside v7 ----
 # the stakes family alone, per MODEL.md 15.11: no late_season and no
 # stakes_lockedness column (only their interactions), no blowout, no pace.
 V5_STAKES_FEATURE_COLS: list[str] = [
@@ -479,7 +486,7 @@ FEATURE_COLS_V5_STAKES: list[str] = FEATURE_COLS + V5_STAKES_FEATURE_COLS
 CANDIDATE_FEATURE_VERSION_V5 = "v5"
 CANDIDATE_FEATURE_SET_V5 = "v5-stakes"
 
-# ---- the v6 candidate contract (feature_version v6), not served ----
+# ---- the v6 candidate contract (feature_version v6); served inside v7 ----
 # v5-stakes plus box-score detail columns (MODEL.md 22). every column reads
 # appearances strictly before the row's game.
 V6_START_WINDOW: int = 10
@@ -516,7 +523,7 @@ FEATURE_COLS_V6_CONTEXT: list[str] = FEATURE_COLS_V5_STAKES + V6_CONTEXT_FEATURE
 CANDIDATE_FEATURE_VERSION_V6 = "v6"
 CANDIDATE_FEATURE_SET_V6 = "v6-context"
 
-# ---- the v7 candidate contract (feature_version v7), not served ----
+# ---- the v7 contract (feature_version v7), served from prospective_2026_27_v4 ----
 # v6-context plus the player's role in his team's last preseason games of the same
 # season (MODEL.md 23). written before any result.
 PRESEASON_ROLE_GAMES: int = 2
@@ -560,7 +567,7 @@ PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS: tuple[str, ...] = (
 
 # ---- the evaluation bracket: feature sets over identical rows ----
 # v1 is the no-teammate-context floor, v2-oracle is what perfect pre-tipoff
-# lineup information buys, v3-honest is what ships.
+# lineup information buys, v3-honest is the incumbent, v7-preseason-role ships.
 FEATURE_SETS: dict[str, list[str]] = {
     "v1": list(BASE_FEATURE_COLS),
     "v3-honest": list(FEATURE_COLS),
@@ -570,6 +577,9 @@ FEATURE_SETS: dict[str, list[str]] = {
     "v6-context": list(FEATURE_COLS_V6_CONTEXT),
     "v7-preseason-role": list(FEATURE_COLS_V7_PRESEASON_ROLE),
 }
+# the incumbent every bracket compares against, and the feature set of an artifact
+# whose metadata predates the feature_set key. what the frozen protocol serves is
+# PROSPECTIVE_FEATURE_SET (MODEL.md 24).
 SERVED_FEATURE_SET = "v3-honest"
 ORACLE_FEATURE_SET = "v2-oracle"
 CANDIDATE_FEATURE_SET = "v4"

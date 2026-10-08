@@ -1,7 +1,8 @@
 """P2: matchup, blowout and season-stakes features (the v4 CANDIDATE family).
 
-none of this is served: config.FEATURE_COLS and the frozen artifact are unchanged
-and these columns populate config.FEATURE_SETS["v4"] only.
+the v4 set is not served. its stakes subset (config.V5_STAKES_FEATURE_COLS) is part
+of the served v7-preseason-role contract, built for unplayed rows by
+attach_serving_stakes.
 
 as-of contract: every column is a function of games strictly before the target
 game, enforced by an explicit .shift(1) before every rolling / expanding window on
@@ -29,6 +30,7 @@ from .config import (
     BLOWOUT_PROB,
     BLOWOUT_PROB_CUTOFF,
     BLOWOUT_TARGET,
+    COMPETITION_COL,
     CROSS_FIT_FREQ,
     FT_POSSESSION_WEIGHT,
     LATE_SEASON_GAMES_REMAINING,
@@ -38,6 +40,7 @@ from .config import (
     START_RATE_TOP_N,
     START_RATE_WINDOW,
     STAKES_LOCKED_RATIO,
+    TRAINING_COMPETITIONS,
 )
 from .data.schema import training_rows
 
@@ -672,6 +675,45 @@ def attach_start_rate(features: pd.DataFrame) -> pd.DataFrame:
         .drop(columns=["_row_order"])
         .reset_index(drop=True)
     )
+
+
+def future_team_log_rows(
+    future: pd.DataFrame, like: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """both sides of every future team-game as team-log rows with no box score."""
+    games = future[["SEASON", "GAME_ID", "GAME_DATE", "TEAM_ID", "OPP_TEAM_ID"]]
+    mirrored = games.rename(columns={"TEAM_ID": "OPP_TEAM_ID", "OPP_TEAM_ID": "TEAM_ID"})
+    sides = pd.concat([games, mirrored], ignore_index=True).drop_duplicates(
+        ["GAME_ID", "TEAM_ID"]
+    )
+    sides = sides.drop(columns=["OPP_TEAM_ID"]).reset_index(drop=True)
+    sides["GAME_DATE"] = pd.to_datetime(sides["GAME_DATE"])
+    for column in ("PTS", "MIN", "FGA", "FTA", "TOV", "FG3A"):
+        sides[column] = np.nan
+    if like is not None and COMPETITION_COL in like.columns:
+        sides[COMPETITION_COL] = TRAINING_COMPETITIONS[0]
+    return sides
+
+
+def attach_serving_stakes(
+    features: pd.DataFrame, team_logs: pd.DataFrame, cutoff: pd.Timestamp
+) -> pd.DataFrame:
+    """the own-team stakes and minutes_share columns for unplayed rows, row order kept.
+
+    each future date is appended alone to the team logs dated before ``cutoff``, the
+    rule build_prospective_features applies, so a row reads only played games and the
+    columns equal what team_game_context gives the same row once it is history.
+    """
+    logs = team_logs[pd.to_datetime(team_logs["GAME_DATE"]) < pd.Timestamp(cutoff)]
+    dates = pd.to_datetime(features["GAME_DATE"])
+    contexts: list[pd.DataFrame] = []
+    for game_date in sorted(dates.unique()):
+        day = future_team_log_rows(features[dates == game_date], like=logs)
+        context = team_game_context(pd.concat([logs, day], ignore_index=True))
+        contexts.append(context[context["GAME_ID"].isin(set(day["GAME_ID"]))])
+    out = attach_matchup_features(features, pd.concat(contexts, ignore_index=True))
+    # the placeholder rows carry no box score, so their outcome columns mean nothing.
+    return out.drop(columns=[c for c in OUTCOME_COLS if c in out.columns])
 
 
 def attach_v4_features(

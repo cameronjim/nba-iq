@@ -78,10 +78,11 @@ def build_entry(
     universe_source: str,
     feature_cols: list[str],
     feature_set: str = SERVED_FEATURE_SET,
+    feature_version: str = FEATURE_VERSION,
 ) -> dict[str, object]:
     return {
         "model_version": model_version,
-        "feature_version": FEATURE_VERSION,
+        "feature_version": feature_version,
         "feature_set": feature_set,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "git_commit": git_commit(),

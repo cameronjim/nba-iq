@@ -81,6 +81,12 @@ python train.py --version 2026-08-16
 #     its registry entry (ML Evaluate's train_shadow input does the fit in CI).
 python train.py --feature-set v1 --version 20260818
 
+# 2c. the prospective_2026_27_v4 champion (MODEL.md 24) -> models/20261008-v7/.
+#     73 columns, base model included, cutoff inherited from models/20260818/.
+#     needs a dataset built with every candidate family; run it against prod with
+#     ML Evaluate's train_feature_set input, commit it, fill frozen.py's checksums.
+python train.py --feature-set v7-preseason-role --version 20261008-v7
+
 # 3. evaluate: rolling-origin report -> reports/<version>.md
 #    exits 1 if the promoted composition regresses >1% against the one it
 #    replaced, for ANY of the eleven served stats
@@ -99,10 +105,10 @@ python score_runs.py --since 2026-10-20 --channel production
 python score_runs.py --run-id 412 --run-id 413 --md reports\scoring\runs_412_413.md
 python score_runs.py --look dec1                      # + the 13.5 falsification table (MODEL.md 19.5)
 
-# 6. the daily publisher, as predictions.yml runs it (run A, the v1 shadow, run B)
-python daily_run.py --shadow-feature-set v1 --dry-run
+# 6. the daily publisher, as predictions.yml runs it (run A, the v3 shadow, run B)
+python daily_run.py --shadow-feature-set v3 --dry-run
 # 6b. the injury rescore lane: the same run, only if a slate player's status class moved
-python daily_run.py --if-status-changed --shadow-feature-set v1 --dry-run
+python daily_run.py --if-status-changed --shadow-feature-set v3 --dry-run
 
 # 7. challengers and serving options, all off by default (see the section below).
 #    one look per candidate: the reports are the record, not a draft.
@@ -133,20 +139,22 @@ challenger run beside the served one without the app ever reading it; the daily
 run's served runs always pass `--channel production`, and their notes say
 `channel=production` to match the column.
 
-**The daily shadow.** `daily_run.py --shadow-feature-set v1` (what the workflow
+**The daily shadow.** Since `prospective_2026_27_v4` (MODEL.md 24) the served
+artifact is `models/20261008-v7/` (`v7-preseason-role`) and the shadow is the
+previous champion. `daily_run.py --shadow-feature-set v3` (what the workflow
 passes) publishes, right after the prospective run A, one more run of
-`models/20260818-v1/` with `--channel shadow`: same prospective frame, same
+`models/20260818/` with `--channel shadow`: same prospective frame, same
 `--statuses-as-of`, `--run-at`, horizon and history boundary, notes
-`<label>; feature_set=v1; channel=shadow` when A qualifies. It is disqualified
+`<label>; feature_set=v3-honest; channel=shadow` when A qualifies. It is disqualified
 (`NOT PROSPECTIVE`) if its metadata names another feature set, its cutoff differs
-from the pinned artifact's, or its registry checksums do not verify. A missing
+from the pinned artifact's, or its registry or frozen checksums do not verify. A missing
 artifact is a warning and a skip; a failed shadow is logged, run B still
 publishes, and the job exits 1. The extended run B never gets a shadow.
 
 **The injury rescore lane.** `predictions.yml` has a second cron,
 `45 15,19,20,21,22,23,0,1,2 * * *`, which is `scraper.yml`'s injuries-only lane
 plus 15 minutes so the fresh report rows exist. It runs
-`daily_run.py --if-status-changed --shadow-feature-set v1`. Before the dataset
+`daily_run.py --if-status-changed --shadow-feature-set v3`. Before the dataset
 rebuild it reads the newest complete production run's `information_as_of`,
 resolves each player's designation at that boundary and now (both through
 `overrides.latest_statuses`), and keeps the players on teams with an untipped game
@@ -260,12 +268,13 @@ data; none has one yet. Promoting any of them changes an emitted number and is a
 | residual rate | `fnba_ml/rate_model.py` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
 | `v6-context` | `config.FEATURE_SETS["v6-context"]`, `fnba_ml/box_context.py` | `run_p3_bracket.py` | availability Brier or minutes MAE |
 | `residual-rate-v6` | `RATE_CONTEXT_COLS_V6`, `RATE_RESIDUAL_MIN_MINUTES` | `run_p3_bracket.py` | conditional or unconditional PTS MAE |
-| `v7-preseason-role` | `config.FEATURE_SETS["v7-preseason-role"]`, `fnba_ml/preseason_role.py` | `run_p3_bracket.py` (season-start origins) | availability Brier or minutes MAE |
+| `v7-preseason-role` | `config.FEATURE_SETS["v7-preseason-role"]`, `fnba_ml/preseason_role.py` | `run_p3_bracket.py` (season-start origins) | PROMOTED at `p3-v7-2026-10-08`, served from `prospective_2026_27_v4` (MODEL.md 24) |
 | `preseason-role-prior` | `PRESEASON_ROLE_PRIOR_*` | `run_p3_bracket.py` (season-start origins) | minutes or unconditional PTS MAE over each player's first 10 appearances |
 | `preseason-role-prior-newcomers` | `PRESEASON_ROLE_PRIOR_NEWCOMER_COHORTS` | `run_p3_bracket.py` (season-start origins) | the same, blending new-team and no-history rows only |
 | count models | `fnba_ml/count_model.py` | `report_counts.py` | report-only |
 | tiered intervals | `train.py --tiered-quantiles` | `report_counts.py` | report-only |
-| v1 shadow | `train.py --feature-set v1`, `daily_run.py --shadow-feature-set v1` | `score_runs.py` | ladder rung (c), MODEL.md 13.4 |
+| v1 shadow | `train.py --feature-set v1` | `score_runs.py` | ladder rung (c), MODEL.md 13.4; not published under `v4` (MODEL.md 24.6) |
+| v3 shadow | `daily_run.py --shadow-feature-set v3` (artifact `20260818`) | `score_runs.py` channel `shadow` | the previous champion beside every served run; exploratory (MODEL.md 24.6) |
 
 **Serving coherence.** Applied last, after the injury overrides and any scenario
 mix. `team_minutes` scales each team-game's conditional minutes so

@@ -2137,6 +2137,7 @@ could drift.
 
 *Re-frozen as `prospective_2026_27_v2` on 2026-10-01; see section 17 for what moved.*
 *Re-frozen as `prospective_2026_27_v3` on 2026-10-02; see section 21 for what moved.*
+*Re-frozen as `prospective_2026_27_v4` on 2026-10-08; see section 24 for what moved.*
 
 **Frozen 2026-08-17, 64 days before opening night. Append-only. Nothing in this
 section may be edited after 2026-10-20; before that date a change requires bumping to
@@ -4877,7 +4878,7 @@ with its own look. Nothing served changes; `prospective_2026_27_v3` stands.
 
 ### 22.6 Open items
 
-- **Serving cannot build the v6 teammate columns yet.** `predict.rebuild_context`
+- **Serving cannot build the v6 teammate columns yet.** *(Closed by 24.7.)* `predict.rebuild_context`
   rebuilds the v3 expected columns from override-adjusted p_j; it does not call
   `box_context.teammate_start_features`. A promotion would need that wiring, a 13.2
   re-freeze in any case.
@@ -4890,7 +4891,7 @@ with its own look. Nothing served changes; `prospective_2026_27_v3` stands.
   ahead of the start flag.
 
 
-## 23. v7-preseason-role (2026-10-07): pre-registered, unmeasured
+## 23. v7-preseason-role (2026-10-07): pre-registered, measured, promoted (23.7, 24)
 
 **Verdict first: three new challengers exist, `v7-preseason-role`,
 `preseason-role-prior` and `preseason-role-prior-newcomers`, and none has a number.**
@@ -5097,7 +5098,7 @@ that would no longer ship.
 
 ### 23.6 Open items
 
-- **Serving cannot build the v7 columns.** `predict.py` and `daily_run.py` never load
+- **Serving cannot build the v7 columns.** *(Closed by 24.7.)* `predict.py` and `daily_run.py` never load
   preseason logs. A promotion of either candidate needs that load at serving and is a
   13.2 re-freeze in any case (item 6 for the feature set, item 7 for the prior, which
   changes an emitted number of run A).
@@ -5107,3 +5108,271 @@ that would no longer ship.
   `started` flags for early seasons; those count as unknown, not as bench games.
 - **2022-23 has no history before it.** Every `ewma_MIN` at the 2022-23 opener is null,
   so `pre_role_delta_min` is null across the first season start S0 trains on.
+
+### 23.7 The look (2026-10-08, stem `p3-v7-2026-10-08`, ML Evaluate run 37735843795)
+
+**Verdict: `v7-preseason-role` PROMOTED; `preseason-role-prior` and
+`preseason-role-prior-newcomers` NOT PROMOTED.** One prod dataset build, the three
+season-start origins of 23.4, identical rows across every comparison. The report files
+are in the run's artifact `ml-challengers-prod-37735843795`. A positive number is an
+improvement for the candidate.
+
+| Comparison | Endpoint | Gate | Relative improvement | 95% CI |
+|---|---|---|---|---|
+| `v7-preseason-role` vs `v3-honest` | minutes MAE | yes | +9.22% | [+8.77%, +9.91%] |
+| `v7-preseason-role` vs `v3-honest` | availability Brier | yes | +5.96% | [+3.47%, +6.89%] |
+| `preseason-role-prior` vs champion minutes | `minutes_mae_first10` | yes | -10.14% | worse |
+| `preseason-role-prior-newcomers` vs champion minutes | `minutes_mae_first10` | yes | -2.05% | worse |
+
+No cohort regressed on a gated `v7-preseason-role` endpoint. The `residual-rate-v6`
+rerun (reference only, 22.5) read +0.74% on conditional PTS MAE, under the floor again.
+
+**Per origin, which is where the pooled number has to be read:**
+
+| Origin | Training seasons | `v3-honest` minutes MAE | `v7` minutes MAE | change | `v3-honest` Brier | `v7` Brier | change |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| S0 (2023) | 1 | 6.438 | 5.201 | +19.2% | 0.1442 | 0.1267 | +12.1% |
+| S1 (2024) | 2 | 4.960 | 4.752 | +4.2% | 0.11180 | 0.11005 | +1.6% |
+| S2 (2025) | 3 | 4.815 | 4.707 | +2.2% | 0.11460 | 0.11111 | +3.0% |
+
+The `v6-context@season-start` reference on the same rows: S1 minutes 4.746 (+4.3%),
+Brier 0.11180 (flat); S2 minutes 4.727 (+1.8%), Brier 0.11384 (+0.7%).
+
+**S0 inflates the pool.** The incumbent at S0 is fitted on the 2022-23 season alone and
+is weak for that reason, and S0 is the origin with the largest gap by a wide margin, so
+the pooled +9.22% and +5.96% are mostly S0. The pre-registered bar was the pooled number
+and it was applied as written; the decision stands. The number to expect in a season
+with three or four seasons of history is the S1 and S2 rows: minutes 2 to 4% better and
+availability Brier 1.6 to 3% better, each above the 1% floor as a point estimate. Whether
+an S1+S2-only bootstrap would also exclude zero is not known, because this run saved no
+per-row losses; `run_p3_bracket.py --origins-subset S1,S2` recomputes it from a run that
+did (24.2). The S0 reference row for `v6-context@season-start` is not in this record, so
+how S0's gain splits between the box and the preseason columns is not stated.
+
+## 24. The `prospective_2026_27_v4` re-freeze (2026-10-08)
+
+**Sections 13, 17 and 21 are not edited.** Section 13 is the `v1` pre-registration, 17
+the `v2` re-freeze, 21 the `v3` one; 22 and 23 are the candidate records the decision
+below rests on. This section is the 13.2 re-freeze: what moved, what did not, and why.
+Everything in 13, 17 and 21 that this section does not amend binds `v4` exactly as it
+bound `v3`.
+
+### 24.1 The verdict first
+
+**The served availability and minutes models become `v7-preseason-role`.** Artifact
+`20261008-v7` (`models/20261008-v7/`), feature set `v7-preseason-role` (73 columns,
+`FEATURE_VERSION` `v7`), replaces artifact `20260818` (`v3-honest`, 51 columns) as the
+pinned serving artifact. **Everything else that is served stays where `v3` put it**:
+the champions are still LightGBM availability, LightGBM minutes, the EWMA production
+rate and the decomposed composition; every rate halflife and estimator, the override
+table, both `v3` injury switches and the precedence window, horizons, cohorts, the
+cold-start window, the October gate, the three look dates and row minimums, and every
+falsification threshold.
+
+**`20260818` is not retired, it becomes the shadow.** `daily_run.py
+--shadow-feature-set v3` scores it on run A's frame at run A's boundary on
+`channel = 'shadow'`, so every qualifying served run has its previous champion beside
+it. It replaces the `v1` shadow (24.6).
+
+**Why now.** 23.7 is the pre-registered look and it passed. The bump is required on two
+counts: the feature contract changes (13.2 item 6) and the artifact is refit (item 7).
+It lands 12 days before opening night. As with `v2` and `v3`, no Regular Season slate
+has been scored under `v3`: run A exists only when its window holds a Regular Season
+game, the first is on 2026-10-20, and every run so far is a run B whose notes start
+`NOT PROSPECTIVE`. `v4` is a clean start with no `v3` rows to splice.
+
+### 24.2 The trigger result, stated plainly
+
+23.7 is the record. The short form: pooled over S0, S1 and S2 the candidate clears the
+P3 bar by a wide margin on both gates, and the margin is mostly S0, where the incumbent
+had one season of training. On the two origins with a normal amount of history the
+effect is real and smaller: minutes MAE 4.2% (S1) and 2.2% (S2) better, availability
+Brier 1.6% (S1) and 3.0% (S2) better. Those are the numbers this re-freeze expects the
+season to show, not the pooled ones.
+
+**The sensitivity table.** `run_p3_bracket.py` now saves the season-start per-row
+losses of `v7-preseason-role` and its `v6-context@season-start` reference beside its
+reports (`<stem>_p3_season_start_rows.parquet`), and `--origins-subset S1,S2` re-decides
+those two comparisons on the named origins from that file, fitting nothing; its csvs
+say `SENSITIVITY ONLY, not a look`. The `p3-v7-2026-10-08` run predates the parquet, so
+for this decision the subset cannot be recomputed without refitting, which would be a
+second look; the per-origin table in 23.7 is the sensitivity record. Asked for that
+stem, the mode refuses and says so.
+
+### 24.3 What the preseason columns contribute, and what they do not
+
+Reading v7 against the `v6-context@season-start` reference on identical rows:
+
+| Origin | Minutes: v6 part | Minutes: v7 total | Brier: v6 part | Brier: v7 total |
+|---|---:|---:|---:|---:|
+| S1 | +4.3% | +4.2% | 0.0% | +1.6% |
+| S2 | +1.8% | +2.2% | +0.7% | +3.0% |
+
+- **Minutes come from the box-score start family.** On S1 the v6 columns alone carry
+  all of the minutes gain and the six preseason columns add nothing (v7 is 0.1% worse
+  than v6 there); on S2 they add about 0.4 points. Who started recently, which the
+  regular-season box score records, is what the minutes model was missing (22.1).
+- **Availability comes from the preseason columns.** v6 alone moves Brier 0.0% on S1
+  and 0.7% on S2; v7 moves it 1.6% and 3.0%. Whether a player dressed for his current
+  team and played in the last two exhibition games is information about whether he will
+  play the opener that no regular-season history can hold.
+- **They do not carry a level.** 20.6 stands: preseason minutes are compressed toward
+  the middle and nothing here feeds them into a minutes level, a rate history or a
+  training row. The columns are role and presence signals that a tree reads beside
+  the history, and the fade makes every one of them neutral after a player's tenth
+  regular-season appearance, so for every player past that point the served model
+  reads six constant columns and behaves as a `v6-context` model.
+- **v6 alone was not promoted and is not promoted here.** 22.5 decided it on the
+  mid-season origins (+0.74% minutes); the season-start reference above is a same-rows
+  reading, not a second look. What is promoted is the 73-column set that passed its own
+  single look.
+
+### 24.4 Why the minutes priors are dead
+
+`preseason-role-prior` made first-10 minutes MAE 10.14% worse and
+`preseason-role-prior-newcomers` 2.05% worse. 23.3 named the risk before the look: a
+blend toward `pre_min_share * 240` imports the preseason compression, pulling stars
+down and the fringe up, and on returning players that costs more than any role change
+recovers. Restricting it to new-team and no-history rows shrank the cost and did not
+reverse it. Both are recorded as NOT PROMOTED and neither is served; the 20.6 tier prior
+stays on run B's Pre Season rows only. A tier-calibrated prior would be a new candidate
+with its own look.
+
+### 24.5 Why the production rate stays the EWMA
+
+No rate challenger has cleared the P3 bar: the residual rate (+0.65%, 22.1),
+`residual-rate-v6` (+0.73%, 22.5) and its reference rerun beside v7 (+0.74%) are all
+real and all under 1% on conditional PTS MAE. The composition is unchanged: `P(play)` and
+`E[minutes | plays]` now come from the v7 models, and every production stat is still
+`E[minutes | plays] x EWMA(stat per minute)` with the 13.1 halflives and estimators,
+from the artifact's own `ewma_state.parquet` snapshot taken at the same cutoff.
+
+### 24.6 The 13.2 change list
+
+| 13.2 item | v4 |
+|---|---|
+| 1. `CHAMPIONS` | unchanged |
+| 2. `RATE_HALFLIVES` | unchanged |
+| 3. `RATE_ESTIMATORS` | unchanged (STL `expanding`) |
+| 4. `RATE_TARGETS`, `COHERENCE_CONSTRAINTS`, `RATE_MINUTES_FLOOR` | unchanged |
+| 5. override constants, status sets, expiry, both `v3` switches, precedence | unchanged |
+| 6. the feature contract | **changed**: `FEATURE_SETS["v7-preseason-role"]`, 73 columns, `sha256 = 8646628e44369782ec83b7e54fa2aa8767415847c0ca5e7394ff99e34ecda08d` |
+| 7. training window, universe, refit | **changed**: refit; same window rule as `20260818` (24.8) |
+| 8. cold-start constants, cohort definitions | unchanged; the v6 and v7 construction constants are added to the freeze |
+| 9. horizons, serving horizon | unchanged (`gameday`) |
+| (13.4) the shadow | **changed**: `v3` (artifact `20260818`) replaces `v1` |
+
+`config.FEATURE_COLS` (51 columns, digest `914cdc17…`) and `config.FEATURE_VERSION =
+"v3"` are unchanged and still pinned: they are the contract the shadow artifact was
+fitted on. `config.SERVED_FEATURE_SET` stays `v3-honest` because it names the bracket
+incumbent and the feature set of every artifact whose metadata predates the
+`feature_set` key; what the protocol serves is `frozen.PROSPECTIVE_FEATURE_SET`.
+
+**The shadow change has a cost, stated rather than hidden.** F2 to F4 (13.5) are
+defined as the served `v3` against the `v1` shadow. With no `v1` shadow there is no
+pair to score, so under `v4` those three rows read `not computable` at every look. The
+scoring tool now pairs only a `feature_set=v1` shadow with a production run, so a
+`v3-honest` shadow can never be scored under a `v3_vs_v1` label. The `v7` against `v3`
+comparison the new shadow collects is real and every run carries it, but no
+falsification row was registered for it before this freeze; anything read from it
+during 2026-27 is EXPLORATORY under 13.6.
+
+### 24.7 Serving builds every v7 column
+
+`build_features` makes the 51 `v3` columns for an unplayed row; the other 22 are built
+by the serving phase of `daily_run.py` (new phase `serving`, between `prospective` and
+`statuses`) and by `predict.rebuild_context`, each from information dated strictly
+before the run's first scored date and each the same function the dataset build uses:
+
+| Columns | Built by | Reads |
+|---|---|---|
+| 7 stakes (`config.V5_STAKES_FEATURE_COLS`) | `matchup.attach_serving_stakes` | team logs before the window, plus each future date's team-games appended alone with no box score, through `team_game_context` |
+| 7 per-player box (`started_rate_10`, `started_last`, `starts_streak`, the four box EWMAs) | `box_context.attach_serving_box_history` | box details before the window, `merge_asof(..., allow_exact_matches=False)` |
+| 6 preseason role | `preseason_role.attach_serving_preseason_role` | `load_preseason_logs()` of the slate's season only, before the window; the fade counts that season's appearances from the played history |
+| 2 teammate starts (`team_starters_out_exp`, `exp_vacated_starts`) | `box_context.teammate_start_features` inside `predict.rebuild_context` | the same override-adjusted base `p_j` the `v3` expected columns are built from |
+
+`daily_run.py` no longer passes `--no-v7-candidate` to the dataset build. The serving
+inputs come from `PostgresSource` with the run's first scored date as its cutoff: team
+logs and box details for `config.SEASONS` plus the slate's season, preseason logs for
+the slate's season. A source with no box details fails the `serving` phase rather than
+serving a frame the model cannot read, and `predict.py` refuses any frame that lacks a
+column the artifact was fitted on, naming the column. A slate season with no preseason
+line before the window gives every row the no-preseason values (`pre_games_played =
+0`, the other five null), exactly what the dataset build gives a team with no preseason.
+
+**Parity is a test, not a claim.** `tests/test_serving_v7.py` rebuilds four 2024-25
+fixture dates (the opener, the second date, the fifth, the fifteenth, where some
+players have reached the fade and some have not) through the serving path from the
+history before each date, hands the serving builders the full inputs including every
+later game, and asserts that all 73 columns equal the dataset build's to 1e-9. It also
+asserts that a preseason line or a team log dated on the cutoff moves nothing, and that
+an OUT report moves the two teammate start columns through the corrected `p_j`.
+
+### 24.8 The artifact, and the literals filled after training
+
+`train.py --feature-set v7-preseason-role --version 20261008-v7` fits the availability
+model, the minutes model and the stage-1 base model on all 73 columns (it refuses a
+dataset missing any of them, and a training frame holding a preseason or postseason
+row), snapshots the EWMA state, and writes `models/20261008-v7/` with `feature_set:
+v7-preseason-role` and `feature_version: v7` in `metadata.json` and the registry. With
+no `--cutoff` it takes the cutoff of `models/20260818/metadata.json` (2026-04-13, the
+day after the last 2025-26 regular-season game), so the served artifact and its shadow
+saw the same history and `daily_run.py`'s shadow check (same cutoff) holds. It refuses
+`--version 20260818`. The fit runs in CI: ML Evaluate with `target: prod`,
+`build_dataset: true`, `version: 20261008-v7`, `train_feature_set: v7-preseason-role`
+uploads `ml-model-20261008-v7-<run id>` (the directory and `registry.json`) and writes
+each file's sha256 into the job summary.
+
+Until those bytes are committed the freeze holds placeholders, and the placeholder is
+not a pass: `test_no_pinned_checksum_is_a_placeholder` and every checksum test in
+`test_prospective_freeze.py` fail, and `daily_run.py`'s preflight refuses to serve.
+
+| File | sha256 |
+|---|---|
+| `availability_model.joblib` | `FILL-AFTER-TRAINING` |
+| `base_availability_model.joblib` | `FILL-AFTER-TRAINING` |
+| `ewma_state.parquet` | `FILL-AFTER-TRAINING` |
+| `feature_gain.csv` | `FILL-AFTER-TRAINING` |
+| `metadata.json` | `FILL-AFTER-TRAINING` |
+| `minutes_model.joblib` | `FILL-AFTER-TRAINING` |
+
+### 24.9 What remains frozen, and the new literals
+
+Every literal of 13.1, 17.3 and 21.4 except the served artifact, its feature contract
+and the shadow is unchanged and still asserted. The `20260818` checksums are kept as
+`PROSPECTIVE_V3_ARTIFACT_CHECKSUMS` and asserted against the shadow directory, its
+registry entry and, at run time, by `daily_run.py` before the shadow publishes. New in
+`frozen.py`:
+
+```python
+PROSPECTIVE_PROTOCOL_VERSION = "prospective_2026_27_v4"
+PROSPECTIVE_FEATURE_SET = "v7-preseason-role"
+PROSPECTIVE_FEATURE_VERSION = "v7"
+PROSPECTIVE_MODEL_VERSION = "20261008-v7"
+PROSPECTIVE_N_FEATURES = 73
+PROSPECTIVE_SHADOW_FEATURE_SETS = ("v3",)
+PROSPECTIVE_V7_CONSTANTS = {"v6_start_window": 10, "v6_usual_starter_rate": 0.5,
+    "v6_box_ewma_halflife": 10.0, "preseason_role_games": 2,
+    "preseason_role_fade_games": 10, "preseason_role_team_minutes": 240.0}
+```
+
+The bundle records `"frozen_at": "2026-10-08"` and `"refrozen_from":
+"prospective_2026_27_v3"`. `scoring.PROSPECTIVE_PREFIX` is still the bare
+`prospective_2026_27`, so a look pools every version by prefix, and `score_runs.py
+--look` starts its window at the new `frozen_at`.
+
+### 24.10 Open items
+
+- **The artifact.** Train it on prod, commit `models/20261008-v7/` and its registry
+  entry, fill the six checksums here and in `frozen.py`. Until then the daily run fails
+  preflight, so this branch must not merge before the artifact does.
+- **`config.SEASONS` stops at 2025-26.** The daily run's dataset rebuild reads
+  `SEASONS`, so once 2026-27 games are played its history will not hold them until
+  2026-27 is added. The serving inputs already read the slate's season, but the base
+  columns come from the history. This predates `v4` and is an operational step, not a
+  model change.
+- **No falsification row for v7 against v3.** 24.6. Registering one now, before
+  opening night, would be a further re-freeze; it is not done here.
+- **One season of preseason role per player at serving.** The columns read only the
+  2026 preseason. A player who joins a team after its last exhibition game reads a
+  known zero role for that team, as he would in the dataset.

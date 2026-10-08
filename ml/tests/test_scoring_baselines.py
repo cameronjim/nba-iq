@@ -328,6 +328,36 @@ class TestServedVsShadow:
         # assert
         assert pairs.empty
 
+    def test_the_v4_freezes_v3_shadow_is_not_f2_to_f4s_comparator(self):
+        # arrange
+        predictions, _ = paired_predictions(["2026-11-02"])
+        runs = shadow_runs()
+        runs["notes"] = [
+            f"{PROSPECTIVE_RUN_NOTE_LABEL}; feature_set=v7-preseason-role; channel=production",
+            f"{PROSPECTIVE_RUN_NOTE_LABEL}; feature_set=v3-honest; channel=shadow",
+        ]
+
+        # act
+        pairs = pair_runs(pivot_predictions(predictions), runs)
+
+        # assert
+        assert pairs.empty
+
+    def test_a_v1_shadow_never_pairs_with_another_shadow(self):
+        # arrange
+        predictions, _ = paired_predictions(["2026-11-02"])
+        runs = shadow_runs()
+        runs["notes"] = [
+            f"{PROSPECTIVE_RUN_NOTE_LABEL}; feature_set=v3-honest; channel=shadow",
+            f"{PROSPECTIVE_RUN_NOTE_LABEL}; feature_set=v1; channel=shadow",
+        ]
+
+        # act
+        pairs = pair_runs(pivot_predictions(predictions), runs)
+
+        # assert
+        assert pairs.empty
+
     def test_v3_beating_v1_is_a_negative_delta_on_all_three_endpoints(self):
         # arrange
         days = [d.date().isoformat() for d in pd.date_range("2026-11-02", periods=10)]
@@ -435,7 +465,7 @@ class TestLookCli:
 
         # assert
         assert args.look == "dec1"
-        assert args.since.isoformat() == "2026-10-02"
+        assert args.since.isoformat() == "2026-10-08"
         assert args.until.isoformat() == "2026-11-30"
         assert args.version == PROSPECTIVE_MODEL_VERSION
         assert "dec1" in args.md.name
