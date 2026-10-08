@@ -1,9 +1,11 @@
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import NamedTuple
+from zoneinfo import ZoneInfo
 
 from config import (
     ABBR_TO_TEAM_ID,
+    GAME_FINAL_AFTER_TIP_HOURS,
     TEAM_ID_TO_ABBR,
     GAME_LOG_CORRECTION_WINDOW_DAYS,
     PLAYIN_GAME_SUFFIXES,
@@ -804,6 +806,42 @@ def web_game_is_final(game: Mapping) -> bool:
         return False
 
 
+# schedule texts for a game that will not be played on its date.
+NOT_PLAYED_STATUS_PREFIXES = ("ppd", "postponed", "cancel")
+
+
+def game_ready_for_logs(
+    game_status: str | None,
+    game_date: date,
+    scheduled_at: datetime | None,
+    now: datetime,
+) -> bool:
+    # the schedule's status lags the game, so a tip long enough ago stands in
+    # for final; the page itself must still report final before any write.
+    status = (game_status or "").strip().lower()
+    if status.startswith(NOT_PLAYED_STATUS_PREFIXES):
+        return False
+    if status.startswith("final"):
+        return True
+    if scheduled_at is not None:
+        return now >= scheduled_at + timedelta(hours=GAME_FINAL_AFTER_TIP_HOURS)
+    return game_date < now.astimezone(ZoneInfo("America/New_York")).date()
+
+
+def select_games_for_web_logs(
+    candidates: Sequence[tuple[str, str, date, str | None, datetime | None]],
+    now: datetime,
+    limit: int | None,
+) -> list[tuple[str, str, date]]:
+    # candidates are (game id, season type, date, status, tip), oldest first.
+    ready = [
+        (game_id, season_type, game_date)
+        for game_id, season_type, game_date, status, scheduled_at in candidates
+        if game_ready_for_logs(status, game_date, scheduled_at, now)
+    ]
+    return ready if limit is None else ready[:limit]
+
+
 def web_inactive_rows(game: Mapping) -> list[dict]:
     # the page's per-team inactive list, in the boxscoresummaryv3 shape that
     # normalize_inactive_rows reads.
@@ -813,6 +851,17 @@ def web_inactive_rows(game: Mapping) -> list[dict]:
         for raw in team.get("inactives") or []:
             rows.append({"personId": raw.get("personId"), "teamId": team_id})
     return rows
+
+
+def game_status_rows_from_web(game: Mapping, game_id: str) -> list[dict]:
+    # appearances plus the inactive list, as the stats path derives them from
+    # the game log and boxscoresummary; dressed non-appearances land after as
+    # active-dnp rows from the box details.
+    box_players, _ = box_detail_rows_from_web(game, game_id)
+    played = [row for row in box_players if row["minutes"] is not None]
+    return derive_game_status_rows(
+        game_id, played, web_inactive_rows(game), WEB_BOX_SCORE_SOURCE
+    )
 
 
 def _web_line(stats: Mapping) -> tuple:

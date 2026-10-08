@@ -16,6 +16,8 @@ from config import (
     NBA_2K_DEFAULT_TEAM_TYPES,
     NBA_2K_TEAM_TYPES,
     SEASON,
+    WEB_BOX_DETAILS_RUN_LIMIT,
+    WEB_GAME_LOG_RUN_LIMIT,
 )
 # resolve_database_url is re-exported: check_migrations.py imports it, and the
 # --dev/--prod rules must not come to mean two things in two files.
@@ -189,12 +191,23 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--game-logs-web",
+        dest="game_logs_web",
+        action="store_true",
+        help=(
+            "run ONLY the nba.com box-score lane for --season: new game logs, "
+            "team logs and status rows, then box details, then the stint sync; "
+            f"at most {WEB_GAME_LOG_RUN_LIMIT} games per step unless --limit says otherwise"
+        ),
+    )
+    parser.add_argument(
         "--limit",
         dest="limit",
         type=int,
         default=None,
         help=(
-            "with --backfill-box-details or a web --backfill-game-logs, stop "
+            "with --backfill-box-details, a web --backfill-game-logs or "
+            "--game-logs-web, stop "
             "after this many games (default: all remaining). About 300 games "
             "take 30 minutes from stats.nba.com at its 5s delay, about 600 from "
             "the nba.com pages at their 2s delay"
@@ -310,6 +323,30 @@ def _truth_layer_phases(
     return schedule_ok
 
 
+def _web_truth_phases(
+    conn: psycopg2.extensions.connection,
+    season: str,
+    dry_run: bool,
+    limit: int | None,
+) -> None:
+    # the nba.com pages answer from ci where stats.nba.com does not. the logs
+    # step syncs stints itself whenever a game lands.
+    _run_phase(
+        "web game logs",
+        lambda: backfill_game_logs_from_web(
+            conn, season, dry_run=dry_run,
+            limit=limit or WEB_GAME_LOG_RUN_LIMIT, discover=False,
+        ),
+    )
+    _run_phase(
+        "web box details",
+        lambda: backfill_box_details(
+            conn, season, dry_run=dry_run,
+            limit=limit or WEB_BOX_DETAILS_RUN_LIMIT, source=BOX_SOURCE_WEB,
+        ),
+    )
+
+
 def _odds_lane(
     conn: psycopg2.extensions.connection, dry_run: bool, markets: tuple[str, ...]
 ) -> None:
@@ -411,6 +448,8 @@ def main(argv: list[str] | None = None) -> None:
             scrape_official_injuries(conn, dry_run=args.dry_run)
         elif args.reconcile_injuries_only:
             reconcile_player_injury_columns(conn, dry_run=args.dry_run)
+        elif args.game_logs_web:
+            _web_truth_phases(conn, args.season, args.dry_run, args.limit)
         elif args.odds_only:
             _odds_lane(conn, args.dry_run, props_markets)
         elif args.props_only:
@@ -461,6 +500,8 @@ def main(argv: list[str] | None = None) -> None:
                         box_source=BOX_SOURCE_STATS,
                     ),
                 )
+            else:
+                _web_truth_phases(conn, args.season, args.dry_run, args.limit)
             # after the schedule sync, so new games map to an nba game id.
             _run_phase(
                 "odds snapshot",

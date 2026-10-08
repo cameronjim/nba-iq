@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +35,8 @@ from config import (
     STATS_PROBE_TIMEOUT_SECONDS,
     TEAM_ID_TO_ABBR,
     V2_INACTIVE_UNRELIABLE_FROM,
+    WEB_BOX_DETAILS_RUN_LIMIT,
+    WEB_GAME_LOG_RUN_LIMIT,
 )
 from database import DryRunCursor, is_write_statement
 from fetching import box_score_game_from_next_data
@@ -77,6 +80,8 @@ from rows import (
     enumerate_game_id_groups,
     game_log_fetch_from,
     game_log_rows_from_web,
+    game_ready_for_logs,
+    game_status_rows_from_web,
     ingested_schedule_rows,
     merge_dnp_reason,
     normalize_inactive_rows,
@@ -90,6 +95,7 @@ from rows import (
     schedule_rows_from_nba_web,
     schedule_rows_from_team_logs,
     season_types_to_fetch,
+    select_games_for_web_logs,
     split_rows_on_season_boundary,
     supplement_player_log_rows,
     web_game_is_final,
@@ -2374,6 +2380,276 @@ class TestBoxDetailsWorkflow:
 
         assert "--backfill-game-logs" in text and "--backfill-box-details" in text
         assert 'default: "600"' in text
+
+
+class TestGameReadyForLogs:
+    NOW = datetime(2026, 10, 7, 13, 0, tzinfo=timezone.utc)
+
+    @pytest.mark.parametrize("status", ["Final", "Final/OT", " final "])
+    def test_a_final_schedule_status_is_ready(self, status):
+        tip = self.NOW - timedelta(minutes=30)
+
+        assert game_ready_for_logs(status, date(2026, 10, 7), tip, self.NOW) is True
+
+    @pytest.mark.parametrize("status", ["PPD", "Postponed", "Cancelled"])
+    def test_a_game_not_played_on_its_date_is_never_ready(self, status):
+        assert game_ready_for_logs(status, date(2026, 10, 1), None, self.NOW) is False
+
+    def test_a_tip_three_hours_ago_stands_in_for_final(self):
+        tip = self.NOW - timedelta(hours=3)
+
+        assert game_ready_for_logs("7:00 pm ET", date(2026, 10, 7), tip, self.NOW) is True
+
+    def test_a_game_still_inside_three_hours_of_tip_waits(self):
+        tip = self.NOW - timedelta(hours=2, minutes=59)
+
+        assert game_ready_for_logs("Q4 2:31", date(2026, 10, 7), tip, self.NOW) is False
+
+    def test_an_unknown_tip_waits_for_the_eastern_date_to_pass(self):
+        # 02:00 utc is still the evening before in eastern time.
+        late = datetime(2026, 10, 8, 2, 0, tzinfo=timezone.utc)
+
+        assert game_ready_for_logs(None, date(2026, 10, 7), None, late) is False
+        assert game_ready_for_logs(None, date(2026, 10, 6), None, late) is True
+
+    def test_a_future_game_is_not_ready(self):
+        tip = self.NOW + timedelta(hours=6)
+
+        assert game_ready_for_logs(None, date(2026, 10, 7), tip, self.NOW) is False
+
+
+class TestSelectGamesForWebLogs:
+    NOW = datetime(2026, 10, 7, 13, 0, tzinfo=timezone.utc)
+
+    def _candidate(self, game_id, game_date, status=None, tip=None):
+        return (game_id, "Pre Season", game_date, status, tip)
+
+    def test_only_ready_games_are_kept_oldest_first(self):
+        candidates = [
+            self._candidate("0012600001", date(2026, 10, 3), "Final"),
+            self._candidate("0012600002", date(2026, 10, 4), "PPD"),
+            self._candidate("0012600003", date(2026, 10, 6)),
+            self._candidate(
+                "0012600004", date(2026, 10, 7), "7:00 pm ET",
+                datetime(2026, 10, 7, 23, 0, tzinfo=timezone.utc),
+            ),
+        ]
+
+        assert select_games_for_web_logs(candidates, self.NOW, None) == [
+            ("0012600001", "Pre Season", date(2026, 10, 3)),
+            ("0012600003", "Pre Season", date(2026, 10, 6)),
+        ]
+
+    def test_the_cap_applies_after_the_filter(self):
+        candidates = [self._candidate("0012600000", date(2026, 10, 3), "PPD")] + [
+            self._candidate(f"00126000{n:02d}", date(2026, 10, 4), "Final")
+            for n in range(1, 60)
+        ]
+
+        games = select_games_for_web_logs(candidates, self.NOW, WEB_GAME_LOG_RUN_LIMIT)
+
+        assert len(games) == WEB_GAME_LOG_RUN_LIMIT
+        assert games[0][0] == "0012600001"
+
+    def test_the_run_caps_fit_the_workflow_timeout(self):
+        # two page delays per game across both steps, well inside 30 minutes.
+        seconds = (WEB_GAME_LOG_RUN_LIMIT + WEB_BOX_DETAILS_RUN_LIMIT) * 2.0 * 2
+        assert seconds < 10 * 60
+
+
+class CandidateCursor(FakeCursor):
+    def __init__(self, rows):
+        super().__init__()
+        self.rows = rows
+        self.params = None
+
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        self.params = params
+
+    def fetchall(self):
+        return self.rows
+
+
+class TestGamesNeedingWebLogs:
+    def test_the_query_is_bounded_by_the_eastern_date_and_filtered_after(self):
+        now = datetime(2026, 10, 8, 2, 0, tzinfo=timezone.utc)
+        conn = FakeConn()
+        conn.cursor_ = CandidateCursor([
+            ("0012600001", "Pre Season", date(2026, 10, 6), "Final", None),
+            ("0012600002", "Pre Season", date(2026, 10, 7), "7:30 pm ET",
+             datetime(2026, 10, 7, 23, 30, tzinfo=timezone.utc)),
+        ])
+
+        games = truth_layer._games_needing_web_logs(
+            conn, "2026-27", ["Pre Season"], now, limit=1
+        )
+
+        assert conn.cursor_.params == ("2026-27", ["Pre Season"], date(2026, 10, 7))
+        assert games == [("0012600001", "Pre Season", date(2026, 10, 6))]
+
+    def test_the_selection_reads_status_and_tip_up_to_today(self):
+        sql = " ".join(truth_layer.WEB_GAME_LOGS_NEEDED_SQL.split())
+
+        assert "s.game_status, s.scheduled_at" in sql
+        assert "s.game_date <= %s" in sql
+
+    def test_the_cron_lane_never_runs_discovery(self, monkeypatch):
+        monkeypatch.setattr(
+            truth_layer, "discover_schedule",
+            lambda *a, **k: pytest.fail("discovered from a cron lane"),
+        )
+        conn = FakeConn()
+        conn.cursor_ = ScheduleTypesCursor(["Regular Season"])
+
+        processed = truth_layer.backfill_game_logs_from_web(
+            conn, "2025-26", dry_run=True, delay_seconds=0,
+            now=datetime(2026, 9, 1, tzinfo=timezone.utc), discover=False,
+        )
+
+        assert processed == 0
+
+
+class TestGameStatusRowsFromWeb:
+    def _rows(self):
+        rows = game_status_rows_from_web(_web_game(), WEB_GAME_ID)
+        return {row["nba_player_id"]: row for row in rows}
+
+    def test_appearances_and_the_inactive_list_each_get_a_row(self):
+        rows = self._rows()
+
+        assert sorted(rows) == sorted(
+            ["1628983", "1631119", "1631095", "1631106", "1642850", "1627832"]
+        )
+        assert {row["source"] for row in rows.values()} == {"nba_web_boxscore"}
+        assert {row["nba_game_id"] for row in rows.values()} == {WEB_GAME_ID}
+
+    def test_an_appearance_played_with_his_minutes_and_start(self):
+        row = self._rows()["1628983"]
+
+        assert (row["team_id"], row["rostered"], row["played"]) == (OKC, True, True)
+        assert row["started"] is True and row["listed_inactive"] is False
+        assert row["minutes"] == round(47 + 13 / 60, 2)
+
+    def test_an_inactive_did_not_play_and_is_flagged(self):
+        row = self._rows()["1627832"]
+
+        assert (row["team_id"], row["played"], row["listed_inactive"]) == (HOU, False, True)
+        assert row["started"] is False and row["minutes"] is None
+
+    def test_dressed_dnps_are_left_to_the_box_details(self):
+        rows = self._rows()
+
+        assert "1631172" not in rows and "1627827" not in rows
+
+    def test_an_unplayed_game_yields_only_the_inactive_list(self):
+        rows = game_status_rows_from_web(_unplayed_web_game(), WEB_GAME_ID)
+
+        assert {row["listed_inactive"] for row in rows} == {True}
+
+
+class FakeClosableConn:
+    def close(self):
+        pass
+
+
+def _stub_full_scrape(monkeypatch, reachable):
+    calls = []
+
+    def record(name, result):
+        def fn(*args, **kwargs):
+            calls.append((name, kwargs))
+            return result
+        return fn
+
+    monkeypatch.setattr(run_scraper, "get_db", lambda target: FakeClosableConn())
+    monkeypatch.setattr(run_scraper, "stats_nba_reachable", lambda: reachable)
+    for name in (
+        "scrape_players", "scrape_teams", "scrape_scoreboard", "_injury_phases",
+        "scrape_roster_snapshot", "scrape_game_logs", "scrape_game_status",
+        "scrape_odds_snapshots", "backfill_game_logs_from_web", "backfill_box_details",
+    ):
+        monkeypatch.setattr(run_scraper, name, record(name, 0))
+    monkeypatch.setattr(run_scraper, "scrape_schedule", record("scrape_schedule", True))
+    return calls
+
+
+class TestWebGameLogLane:
+    def test_the_flag_parses(self):
+        assert _parse_args(["--game-logs-web"]).game_logs_web is True
+        assert _parse_args([]).game_logs_web is False
+
+    def test_the_full_scrape_reads_the_web_pages_when_stats_is_down(self, monkeypatch):
+        calls = _stub_full_scrape(monkeypatch, reachable=False)
+
+        run_scraper.main(["--dry-run"])
+
+        names = [name for name, _ in calls]
+        assert "scrape_game_logs" not in names and "scrape_game_status" not in names
+        assert names.index("scrape_schedule") < names.index("backfill_game_logs_from_web")
+        assert names.index("backfill_game_logs_from_web") < names.index("backfill_box_details")
+        kwargs = dict(calls)
+        assert kwargs["backfill_game_logs_from_web"] == {
+            "dry_run": True, "limit": WEB_GAME_LOG_RUN_LIMIT, "discover": False,
+        }
+        assert kwargs["backfill_box_details"] == {
+            "dry_run": True, "limit": WEB_BOX_DETAILS_RUN_LIMIT, "source": "web",
+        }
+
+    def test_the_full_scrape_skips_the_web_pages_when_stats_answers(self, monkeypatch):
+        calls = _stub_full_scrape(monkeypatch, reachable=True)
+
+        run_scraper.main([])
+
+        names = [name for name, _ in calls]
+        assert "scrape_game_logs" in names and "scrape_game_status" in names
+        assert "backfill_game_logs_from_web" not in names
+        assert "backfill_box_details" not in names
+
+    def test_the_lane_runs_only_the_web_steps(self, monkeypatch):
+        calls = _stub_full_scrape(monkeypatch, reachable=False)
+
+        run_scraper.main(["--game-logs-web", "--season", "2026-27", "--limit", "5"])
+
+        assert [name for name, _ in calls] == [
+            "backfill_game_logs_from_web", "backfill_box_details",
+        ]
+        assert {kwargs["limit"] for _, kwargs in calls} == {5}
+
+    def test_a_failed_log_step_still_runs_the_box_details(self, monkeypatch):
+        seasons = []
+
+        def boom(*args, **kwargs):
+            raise OSError("nba.com down")
+
+        monkeypatch.setattr(run_scraper, "backfill_game_logs_from_web", boom)
+        monkeypatch.setattr(
+            run_scraper, "backfill_box_details",
+            lambda *args, **kwargs: seasons.append(args[1]) or 0,
+        )
+
+        run_scraper._web_truth_phases(object(), "2026-27", False, None)
+
+        assert seasons == ["2026-27"]
+
+
+class TestScraperWorkflowLanes:
+    WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "scraper.yml"
+
+    def test_every_cron_line_has_a_case(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        crons = re.findall(r'- cron: "([^"]+)"', text)
+        cases = text.split('case "$SCHEDULE" in')[1]
+        assert len(crons) == 4
+        for cron in crons:
+            assert f'"{cron}"' in cases
+
+    def test_the_game_logs_lane_runs_after_the_last_west_coast_game(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+
+        assert '"0 9 * * *") flag="--game-logs-web" ;;' in text
+        assert "unknown schedule" in text
 
 
 class TestDiscoveryDates:
