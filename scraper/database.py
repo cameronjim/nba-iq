@@ -42,9 +42,19 @@ def resolve_database_url(target: str) -> str:
     sys.exit(1)
 
 
+DB_KEEPALIVE_OPTIONS: dict[str, int] = {
+    "keepalives": 1,
+    "keepalives_idle": 60,
+    "keepalives_interval": 15,
+    "keepalives_count": 4,
+}
+
+
 def get_db(target: str = TARGET_PROD) -> psycopg2.extensions.connection:
     url = resolve_database_url(target)
-    conn = psycopg2.connect(url)
+    # a long nba.com crawl leaves the socket idle; without keepalives the runner's
+    # network drops it and the next write fails with "SSL SYSCALL error: EOF".
+    conn = psycopg2.connect(url, **DB_KEEPALIVE_OPTIONS)
     conn.autocommit = True
     # a shell DATABASE_URL silently overrides .env, so "table does not exist" is
     # usually the wrong database rather than a missing migration. Host and db

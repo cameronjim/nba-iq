@@ -6234,3 +6234,33 @@ class TestRetentionCli:
 
         # assert
         assert retention_mode_error(args) is None
+
+
+class TestDbKeepalives:
+    def test_get_db_connects_with_tcp_keepalives(self, monkeypatch):
+        # arrange
+        import database
+        seen = {}
+
+        class FakeConn:
+            autocommit = False
+
+            def cursor(self):
+                raise RuntimeError("stop here")
+
+        def fake_connect(url, **kwargs):
+            seen.update(kwargs)
+            return FakeConn()
+
+        monkeypatch.setattr(database.psycopg2, "connect", fake_connect)
+        monkeypatch.setattr(database, "resolve_database_url", lambda target: "postgresql://x")
+
+        # act
+        try:
+            database.get_db()
+        except RuntimeError:
+            pass
+
+        # assert
+        assert seen["keepalives"] == 1
+        assert seen["keepalives_idle"] <= 60
