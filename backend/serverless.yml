@@ -61,3 +61,4 @@ package:
     - '!.env'
     - 'dist/**'
     - 'node_modules/**'
+    - 'certs/**'
