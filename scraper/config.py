@@ -299,6 +299,23 @@ PROPS_WINDOW_DAYS = 0
 PROPS_MONTHLY_BUDGET = 500
 # never let a snapshot take the account below this many credits.
 PROPS_RESERVE_CREDITS = 50
-# the odds lane fires every 30 minutes; without this gap one day of it would
-# spend the whole monthly quota.
+# the odds lane fires hourly; without this gap one day of it would spend the
+# whole monthly quota.
 PROPS_MIN_HOURS_BETWEEN_RUNS = 20
+
+# retention. the prod database is on neon's free plan, and nothing else ever
+# deletes a prediction or odds row.
+PREDICTION_RETENTION_DAYS = 14
+# per eastern day and channel, the last complete runs that keep their rows.
+PREDICTION_RETENTION_RUNS_PER_DAY = 1
+SHADOW_RETENTION_DAYS = 3
+# eastern, not utc: the rescore lane's last runs land after midnight utc but
+# belong to the same night's slate.
+PREDICTION_RETENTION_DAY_TZ = "America/New_York"
+# runs per delete statement; one run is about 90,000 rows.
+PREDICTION_PRUNE_BATCH_RUNS = 5
+ODDS_RETENTION_DAYS = 60
+ODDS_RETENTION_TABLES = ("odds_snapshots", "prop_odds_snapshots")
+ODDS_PRUNE_BATCH_ROWS = 20000
+# a rescore-lane run that wrote no quantile rows says so in its notes.
+HEADLINE_RUN_NOTE = "quantiles=headline"

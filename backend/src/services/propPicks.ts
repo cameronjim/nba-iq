@@ -1,6 +1,7 @@
 import { query } from '../db.js';
 import { americanToDecimal, americanToImpliedProb, noVigProbabilities } from './oddsMath.js';
 import { pivotUpcomingRows, type UpcomingPredictionRow } from './playerPredictions.js';
+import { runPredictionRowsSql } from './quantileSource.js';
 import {
   DEFAULT_VOID_RULE,
   PRA_COMPONENTS,
@@ -327,17 +328,17 @@ const SNAPSHOT_SQL = `
 `;
 
 const FORECAST_SQL = `
-  SELECT nba_player_id,
-         nba_game_id,
-         game_date,
-         stat,
-         quantile::float AS quantile,
-         value::float    AS value,
-         conditional
-  FROM player_game_predictions
-  WHERE prediction_run_id = $1
-    AND nba_player_id = ANY($2::text[])
-    AND stat = ANY($3::text[])
+  SELECT pgp.nba_player_id,
+         pgp.nba_game_id,
+         pgp.game_date,
+         pgp.stat,
+         pgp.quantile::float AS quantile,
+         pgp.value::float    AS value,
+         pgp.conditional
+  FROM player_game_predictions pgp
+  WHERE ${runPredictionRowsSql('pgp', '$1')}
+    AND pgp.nba_player_id = ANY($2::text[])
+    AND pgp.stat = ANY($3::text[])
 `;
 
 const INSERT_SQL = `

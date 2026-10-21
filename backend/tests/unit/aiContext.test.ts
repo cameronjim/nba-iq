@@ -192,12 +192,13 @@ function routeStore(fixture: StoreFixture): void {
         { nba_game_id: 'g2', home_team_abbr: 'NYK', away_team_abbr: 'LAL' },
       ]);
     }
+    // before the run read: a prediction read's quantile fallback also names prediction_runs
+    if (sql.includes('FROM player_game_predictions pgp')) return pgResult(fixture.predictions ?? []);
     if (sql.includes('FROM prediction_runs')) {
       return pgResult(
         fixture.run === false ? [] : [{ id: 41, model_version: 'v2.3', predicted_at: '2026-10-01T12:00:00Z' }]
       );
     }
-    if (sql.includes('FROM player_game_predictions pgp')) return pgResult(fixture.predictions ?? []);
     if (sql.includes('WITH played AS')) {
       return pgResult([
         { nba_player_id: '2544', games: 15, minutes: 33.5, pts: 25, pts_recent: 26, pts_sd: 5, last_played_date: '2026-04-10' },
@@ -285,7 +286,10 @@ describe('buildTeamContext projected window', () => {
     await buildTeamContext(1);
 
     // assert
-    const runReads = queryMock.mock.calls.filter(([sql]) => String(sql).includes('FROM prediction_runs'));
+    const runReads = queryMock.mock.calls.filter(
+      ([sql]) =>
+        String(sql).includes('FROM prediction_runs') && !String(sql).includes('FROM player_game_predictions')
+    );
     expect(runReads.length).toBeGreaterThan(0);
     for (const [, params] of runReads) expect(params).toContain(PRODUCTION_CHANNEL);
   });

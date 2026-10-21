@@ -35,6 +35,7 @@ from injury_reconcile import reconcile_player_injury_columns
 from injury_report import scrape_official_injuries
 from odds import scrape_odds_snapshots
 from props import parse_props_markets, scrape_prop_odds
+from retention import prune_odds, prune_predictions, vacuum_full
 from ratings_2k import sync_2k_ratings
 from roster_snapshot import scrape_roster_snapshot
 from scrapes import scrape_injuries, scrape_players, scrape_scoreboard, scrape_teams
@@ -270,7 +271,42 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="log what would be written and write nothing (reads still run)",
     )
+    parser.add_argument(
+        "--prune-predictions",
+        dest="prune_predictions",
+        action="store_true",
+        help=(
+            "run ONLY retention: delete the rows of prediction runs outside the "
+            "retention rules and odds snapshots older than the odds window. a "
+            "dry run unless --apply is given"
+        ),
+    )
+    parser.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="with --prune-predictions, actually delete (default: dry run)",
+    )
+    parser.add_argument(
+        "--vacuum-full",
+        dest="vacuum_full",
+        action="store_true",
+        help=(
+            "with --prune-predictions --apply, rewrite the pruned tables afterwards "
+            "so the database shrinks on disk; locks each table while it runs"
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def retention_mode_error(args: argparse.Namespace) -> str | None:
+    if (args.apply or args.vacuum_full) and not args.prune_predictions:
+        return "--apply and --vacuum-full only go with --prune-predictions"
+    if args.apply and args.dry_run:
+        return "--apply and --dry-run contradict each other"
+    if args.vacuum_full and not args.apply:
+        return "--vacuum-full needs --apply"
+    return None
 
 
 def _truth_layer_season_bounds(args: argparse.Namespace) -> tuple[str, str]:
@@ -355,6 +391,18 @@ def _odds_lane(
     _run_phase("prop odds snapshot", lambda: scrape_prop_odds(conn, dry_run=dry_run, markets=markets))
 
 
+def _retention(
+    conn: psycopg2.extensions.connection, dry_run: bool, vacuum: bool
+) -> None:
+    if dry_run:
+        logger.info("retention is a dry run: pass --apply to delete")
+    predictions = prune_predictions(conn, dry_run=dry_run)
+    odds = prune_odds(conn, dry_run=dry_run)
+    logger.info("retention result: predictions %s, odds %s", predictions, odds)
+    if vacuum and not dry_run:
+        vacuum_full(conn)
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
 
@@ -387,6 +435,11 @@ def main(argv: list[str] | None = None) -> None:
             logger.error("%s", e)
             sys.exit(2)
 
+    retention_error = retention_mode_error(args)
+    if retention_error:
+        logger.error("%s", retention_error)
+        sys.exit(2)
+
     if args.limit is not None and args.limit < 1:
         logger.error("--limit must be at least 1")
         sys.exit(2)
@@ -405,7 +458,9 @@ def main(argv: list[str] | None = None) -> None:
     schedule_ok = True
     conn = get_db(args.target)
     try:
-        if args.backfill_history:
+        if args.prune_predictions:
+            _retention(conn, dry_run=not args.apply, vacuum=args.vacuum_full)
+        elif args.backfill_history:
             backfill_history(conn, args.from_season, args.to_season)
         elif args.backfill_game_logs:
             source = resolve_box_source(args.source)

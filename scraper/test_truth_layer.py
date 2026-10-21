@@ -101,7 +101,9 @@ from rows import (
     web_game_is_final,
     web_inactive_rows,
 )
-from run_scraper import _parse_args, _run_phase
+import retention
+from retention import RunInfo, plan_prediction_retention, run_info_from_row
+from run_scraper import _parse_args, _run_phase, retention_mode_error
 from truth_layer import fetch_nba_web_schedule_rows
 
 # fixtures use the real column names from the endpoints this scraper calls,
@@ -5953,3 +5955,282 @@ class TestReconcileInjuriesCli:
     def test_the_reconcile_only_flag_parses(self):
         assert _parse_args(["--reconcile-injuries-only"]).reconcile_injuries_only is True
         assert _parse_args([]).reconcile_injuries_only is False
+
+
+RETENTION_NOW = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc)
+
+
+def _run(
+    run_id: int,
+    hours_ago: float,
+    channel: str = "production",
+    status: str = "complete",
+    n_rows: int = 100,
+    headline_only: bool = False,
+    pruned: bool = False,
+) -> RunInfo:
+    predicted_at = RETENTION_NOW - timedelta(hours=hours_ago)
+    return RunInfo(
+        id=run_id,
+        channel=channel,
+        status=status,
+        predicted_at=predicted_at,
+        information_as_of=predicted_at,
+        n_rows=n_rows,
+        headline_only=headline_only,
+        pruned=pruned,
+    )
+
+
+def _plan(runs: list[RunInfo]):
+    return plan_prediction_retention(runs, RETENTION_NOW, keep_days=14, keep_runs_per_day=1)
+
+
+class TestPredictionRetentionPlan:
+    def test_runs_older_than_the_window_are_pruned(self):
+        # arrange
+        runs = [_run(1, 24 * 20), _run(2, 24 * 15), _run(3, 24 * 2)]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert plan.prune == (1, 2)
+        assert plan.keep == (3,)
+        assert plan.rows_to_delete == 200
+        assert plan.reasons[1] == retention.REASON_EXPIRED
+
+    def test_only_the_last_complete_run_of_an_eastern_day_keeps_its_rows(self):
+        # arrange: 16:00, 20:00 and 02:30 utc next day are one eastern evening
+        first = (RETENTION_NOW - timedelta(days=3)).replace(hour=16, minute=0)
+        runs = [
+            RunInfo(1, "production", "complete", first, None, 100),
+            RunInfo(2, "production", "complete", first + timedelta(hours=4), None, 100),
+            RunInfo(3, "production", "complete", first + timedelta(hours=10, minutes=30), None, 100),
+            _run(4, 1),
+        ]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert plan.prune == (1, 2)
+        assert plan.reasons[1] == retention.REASON_SUPERSEDED
+        assert 3 in plan.keep
+
+    def test_an_incomplete_run_never_counts_as_the_last_of_its_day(self):
+        # arrange
+        runs = [_run(1, 30), _run(2, 28, status="failed"), _run(3, 1)]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert plan.prune == (2,)
+
+    def test_the_newest_complete_production_run_is_never_pruned(self):
+        # arrange: every run is past the window
+        runs = [_run(1, 24 * 40), _run(2, 24 * 30), _run(3, 24 * 25, status="failed")]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert plan.keep == (2,)
+        assert plan.reasons[2] == retention.REASON_NEWEST
+        assert plan.prune == (1, 3)
+
+    def test_shadow_runs_keep_only_three_days(self):
+        # arrange
+        runs = [
+            _run(1, 24 * 5, channel="shadow"),
+            _run(2, 24 * 2, channel="shadow"),
+            _run(3, 1, channel="shadow"),
+            _run(4, 24 * 5),
+            _run(5, 1),
+        ]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert plan.prune == (1,)
+        assert plan.reasons[1] == retention.REASON_SHADOW_EXPIRED
+        assert set(plan.keep) == {2, 3, 4, 5}
+
+    def test_already_pruned_runs_are_skipped(self):
+        # arrange
+        runs = [_run(1, 24 * 30, pruned=True, n_rows=0), _run(2, 24 * 20), _run(3, 1)]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert plan.prune == (2,)
+        assert 1 not in plan.keep
+
+    def test_a_headline_day_also_keeps_its_last_full_run(self):
+        # arrange
+        runs = [
+            _run(1, 30), _run(2, 26, headline_only=True),
+            _run(3, 6), _run(4, 5, headline_only=True),
+        ]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert set(plan.keep) == {1, 2, 3, 4}
+        assert plan.reasons[1] == retention.REASON_LAST_FULL_OF_DAY
+
+    def test_the_newest_full_run_is_kept_as_the_quantile_source(self):
+        # arrange: the only full run is past the window, the newest is headline-only
+        runs = [_run(1, 24 * 20), _run(2, 1, headline_only=True)]
+
+        # act
+        plan = _plan(runs)
+
+        # assert
+        assert plan.keep == (1, 2)
+        assert plan.reasons[1] == retention.REASON_NEWEST_FULL
+
+    def test_a_row_from_the_runs_query_reads_the_headline_note(self):
+        # arrange
+        naive = datetime(2026, 10, 20, 16, 0)
+        row = (7, "production", "complete", naive, None, "x; quantiles=headline", False, 42)
+
+        # act
+        run = run_info_from_row(row)
+
+        # assert
+        assert run.headline_only is True
+        assert run.predicted_at.tzinfo is not None
+        assert run.n_rows == 42
+
+
+class RetentionCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self.rowcount = 0
+        self._result = []
+
+    def execute(self, sql, params=None):
+        text = " ".join(sql.split())
+        if text.startswith("SELECT r.id"):
+            self._result = self.conn.run_rows
+        elif text.startswith("SELECT COUNT(*)"):
+            self._result = [(self.conn.odds_count,)]
+        else:
+            self.conn.writes.append((text.split()[0], params))
+            self.rowcount = 0
+            self._result = []
+
+    def fetchall(self):
+        return self._result
+
+    def fetchone(self):
+        return self._result[0] if self._result else None
+
+    def close(self):
+        pass
+
+
+class RetentionConn:
+    def __init__(self, run_rows, odds_count=0):
+        self.run_rows = run_rows
+        self.odds_count = odds_count
+        self.writes = []
+
+    def cursor(self):
+        return RetentionCursor(self)
+
+
+def _run_rows(count: int, hours_apart: float = 24 * 4) -> list[tuple]:
+    return [
+        (
+            i + 1, "production", "complete",
+            RETENTION_NOW - timedelta(hours=hours_apart * (count - i)),
+            None, None, False, 1000,
+        )
+        for i in range(count)
+    ]
+
+
+class TestPrunePredictions:
+    def test_a_dry_run_writes_nothing(self):
+        # arrange
+        conn = RetentionConn(_run_rows(8), odds_count=5)
+
+        # act
+        result = retention.prune_predictions(conn, dry_run=True, now=RETENTION_NOW)
+        odds = retention.prune_odds(conn, dry_run=True, now=RETENTION_NOW)
+
+        # assert
+        assert conn.writes == []
+        assert result["runs_pruned"] == 5
+        assert result["rows_planned"] == 5000
+        assert result["rows_deleted"] == 0
+        assert odds["odds_snapshots"] == {"rows_planned": 5, "rows_deleted": 0}
+
+    def test_dry_run_is_the_default(self):
+        # arrange
+        conn = RetentionConn(_run_rows(8))
+
+        # act
+        retention.prune_predictions(conn, now=RETENTION_NOW)
+        retention.prune_odds(conn, now=RETENTION_NOW)
+
+        # assert
+        assert conn.writes == []
+
+    def test_apply_deletes_in_batches_of_five_runs_and_marks_them(self):
+        # arrange: runs every 2 days, so the 13 older than 14 days go
+        conn = RetentionConn(_run_rows(20, hours_apart=48))
+
+        # act
+        retention.prune_predictions(conn, dry_run=False, now=RETENTION_NOW)
+
+        # assert
+        deletes = [params[0] for verb, params in conn.writes if verb == "DELETE"]
+        marks = [params[1] for verb, params in conn.writes if verb == "UPDATE"]
+        assert deletes == [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10], [11, 12, 13]]
+        assert marks == deletes
+
+    def test_odds_cutoff_is_sixty_days_back(self):
+        # act + assert
+        assert retention.odds_cutoff(RETENTION_NOW) == RETENTION_NOW - timedelta(days=60)
+
+    def test_only_retention_tables_reach_the_sql(self):
+        # act + assert
+        with pytest.raises(ValueError):
+            retention._retention_table("users")
+
+
+class TestRetentionCli:
+    def test_prune_is_a_dry_run_unless_applied(self):
+        # act
+        dry = _parse_args(["--prune-predictions"])
+        applied = _parse_args(["--prod", "--prune-predictions", "--apply"])
+
+        # assert
+        assert dry.prune_predictions is True and dry.apply is False
+        assert applied.apply is True
+        assert retention_mode_error(dry) is None
+        assert retention_mode_error(applied) is None
+
+    def test_apply_without_prune_or_with_dry_run_is_refused(self):
+        # act + assert
+        assert retention_mode_error(_parse_args(["--apply"])) is not None
+        assert retention_mode_error(
+            _parse_args(["--prune-predictions", "--apply", "--dry-run"])
+        ) is not None
+        assert retention_mode_error(
+            _parse_args(["--prune-predictions", "--vacuum-full"])
+        ) is not None
+
+    def test_vacuum_full_goes_with_apply(self):
+        # act
+        args = _parse_args(["--prune-predictions", "--apply", "--vacuum-full"])
+
+        # assert
+        assert retention_mode_error(args) is None

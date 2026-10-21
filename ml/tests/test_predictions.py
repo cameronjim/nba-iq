@@ -34,8 +34,12 @@ from fnba_ml.store import (
     STATUS_CAPTURED_AT_STAT,
     STATUS_OVERRIDE,
     UNCOND_SUFFIX,
+    HEADLINE_RUN_NOTE,
+    WRITE_QUANTILES_ALL,
+    WRITE_QUANTILES_HEADLINE,
     build_prediction_rows,
     build_run_record,
+    rows_to_write,
     write_predictions,
 )
 
@@ -640,3 +644,42 @@ class TestFeatureSetContext:
         # assert
         assert base is not None
         assert predict.uses_teammate_context(metadata) is True
+
+
+def test_headline_rows_are_every_quantile_null_row_and_nothing_else():
+    frame = prediction_frame(**{OVERRIDE_REASON: ["status_out", None]})
+    rows = build_prediction_rows(frame, TARGETS)
+
+    kept = rows_to_write(rows, WRITE_QUANTILES_HEADLINE)
+
+    assert kept == [r for r in rows if r["quantile"] is None]
+    assert len(kept) < len(rows)
+    assert {r["stat"] for r in kept} >= {PROB_ACTIVE, STATUS_OVERRIDE, "pts", "pts_uncond"}
+
+
+def test_all_rows_is_the_default_and_unchanged():
+    rows = build_prediction_rows(prediction_frame(), TARGETS)
+
+    assert rows_to_write(rows) is rows
+    assert rows_to_write(rows, WRITE_QUANTILES_ALL) is rows
+
+
+def test_an_unknown_write_quantiles_choice_is_refused():
+    with pytest.raises(ValueError):
+        rows_to_write([], "some")
+
+
+def test_predict_parses_write_quantiles_with_all_as_the_default():
+    assert predict.parse_args(["--version", "v"]).write_quantiles == WRITE_QUANTILES_ALL
+    parsed = predict.parse_args(["--version", "v", "--write-quantiles", "headline"])
+    assert parsed.write_quantiles == WRITE_QUANTILES_HEADLINE
+    with pytest.raises(SystemExit):
+        predict.parse_args(["--version", "v", "--write-quantiles", "p90"])
+
+
+def test_a_headline_run_says_so_in_its_notes_and_a_full_run_does_not():
+    headline = predict.run_notes(0, 10, "slate", write_quantiles=WRITE_QUANTILES_HEADLINE)
+    full = predict.run_notes(0, 10, "slate")
+
+    assert headline.endswith(f"; {HEADLINE_RUN_NOTE}")
+    assert HEADLINE_RUN_NOTE not in full

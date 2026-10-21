@@ -12,6 +12,7 @@ import {
   type RunSummary,
 } from './slate.js';
 import { pivotUpcomingRows, type UpcomingPredictionRow } from './playerPredictions.js';
+import { runPredictionRowsSql } from './quantileSource.js';
 import { MAX_WINDOW_DAYS, windowRange, type WatchlistWindow } from './watchlist.js';
 import {
   DEPENDENCE_RHO,
@@ -123,8 +124,8 @@ export async function fetchRosterPredictions(
               pgp.value::float AS value,
               pgp.conditional
        FROM player_game_predictions pgp
-       JOIN prediction_runs pr ON pr.id = pgp.prediction_run_id
-       WHERE pgp.prediction_run_id = $1
+       JOIN prediction_runs pr ON pr.id = $1
+       WHERE ${runPredictionRowsSql('pgp', '$1')}
          AND pr.channel = $2
          AND pgp.nba_player_id = ANY($3)
          AND pgp.game_date >= $4

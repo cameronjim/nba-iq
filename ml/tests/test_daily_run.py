@@ -1534,3 +1534,41 @@ class TestStatusScopeColumns:
 
         # assert
         pd.testing.assert_frame_equal(out, statuses)
+
+
+class TestWriteQuantiles:
+    def test_the_rescore_lane_defaults_run_b_to_headline(self) -> None:
+        assert daily_run.extended_write_quantiles(True, None) == "headline"
+
+    def test_the_scheduled_lane_keeps_every_row(self) -> None:
+        assert daily_run.extended_write_quantiles(False, None) == "all"
+
+    def test_an_explicit_choice_wins_in_either_lane(self) -> None:
+        assert daily_run.extended_write_quantiles(True, "all") == "all"
+        assert daily_run.extended_write_quantiles(False, "headline") == "headline"
+
+    def test_the_flag_parses_and_defaults_to_lane_dependent(self) -> None:
+        assert daily_run.parse_args([]).write_quantiles is None
+        parsed = daily_run.parse_args(["--if-status-changed", "--write-quantiles", "all"])
+        assert parsed.write_quantiles == "all"
+
+    def test_predict_argv_passes_headline_through_and_omits_the_default(self) -> None:
+        # arrange
+        import predict  # noqa: PLC0415
+
+        common: dict[str, object] = dict(
+            dataset_path=Path("p.parquet"), models_dir=Path("models"),
+            out_path=Path("o.parquet"), notes="n", horizon="none",
+            window_start=date(2026, 10, 20),
+            statuses_as_of=pd.Timestamp("2026-10-20T20:45:00Z"),
+            statuses_path=None, history_through=None, write_db=True,
+        )
+
+        # act
+        full = daily_run.predict_argv(**common)
+        headline = daily_run.predict_argv(**common, write_quantiles="headline")
+
+        # assert
+        assert "--write-quantiles" not in full
+        assert predict.parse_args(full).write_quantiles == "all"
+        assert predict.parse_args(headline).write_quantiles == "headline"
