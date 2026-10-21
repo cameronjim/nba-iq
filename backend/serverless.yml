@@ -50,7 +50,7 @@ functions:
     timeout: 120
     events:
       - schedule:
-          rate: rate(30 minutes)
+          rate: rate(1 hour)
           enabled: true
 
 package:

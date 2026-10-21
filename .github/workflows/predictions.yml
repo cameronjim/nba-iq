@@ -30,6 +30,10 @@
 # nothing; otherwise it publishes a normal run (A if it qualifies, then B) whose notes
 # carry `rescore=status_change; changed_players=N` and whose registry entries carry
 # `trigger: status_change`. The 16:00 lane is unchanged. See MODEL.md 20.3.
+# A rescore's run B is written with `--write-quantiles headline` (no P10/P50/P90 rows,
+# notes token `quantiles=headline`) to keep the Neon free-plan storage in bounds; the
+# backend reads those quantiles from the newest full run. Run A and the shadows keep
+# every row. `db_retention.yml` prunes old runs weekly.
 #
 # Python 3.14, not the 3.12 the scraper uses. See the header of ml/requirements.txt:
 # this job unpickles the frozen scikit-learn 1.9.0 serving artifact, and 3.12 cannot

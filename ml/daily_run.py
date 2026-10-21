@@ -42,7 +42,8 @@ questionable-class, out-class) at the newest complete production run's boundary 
 the class now, and exits 0 having written nothing when no player on a team with an
 untipped game in the extended window moved. Otherwise it is a normal run whose notes
 carry ``rescore=status_change; changed_players=N`` and whose registry entries carry
-``trigger: status_change`` (MODEL.md 20.3).
+``trigger: status_change`` (MODEL.md 20.3). Its run B stores headline rows only
+(``--write-quantiles``); run A and the shadows store everything.
 
 THE OFFSEASON NO-OP IS THE NORMAL CASE FOR MOST OF THE YEAR. No games in the extended
 window means exit 0 having written nothing: not a failure, not an empty run row, nothing. A
@@ -117,7 +118,13 @@ from fnba_ml.overrides import (  # noqa: E402
     normalise_status,
 )
 from fnba_ml.preseason import PRESEASON_PRIOR_OFF, PRESEASON_PRIOR_ON  # noqa: E402
-from fnba_ml.store import PRODUCTION_CHANNEL, SHADOW_CHANNEL  # noqa: E402
+from fnba_ml.store import (  # noqa: E402
+    PRODUCTION_CHANNEL,
+    SHADOW_CHANNEL,
+    WRITE_QUANTILES_ALL,
+    WRITE_QUANTILES_CHOICES,
+    WRITE_QUANTILES_HEADLINE,
+)
 from fnba_ml.prospective import (  # noqa: E402
     SOURCE_PROSPECTIVE,
     attach_serving_v7_columns,
@@ -981,6 +988,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "changed since the newest production run's information boundary; "
              "otherwise exit 0 having written nothing",
     )
+    parser.add_argument(
+        "--write-quantiles", choices=WRITE_QUANTILES_CHOICES, default=None,
+        help="which rows run B stores: 'headline' drops its P10/P50/P90 rows. default "
+             "headline with --if-status-changed, else all. run A and the shadows "
+             "always store everything, so the prospective record keeps its bands",
+    )
     args = parser.parse_args(argv)
     if args.extended_days < args.window_days:
         parser.error(
@@ -1309,6 +1322,9 @@ def _run(args: argparse.Namespace, started: float) -> int:  # noqa: PLR0915
             args.out_dir / "predictions_extended.parquet", extended,
             predict_script.NO_HORIZON, window_start, statuses_as_of,
             statuses_path, history_through, preseason_prior=PRESEASON_PRIOR_ON,
+            write_quantiles=extended_write_quantiles(
+                args.if_status_changed, args.write_quantiles
+            ),
         )
         runs.append({**run_b, "notes": extended})
 
@@ -1383,6 +1399,7 @@ def predict_argv(
     channel: str = PRODUCTION_CHANNEL,
     trigger: str = predict_script.TRIGGER_SCHEDULE,
     preseason_prior: str = PRESEASON_PRIOR_OFF,
+    write_quantiles: str = WRITE_QUANTILES_ALL,
 ) -> list[str]:
     """the predict.py argv for one daily run; production unless it is a shadow."""
     argv = [
@@ -1405,7 +1422,16 @@ def predict_argv(
         argv.append("--write-db")
     if preseason_prior != PRESEASON_PRIOR_OFF:
         argv += ["--preseason-prior", preseason_prior]
+    if write_quantiles != WRITE_QUANTILES_ALL:
+        argv += ["--write-quantiles", write_quantiles]
     return argv
+
+
+def extended_write_quantiles(if_status_changed: bool, requested: str | None) -> str:
+    """what run B stores: the rescore lane's default is headline, the 16:00 lane's all."""
+    if requested is not None:
+        return requested
+    return WRITE_QUANTILES_HEADLINE if if_status_changed else WRITE_QUANTILES_ALL
 
 
 def _trigger(args: argparse.Namespace) -> str:
@@ -1428,6 +1454,7 @@ def _publish_run(
     version: str = PROSPECTIVE_MODEL_VERSION,
     channel: str = PRODUCTION_CHANNEL,
     preseason_prior: str = PRESEASON_PRIOR_OFF,
+    write_quantiles: str = WRITE_QUANTILES_ALL,
 ) -> dict[str, object]:
     """score one frame through predict.py and report where it went."""
     log.info("run %s notes : %s", name, notes)
@@ -1439,7 +1466,7 @@ def _publish_run(
         dataset_path, args.models_dir, out_path, notes, horizon, window_start,
         statuses_as_of, statuses_path, history_through, write_db=not args.dry_run,
         version=version, channel=channel, trigger=_trigger(args),
-        preseason_prior=preseason_prior,
+        preseason_prior=preseason_prior, write_quantiles=write_quantiles,
     )
     if args.dry_run:
         log.warning("--dry-run: predict.py will NOT be given --write-db")

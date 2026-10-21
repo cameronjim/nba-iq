@@ -1,6 +1,7 @@
 import { query } from '../db.js';
 import { etIsoDate } from './dates.js';
 import { mean, stddev } from './analytics.js';
+import { runPredictionRowsSql } from './quantileSource.js';
 import {
   baselineDescriptor,
   deltaOf,
@@ -530,7 +531,7 @@ async function fetchPredictions(
               ${CONDITIONAL_PIVOT_SQL}
        FROM player_game_predictions pgp
        LEFT JOIN players p ON p.nba_id = pgp.nba_player_id
-       WHERE pgp.prediction_run_id = $1
+       WHERE ${runPredictionRowsSql('pgp', '$1')}
          AND pgp.game_date = $2${playerFilter}
        GROUP BY pgp.nba_game_id, pgp.nba_player_id`,
       [

@@ -1,0 +1,68 @@
+# Database retention.
+#
+# Deletes the player_game_predictions rows of runs outside the retention rules
+# in scraper/retention.py (14 days; past that a run keeps only its
+# prediction_runs row, marked pruned_at) and odds_snapshots /
+# prop_odds_snapshots rows older than 60 days. The newest complete production
+# run is never pruned. Needs migration 021_prediction_run_pruning.sql applied
+# to the target first.
+#
+# A manual dispatch is a dry run unless apply is ticked: it prints the plan and
+# writes nothing. The weekly cron applies against prod.
+name: DB Retention
+
+on:
+  schedule:
+    # sunday 08:00 utc: after the night's last rescore run, before the 15:00 lanes.
+    - cron: "0 8 * * 0"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Database to prune"
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
+      apply:
+        description: "Actually delete (unticked = dry run, print the plan only)"
+        type: boolean
+        default: false
+      vacuum_full:
+        description: "After an apply, VACUUM FULL the pruned tables so the files shrink (locks each table while it runs)"
+        type: boolean
+        default: false
+
+# one pruner per database; a queued run waits rather than killing one mid-batch.
+concurrency:
+  group: db-retention-${{ inputs.target || 'prod' }}
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune ${{ inputs.target || 'prod' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # the scraper's database.py reads the dev branch from DATABASE_URL_DEV.
+      DATABASE_URL_DEV: ${{ secrets.DEV_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scraper/requirements.txt
+
+      # the cron has no inputs: it is prod with apply. a dispatch follows its inputs.
+      - name: Prune (${{ (github.event_name == 'schedule' || inputs.apply) && 'APPLY' || 'dry run' }})
+        env:
+          TARGET: ${{ inputs.target || 'prod' }}
+          APPLY: ${{ (github.event_name == 'schedule' || inputs.apply) && '--apply' || '' }}
+          VACUUM: ${{ inputs.apply && inputs.vacuum_full && '--vacuum-full' || '' }}
+        run: python scraper/run_scraper.py --$TARGET --prune-predictions $APPLY $VACUUM

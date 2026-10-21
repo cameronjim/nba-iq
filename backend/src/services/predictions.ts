@@ -1,5 +1,6 @@
 import { query } from '../db.js';
 import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL } from './slate.js';
+import { runPredictionRowsSql } from './quantileSource.js';
 
 
 const UNCOND_SUFFIX = '_uncond';
@@ -217,9 +218,10 @@ const LATEST_PREDICTION_SQL = `
          p.value::float    AS value,
          p.conditional
   FROM player_game_predictions p
-  JOIN latest_run r ON r.id = p.prediction_run_id
+  CROSS JOIN latest_run r
   JOIN next_game g  ON g.game_date = p.game_date
   WHERE p.nba_player_id = $1
+    AND ${runPredictionRowsSql('p', 'r.id')}
 `;
 
 export async function getLatestPredictionForPlayer(

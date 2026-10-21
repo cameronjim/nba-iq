@@ -88,10 +88,15 @@ from fnba_ml.overrides import (  # noqa: E402
 )
 from fnba_ml.scenarios import scenario_summary, score_with_scenarios  # noqa: E402
 from fnba_ml.store import (  # noqa: E402
+    HEADLINE_RUN_NOTE,
     PRODUCTION_CHANNEL,
     RUN_CHANNELS,
+    WRITE_QUANTILES_ALL,
+    WRITE_QUANTILES_CHOICES,
+    WRITE_QUANTILES_HEADLINE,
     build_prediction_rows,
     build_run_record,
+    rows_to_write,
     utc_now,
     write_predictions,
 )
@@ -156,6 +161,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         default=PRESEASON_PRIOR_OFF,
                         help="replace Pre Season conditional minutes with the tier prior "
                              "(MODEL.md 20.6); regular-season rows are untouched")
+    parser.add_argument("--write-quantiles", choices=WRITE_QUANTILES_CHOICES,
+                        default=WRITE_QUANTILES_ALL,
+                        help="with --write-db, 'headline' stores only the quantile-NULL "
+                             "rows (expectations, prob_active, status_override) and "
+                             "notes the run as such; the parquet keeps everything")
     parser.add_argument("--scenarios", action="store_true",
                         help="score team-games with a questionable or doubtful star "
                              "once per play/sit world and mix the outputs (off by "
@@ -508,6 +518,7 @@ def run_notes(
     notes: str | None,
     coherence: str = COHERENCE_NONE,
     preseason_prior: str = PRESEASON_PRIOR_OFF,
+    write_quantiles: str = WRITE_QUANTILES_ALL,
 ) -> str:
     """the run-level notes: cold-start count, user text, coherence, preseason prior.
 
@@ -521,6 +532,7 @@ def run_notes(
         f"coherence={coherence}" if coherence != COHERENCE_NONE else None,
         f"preseason_prior={preseason_prior}"
         if preseason_prior != PRESEASON_PRIOR_OFF else None,
+        HEADLINE_RUN_NOTE if write_quantiles == WRITE_QUANTILES_HEADLINE else None,
     ]))
 
 
@@ -549,9 +561,12 @@ def write_run(
     coherence: str = COHERENCE_NONE,
     trigger: str = TRIGGER_SCHEDULE,
     preseason_prior: str = PRESEASON_PRIOR_OFF,
+    write_quantiles: str = WRITE_QUANTILES_ALL,
 ) -> tuple[int, int]:
     """build the rows, insert them in one transaction, link the run back."""
-    rows = build_prediction_rows(predictions, TARGETS, QUANTILE_LEVELS)
+    rows = rows_to_write(
+        build_prediction_rows(predictions, TARGETS, QUANTILE_LEVELS), write_quantiles
+    )
     predicted_at = utc_now()
     information = (
         as_utc(information_as_of).to_pydatetime() if information_as_of is not None else None
@@ -605,6 +620,7 @@ def write_run(
             "coherence": coherence,
             "preseason_prior": preseason_prior,
             "preseason_prior_rows": preseason_adjusted_rows(predictions),
+            "write_quantiles": write_quantiles,
             "override_policy": DEFAULT_POLICY.as_dict() if overridden else None,
         },
     )
@@ -718,7 +734,8 @@ def main(argv: list[str] | None = None) -> int:
     # able to read, and an absent note cannot say it.
     cold_rows = int(predictions[PROSPECTIVE_COLD_START_FLAG].sum())
     notes = run_notes(
-        cold_rows, len(predictions), notes, args.coherence, args.preseason_prior
+        cold_rows, len(predictions), notes, args.coherence, args.preseason_prior,
+        args.write_quantiles,
     )
 
     if args.write_db and source == BIASED_UNIVERSE:
@@ -760,6 +777,7 @@ def main(argv: list[str] | None = None) -> int:
             coherence=args.coherence,
             trigger=args.trigger,
             preseason_prior=args.preseason_prior,
+            write_quantiles=args.write_quantiles,
         )
 
     summary = override_summary(predictions)

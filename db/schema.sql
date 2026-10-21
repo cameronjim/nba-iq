@@ -553,7 +553,9 @@ CREATE TABLE IF NOT EXISTS prediction_runs (
     -- the latest injury-report instant the run was allowed to see.
     information_as_of TIMESTAMPTZ,
     -- the last game date whose outcomes were in the feature frame.
-    history_through DATE
+    history_through DATE,
+    -- migration 021: set when retention deleted the run's prediction rows.
+    pruned_at TIMESTAMPTZ
 );
 
 -- one row per (run, player, game, stat, quantile). Long format because the stat

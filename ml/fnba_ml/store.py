@@ -112,6 +112,13 @@ RUN_CHANNELS: tuple[str, ...] = ("production", "shadow")
 PRODUCTION_CHANNEL = "production"
 SHADOW_CHANNEL = "shadow"
 
+# 'headline' drops the P10/P50/P90 rows; the backend reads them from the newest full run instead.
+WRITE_QUANTILES_ALL = "all"
+WRITE_QUANTILES_HEADLINE = "headline"
+WRITE_QUANTILES_CHOICES: tuple[str, ...] = (WRITE_QUANTILES_ALL, WRITE_QUANTILES_HEADLINE)
+# backend and scraper match on this notes token.
+HEADLINE_RUN_NOTE = "quantiles=headline"
+
 ROW_COLUMNS: tuple[str, ...] = (
     "nba_player_id",
     "nba_game_id",
@@ -247,6 +254,17 @@ def build_prediction_rows(
     if dropped:
         log.warning("%d prediction values were not finite and were not written", dropped)
     return rows
+
+
+def rows_to_write(
+    rows: list[dict[str, object]], write_quantiles: str = WRITE_QUANTILES_ALL
+) -> list[dict[str, object]]:
+    """the rows a run stores under ``--write-quantiles``."""
+    if write_quantiles == WRITE_QUANTILES_ALL:
+        return rows
+    if write_quantiles == WRITE_QUANTILES_HEADLINE:
+        return [row for row in rows if row["quantile"] is None]
+    raise ValueError(f"unknown write_quantiles {write_quantiles!r}")
 
 
 def _utc(value: datetime) -> datetime:

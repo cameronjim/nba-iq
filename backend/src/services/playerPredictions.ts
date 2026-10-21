@@ -1,5 +1,6 @@
 import { query } from '../db.js';
 import { COMPLETE_RUN_STATUS, PRODUCTION_CHANNEL, rowsOrEmpty } from './slate.js';
+import { runPredictionRowsSql } from './quantileSource.js';
 
 // the stat vocabulary is not hardcoded here on purpose, since the emitted stat list grows over time; this pivots by whatever `stat` values come back
 const UNCOND_SUFFIX = '_uncond';
@@ -311,7 +312,7 @@ const UPCOMING_SQL = `
          p.conditional
   FROM games g
   JOIN player_game_predictions p
-    ON p.prediction_run_id = $1
+    ON ${runPredictionRowsSql('p', '$1')}
    AND p.nba_player_id = $2
    AND p.nba_game_id = g.nba_game_id
   LEFT JOIN nba_schedule s ON s.nba_game_id = g.nba_game_id

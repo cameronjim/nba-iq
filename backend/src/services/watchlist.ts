@@ -1,5 +1,6 @@
 import { query } from '../db.js';
 import { percentRank } from './analytics.js';
+import { runPredictionRowsSql } from './quantileSource.js';
 import {
   CONDITIONAL_STATS,
   MINUTES_QUANTILE,
@@ -551,7 +552,7 @@ export async function fetchWindowPredictionRows(
               ${COND_PIVOT_SQL}
        FROM player_game_predictions pgp
        LEFT JOIN players p ON p.nba_id = pgp.nba_player_id
-       WHERE pgp.prediction_run_id = $1
+       WHERE ${runPredictionRowsSql('pgp', '$1')}
          AND pgp.game_date >= $2
          AND pgp.game_date <= $3
        GROUP BY pgp.game_date, pgp.nba_game_id, pgp.nba_player_id`,
