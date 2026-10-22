@@ -64,6 +64,7 @@ from rows import (
     game_log_fetch_from,
     game_log_rows_from_web,
     game_status_rows_from_web,
+    identity_rows_from_web,
     web_game_is_final,
     player_ids_absent_from_box,
     schedule_rows_from_league_schedule,
@@ -159,6 +160,18 @@ ON CONFLICT (team_id, nba_game_id) DO UPDATE SET
     source = EXCLUDED.source,
     fetched_at = NOW(),
     ingestion_run_id = COALESCE(EXCLUDED.ingestion_run_id, team_game_logs.ingestion_run_id)
+"""
+
+# a later page fills a missing position but never rewrites a name to empty or
+# swaps the first slot seen for another.
+PLAYER_IDENTITY_UPSERT_SQL = """
+    INSERT INTO player_identities (nba_player_id, name, position, headshot_url)
+    VALUES %s
+    ON CONFLICT (nba_player_id) DO UPDATE SET
+        name = COALESCE(NULLIF(EXCLUDED.name, ''), player_identities.name),
+        position = COALESCE(player_identities.position, EXCLUDED.position),
+        headshot_url = EXCLUDED.headshot_url,
+        updated_at = NOW()
 """
 
 GAME_STATUS_UPSERT_SQL = """
@@ -699,6 +712,9 @@ def _apply_web_game(
         "player_logs": _batch_upsert(cur, PLAYER_GAME_LOG_UPSERT_SQL, player_logs),
         "team_logs": _batch_upsert(cur, TEAM_GAME_LOG_UPSERT_SQL, team_logs),
         "status": _upsert_game_status_rows(cur, status_rows, run_id),
+        "identities": _batch_upsert(
+            cur, PLAYER_IDENTITY_UPSERT_SQL, identity_rows_from_web(game)
+        ),
     }
     box_counts = _write_box_details(
         cur, game_id, box_players, box_teams,
@@ -755,7 +771,10 @@ def backfill_game_logs_from_web(
         dry_run=dry_run,
     )
 
-    totals = {"player_logs": 0, "team_logs": 0, "status": 0, "details": 0, "active_dnp": 0}
+    totals = {
+        "player_logs": 0, "team_logs": 0, "status": 0, "details": 0,
+        "active_dnp": 0, "identities": 0,
+    }
     failed = 0
     cur = maybe_write_cursor(conn.cursor(), dry_run)
     try:
@@ -786,7 +805,8 @@ def backfill_game_logs_from_web(
     notes = (
         f"{processed} game(s), {failed} failed; {totals['player_logs']} player and "
         f"{totals['team_logs']} team log row(s), {totals['status']} status row(s), "
-        f"{totals['details']} detail row(s); active_dnp_rows={totals['active_dnp']}"
+        f"{totals['details']} detail row(s), {totals['identities']} identity row(s); "
+        f"active_dnp_rows={totals['active_dnp']}"
     )
     written = sum(totals.values())
     _finish_ingestion_run(

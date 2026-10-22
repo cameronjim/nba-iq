@@ -548,6 +548,10 @@ def roster_rows_from_nba_players_index(next_data: Mapping) -> dict[str, str]:
     return snapshot
 
 
+def headshot_url(player_id: str) -> str:
+    return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+
+
 def player_rows_from_nba_players_index(next_data: Mapping) -> list[tuple]:
     # (nba_id, name, team abbr, position, headshot_url) per rostered player.
     # players without a current team are skipped: there is nothing to label.
@@ -571,7 +575,7 @@ def player_rows_from_nba_players_index(next_data: Mapping) -> list[tuple]:
             name,
             team_abbr,
             resolve_positions("", str(raw.get("POSITION") or "").strip()),
-            f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png",
+            headshot_url(player_id),
         ))
     return rows
 
@@ -991,3 +995,31 @@ def player_ids_absent_from_box(
     # as visited so the resumable backfill does not select the game forever.
     in_box = {row["nba_player_id"] for row in box_player_rows}
     return sorted({pid for pid in logged_player_ids if pid not in in_box})
+
+
+def identity_rows_from_web(game: Mapping) -> list[tuple]:
+    # (nba_player_id, name, position, headshot_url) for everyone the page lists,
+    # dressed or inactive. position is the starter's slot, so bench players get
+    # none rather than a guess.
+    rows: dict[str, tuple] = {}
+    for team, _, _ in _web_sides(game):
+        for raw in [*(team.get("players") or []), *(team.get("inactives") or [])]:
+            player_id = str(raw.get("personId") or "").strip()
+            name = " ".join(
+                part
+                for part in (
+                    str(raw.get("firstName") or "").strip(),
+                    str(raw.get("familyName") or "").strip(),
+                )
+                if part
+            )
+            if not player_id or not name or player_id in rows:
+                continue
+            slot = str(raw.get("position") or "").strip()
+            rows[player_id] = (
+                player_id,
+                name,
+                resolve_positions("", slot) or None,
+                headshot_url(player_id),
+            )
+    return list(rows.values())
