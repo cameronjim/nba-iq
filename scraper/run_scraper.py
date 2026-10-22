@@ -34,6 +34,7 @@ from fetching import stats_nba_reachable
 from injury_reconcile import reconcile_player_injury_columns
 from injury_report import scrape_official_injuries
 from odds import scrape_odds_snapshots
+from player_stats import refresh_players_from_logs
 from props import parse_props_markets, scrape_prop_odds
 from retention import prune_odds, prune_predictions, vacuum_full
 from ratings_2k import sync_2k_ratings
@@ -215,6 +216,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--refresh-players-only",
+        dest="refresh_players_only",
+        action="store_true",
+        help=(
+            "run ONLY the players table refresh: --season's regular-season "
+            "averages from the stored game logs for every rostered player"
+        ),
+    )
+    parser.add_argument(
         "--injuries-only",
         dest="injuries_only",
         action="store_true",
@@ -381,6 +391,16 @@ def _web_truth_phases(
             limit=limit or WEB_BOX_DETAILS_RUN_LIMIT, source=BOX_SOURCE_WEB,
         ),
     )
+    _refresh_players(conn, season, dry_run)
+
+
+def _refresh_players(
+    conn: psycopg2.extensions.connection, season: str, dry_run: bool
+) -> None:
+    _run_phase(
+        "players refresh",
+        lambda: refresh_players_from_logs(conn, season, dry_run=dry_run),
+    )
 
 
 def _odds_lane(
@@ -503,6 +523,8 @@ def main(argv: list[str] | None = None) -> None:
             scrape_official_injuries(conn, dry_run=args.dry_run)
         elif args.reconcile_injuries_only:
             reconcile_player_injury_columns(conn, dry_run=args.dry_run)
+        elif args.refresh_players_only:
+            refresh_players_from_logs(conn, args.season, dry_run=args.dry_run)
         elif args.game_logs_web:
             _web_truth_phases(conn, args.season, args.dry_run, args.limit)
         elif args.odds_only:
@@ -555,6 +577,9 @@ def main(argv: list[str] | None = None) -> None:
                         box_source=BOX_SOURCE_STATS,
                     ),
                 )
+                # the stats line omits rostered players without a game and
+                # never deletes, so the log-derived pass still owns the table.
+                _refresh_players(conn, args.season, args.dry_run)
             else:
                 _web_truth_phases(conn, args.season, args.dry_run, args.limit)
             # after the schedule sync, so new games map to an nba game id.

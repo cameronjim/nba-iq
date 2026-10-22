@@ -17,6 +17,7 @@ import injury_report
 import roster_snapshot
 import run_scraper
 import odds
+import player_stats
 import props
 import scrapes
 import truth_layer
@@ -82,6 +83,7 @@ from rows import (
     game_log_rows_from_web,
     game_ready_for_logs,
     game_status_rows_from_web,
+    identity_rows_from_web,
     ingested_schedule_rows,
     merge_dnp_reason,
     normalize_inactive_rows,
@@ -2330,6 +2332,7 @@ class TestApplyWebGame:
         # the 2 dressed dnps are on neither list, so they are active-dnp inserts.
         assert counts == {
             "player_logs": 4, "team_logs": 2, "status": 6, "details": 6, "active_dnp": 2,
+            "identities": 8,
         }
         assert all(not is_write_statement(sql) for sql in inner.statements)
 
@@ -2570,6 +2573,7 @@ def _stub_full_scrape(monkeypatch, reachable):
         "scrape_players", "scrape_teams", "scrape_scoreboard", "_injury_phases",
         "scrape_roster_snapshot", "scrape_game_logs", "scrape_game_status",
         "scrape_odds_snapshots", "backfill_game_logs_from_web", "backfill_box_details",
+        "refresh_players_from_logs",
     ):
         monkeypatch.setattr(run_scraper, name, record(name, 0))
     monkeypatch.setattr(run_scraper, "scrape_schedule", record("scrape_schedule", True))
@@ -2615,8 +2619,9 @@ class TestWebGameLogLane:
 
         assert [name for name, _ in calls] == [
             "backfill_game_logs_from_web", "backfill_box_details",
+            "refresh_players_from_logs",
         ]
-        assert {kwargs["limit"] for _, kwargs in calls} == {5}
+        assert {kwargs["limit"] for _, kwargs in calls[:2]} == {5}
 
     def test_a_failed_log_step_still_runs_the_box_details(self, monkeypatch):
         seasons = []
@@ -2629,6 +2634,7 @@ class TestWebGameLogLane:
             run_scraper, "backfill_box_details",
             lambda *args, **kwargs: seasons.append(args[1]) or 0,
         )
+        monkeypatch.setattr(run_scraper, "refresh_players_from_logs", lambda *a, **k: None)
 
         run_scraper._web_truth_phases(object(), "2026-27", False, None)
 
@@ -6264,3 +6270,321 @@ class TestDbKeepalives:
         # assert
         assert seen["keepalives"] == 1
         assert seen["keepalives_idle"] <= 60
+
+
+def _log(player_id, game_date, minutes, team="OKC", season="2026-27",
+         season_type="Regular Season", **stats):
+    row = {
+        "nba_player_id": player_id, "season": season, "season_type": season_type,
+        "game_date": game_date, "team_abbr": team, "minutes": minutes,
+    }
+    for key in ("pts", "reb", "ast", "stl", "blk", "tov", "fgm", "fga",
+                "fg3m", "fg3a", "ftm", "fta"):
+        row[key] = stats.get(key, 0)
+    return row
+
+
+class TestSeasonAverages:
+    def test_per_game_lines_and_percentages_come_from_summed_makes(self):
+        # arrange
+        logs = [
+            _log("1", date(2026, 10, 21), 30, pts=20, reb=5, fgm=8, fga=16, fg3m=2, fg3a=5, ftm=2, fta=2),
+            _log("1", date(2026, 10, 23), 34, pts=31, reb=8, fgm=11, fga=19, fg3m=3, fg3a=5, ftm=6, fta=8),
+        ]
+
+        # act
+        line = player_stats.season_averages(logs, "2026-27")["1"]
+
+        # assert
+        assert line.games_played == 2
+        assert (line.minutes_per_game, line.points_per_game, line.rebounds_per_game) == (32.0, 25.5, 6.5)
+        assert line.three_pointers_made == 2.5
+        assert line.field_goal_percentage == round(19 / 35 * 100, 1)
+        assert line.three_point_percentage == 50.0
+        assert line.free_throw_percentage == 80.0
+
+    def test_no_attempts_is_zero_percent(self):
+        # arrange
+        logs = [_log("1", date(2026, 10, 21), 4, reb=1)]
+
+        # act
+        line = player_stats.season_averages(logs, "2026-27")["1"]
+
+        # assert
+        assert (
+            line.field_goal_percentage, line.three_point_percentage, line.free_throw_percentage
+        ) == (0.0, 0.0, 0.0)
+
+    def test_only_played_regular_season_games_this_season_count(self):
+        # arrange
+        logs = [
+            _log("1", date(2026, 10, 21), 20, pts=10),
+            _log("1", date(2026, 10, 22), 0, pts=0),
+            _log("1", date(2026, 10, 23), None),
+            _log("1", date(2026, 10, 5), 25, pts=40, season_type="Pre Season"),
+            _log("1", date(2026, 4, 1), 25, pts=40, season="2025-26"),
+        ]
+
+        # act
+        line = player_stats.season_averages(logs, "2026-27")["1"]
+
+        # assert
+        assert (line.games_played, line.points_per_game) == (1, 10.0)
+
+    def test_a_player_with_only_dnps_has_no_line(self):
+        # act + assert
+        assert player_stats.season_averages([_log("1", date(2026, 10, 21), 0)], "2026-27") == {}
+
+    def test_the_last_team_is_the_latest_game(self):
+        # arrange
+        logs = [
+            _log("1", date(2026, 12, 1), 20, team="HOU"),
+            _log("1", date(2026, 11, 1), 20, team="OKC"),
+        ]
+
+        # act
+        line = player_stats.season_averages(logs, "2026-27")["1"]
+
+        # assert
+        assert line.last_team_abbr == "HOU"
+
+
+class TestPlanPlayersRefresh:
+    def _averages(self):
+        return player_stats.season_averages(
+            [
+                _log("10", date(2026, 10, 21), 30, team="OKC", pts=20),
+                _log("20", date(2026, 10, 21), 12, team="HOU", pts=4),
+            ],
+            "2026-27",
+        )
+
+    def test_a_rostered_player_without_a_game_gets_a_zero_line(self):
+        # arrange
+        identities = {"30": ("New Rookie", None, None)}
+
+        # act
+        upserts, _ = player_stats.plan_players_refresh({}, {"30": "BOS"}, identities, {})
+
+        # assert
+        row = upserts[0]
+        assert (row["nba_id"], row["name"], row["team"]) == ("30", "New Rookie", "BOS")
+        assert row["games_played"] == 0
+        assert all(row[column] == 0 for column in player_stats.STAT_COLUMNS)
+        assert row["headshot_url"].endswith("/30.png")
+
+    def test_an_unrostered_player_with_games_keeps_his_line_and_last_team(self):
+        # arrange
+        identities = {"10": ("Starter", "PG", None), "20": ("Waived Guy", None, None)}
+
+        # act
+        upserts, deletes = player_stats.plan_players_refresh(
+            self._averages(), {"10": "OKC"}, identities, {"20": "HOU"}
+        )
+
+        # assert
+        by_id = {row["nba_id"]: row for row in upserts}
+        assert by_id["20"]["team"] == "HOU" and by_id["20"]["points_per_game"] == 4.0
+        assert deletes == []
+
+    def test_a_rostered_team_wins_over_the_last_log(self):
+        # act
+        upserts, _ = player_stats.plan_players_refresh(
+            self._averages(), {"20": "BOS"}, {"20": ("Traded Guy", None, None)}, {}
+        )
+
+        # assert
+        assert [row["team"] for row in upserts if row["nba_id"] == "20"] == ["BOS"]
+
+    def test_unrostered_players_without_games_are_deleted_unless_kept(self):
+        # arrange
+        existing = {"10": "OKC", "40": "LAL", "50": "MIA", "60": None}
+
+        # act
+        _, deletes = player_stats.plan_players_refresh(
+            self._averages(), {"10": "OKC"}, {"10": ("Starter", None, None)},
+            existing, keep={"50"},
+        )
+
+        # assert
+        assert deletes == ["40", "60"]
+
+    def test_an_empty_roster_deletes_nothing(self):
+        # act
+        _, deletes = player_stats.plan_players_refresh({}, {}, {}, {"40": "LAL"})
+
+        # assert
+        assert deletes == []
+
+    def test_a_new_player_without_a_name_is_skipped_but_an_existing_one_is_kept(self):
+        # act
+        upserts, deletes = player_stats.plan_players_refresh(
+            {}, {"70": "BOS", "80": "BOS"}, {}, {"80": "NYK"}
+        )
+
+        # assert
+        assert [(row["nba_id"], row["name"]) for row in upserts] == [("80", "")]
+        assert deletes == []
+
+    def test_the_upsert_never_touches_the_injury_columns(self):
+        # arrange
+        upserts, _ = player_stats.plan_players_refresh(
+            {}, {"30": "BOS"}, {"30": ("New Rookie", None, None)}, {}
+        )
+
+        # act
+        sql = player_stats.PLAYERS_REFRESH_UPSERT_SQL
+
+        # assert
+        assert "injury" not in sql
+        assert set(upserts[0]) == set(player_stats.UPSERT_COLUMNS)
+        assert not any("injury" in key for key in upserts[0])
+
+    def test_the_upsert_keeps_a_stored_name_and_a_richer_position(self):
+        # act
+        sql = " ".join(player_stats.PLAYERS_REFRESH_UPSERT_SQL.split())
+
+        # assert
+        assert "name = COALESCE(NULLIF(EXCLUDED.name, ''), players.name)" in sql
+        assert "position = COALESCE(NULLIF(players.position, ''), EXCLUDED.position)" in sql
+
+
+class RoutedCursor:
+    # answers each read by the first table it names in the answers' order.
+    def __init__(self, answers):
+        self.answers = answers
+        self.statements = []
+        self._rows = []
+
+    def execute(self, sql, params=None):
+        self.statements.append(sql)
+        self._rows = next(
+            (rows for key, rows in self.answers.items() if key in sql), []
+        )
+
+    def fetchall(self):
+        return self._rows
+
+    def close(self):
+        pass
+
+
+class RoutedConn:
+    def __init__(self, answers):
+        self.cursor_ = RoutedCursor(answers)
+
+    def cursor(self):
+        return self.cursor_
+
+
+def _refresh_answers():
+    log = tuple(_log("10", date(2026, 10, 21), 30, pts=20).values())
+    return {
+        "FROM player_game_logs": [log],
+        "FROM player_team_stints": [("10", "1610612760", "OKC"), ("30", "1610612738", None)],
+        "FROM player_identities": [("30", "New Rookie", None, None)],
+        "FROM my_roster": [("50",)],
+        "FROM players": [
+            ("10", "Starter", "OKC", "PG"), ("40", "Gone", "LAL", ""), ("50", "Kept", "MIA", ""),
+        ],
+    }
+
+
+class TestRefreshPlayersFromLogs:
+    def test_a_dry_run_reads_and_writes_nothing(self):
+        # arrange
+        conn = RoutedConn(_refresh_answers())
+
+        # act
+        result = player_stats.refresh_players_from_logs(conn, "2026-27", dry_run=True)
+
+        # assert
+        assert result == {
+            "season": "2026-27", "rostered": 2, "with_games": 1, "upserted": 2, "deleted": 1,
+        }
+        assert all(not is_write_statement(sql) for sql in conn.cursor_.statements)
+
+    def test_a_real_run_upserts_the_plan_and_deletes_the_rest(self, monkeypatch):
+        # arrange
+        conn = RoutedConn(_refresh_answers())
+        written = []
+        monkeypatch.setattr(
+            player_stats, "_batch_upsert",
+            lambda cur, sql, rows: written.extend(rows) or len(rows),
+        )
+
+        # act
+        player_stats.refresh_players_from_logs(conn, "2026-27")
+
+        # assert
+        assert {row[0]: row[2] for row in written} == {"10": "OKC", "30": "BOS"}
+        deletes = [sql for sql in conn.cursor_.statements if "DELETE FROM players" in sql]
+        assert len(deletes) == 1
+
+    def test_the_flag_runs_only_the_refresh(self, monkeypatch):
+        # arrange
+        calls = _stub_full_scrape(monkeypatch, reachable=False)
+
+        # act
+        run_scraper.main(["--refresh-players-only", "--season", "2026-27", "--dry-run"])
+
+        # assert
+        assert _parse_args([]).refresh_players_only is False
+        assert calls == [("refresh_players_from_logs", {"dry_run": True})]
+
+    def test_the_full_scrape_refreshes_after_the_stats_logs(self, monkeypatch):
+        # arrange
+        calls = _stub_full_scrape(monkeypatch, reachable=True)
+
+        # act
+        run_scraper.main([])
+
+        # assert
+        names = [name for name, _ in calls]
+        assert names.count("refresh_players_from_logs") == 1
+        assert names.index("scrape_players") < names.index("refresh_players_from_logs")
+        assert names.index("scrape_game_logs") < names.index("refresh_players_from_logs")
+
+    def test_the_full_scrape_refreshes_once_after_the_web_logs(self, monkeypatch):
+        # arrange
+        calls = _stub_full_scrape(monkeypatch, reachable=False)
+
+        # act
+        run_scraper.main([])
+
+        # assert
+        names = [name for name, _ in calls]
+        assert names.count("refresh_players_from_logs") == 1
+        assert names.index("backfill_game_logs_from_web") < names.index("refresh_players_from_logs")
+
+
+class TestIdentityRowsFromWeb:
+    def test_every_dressed_and_inactive_player_gets_a_name(self):
+        # act
+        rows = identity_rows_from_web(_web_game())
+
+        # assert
+        by_id = {row[0]: row for row in rows}
+        assert len(rows) == 8
+        assert by_id["1628983"][1:3] == ("Shai Gilgeous-Alexander", "PG,SG")
+        assert by_id["1642850"][1:3] == ("Thomas Sorber", None)
+        assert by_id["1642850"][3].endswith("/1642850.png")
+
+    def test_a_bench_player_has_no_position(self):
+        # arrange
+        bench = [
+            str(p["personId"]) for p in _web_game()["homeTeam"]["players"] if not p.get("position")
+        ]
+
+        # act
+        rows = identity_rows_from_web(_web_game())
+
+        # assert
+        assert bench and all(row[2] is None for row in rows if row[0] in bench)
+
+    def test_an_unplayed_game_still_names_the_inactive_list(self):
+        # act
+        rows = identity_rows_from_web(_unplayed_web_game())
+
+        # assert
+        assert "1642850" in {row[0] for row in rows}
